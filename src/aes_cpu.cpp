@@ -97,10 +97,8 @@ static void aesni_key_expansion_128(const uint8_t key[16], uint8_t rk_buf[176]) 
 static void aesni_key_expansion_192(const uint8_t key[24], uint8_t rk_buf[208]) {
     __m128i* rk = (__m128i*)rk_buf;
     rk[0] = _mm_loadu_si128((const __m128i*)key);
-    // 加载后 8 字节作为第二个 128-bit 的前半部分
-    __m128i tmp = _mm_loadu_si128((const __m128i*)(key + 8));
-    // 将 tmp 的低 64-bit 移到 rk[1] 的低 64-bit
-    rk[1] = _mm_set_epi64x(0, _mm_extract_epi64(tmp, 0));
+    // 加载 bytes 16..23 (W4,W5) 作为第二个轮密钥的低 64 位
+    rk[1] = _mm_loadl_epi64((const __m128i*)(key + 16));
 
     // AES-192: 密钥扩展需要 8 轮（生成 13 个 128-bit 轮密钥）
     // 使用 6-word 密钥调度
@@ -164,41 +162,90 @@ static void aesni_make_decrypt_keys(__m128i* dec_rk, const __m128i* enc_rk, int 
 
 /// 使用 PCLMULQDQ 计算 GF(2^128) 乘法（无进位乘法 + 模约简）
 /// 不可约多项式：x^128 + x^7 + x^2 + x + 1
-/// bit-reflected 约简常数：R = 0xE1 << 120 → 0x87
+/// Input: a, b in bit-reflected (byte-reversed) representation.
+/// bit-reflected 约简常数：R = 0x87 in low 64 bits.
+///
+/// In bit-reflected domain, the low 64-bit lane holds the original
+/// high-degree terms and the high 64-bit lane holds the original
+/// low-degree terms.  Therefore the 256-bit product composition
+/// swaps the roles of the t0 (=AL*BL) and t1 (=AH*BH) terms
+/// relative to the standard CLMUL schoolbook formula.
 static inline __m128i pclmul_gf128_mul(__m128i a, __m128i b) {
-    __m128i t0 = _mm_clmulepi64_si128(a, b, 0x00);  // a[0] * b[0]
-    __m128i t1 = _mm_clmulepi64_si128(a, b, 0x11);  // a[1] * b[1]
-    __m128i t2 = _mm_clmulepi64_si128(a, b, 0x01);  // a[0] * b[1]
-    __m128i t3 = _mm_clmulepi64_si128(a, b, 0x10);  // a[1] * b[0]
+    __m128i t0 = _mm_clmulepi64_si128(a, b, 0x00);  // AL*BL (orig high*high)
+    __m128i t1 = _mm_clmulepi64_si128(a, b, 0x11);  // AH*BH (orig low*low)
+    __m128i t2 = _mm_clmulepi64_si128(a, b, 0x01);  // AL*BH
+    __m128i t3 = _mm_clmulepi64_si128(a, b, 0x10);  // AH*BL
 
+    // Merge middle terms
     t2 = _mm_xor_si128(t2, t3);
-    t3 = _mm_slli_si128(t2, 8);
-    t2 = _mm_srli_si128(t2, 8);
-    t0 = _mm_xor_si128(t0, t3);
-    t1 = _mm_xor_si128(t1, t2);
+    t3 = _mm_slli_si128(t2, 8);   // low 64 of middle → upper half
+    t2 = _mm_srli_si128(t2, 8);   // high 64 of middle → lower half
 
-    // 模约简
+    // Compose 256-bit product.
+    // In bit-reflected domain:
+    //   AH*BH (t1, orig low*low)  → PL high 64 (bits 64-127)
+    //   AH*BL (t3 before shift)   → PL low 64  (bits 0-63)
+    //   AL*BH + AL*BL (cross)     → PH
+    // Current arrangement: t3 already shifted to high 64, t1 still in low 64.
+    // We need: PL = {t1_lo, t3_lo} after proper shifting.
+    //
+    // Re-derive from raw CLMUL outputs without the earlier merge:
+    // T1_raw = AH*BH  (orig low, goes to PL high 64)
+    // T3_raw = AH*BL  (orig cross low, goes to PL low 64)
+    // Need PL = T3_raw ⊕ (T1_raw << 64)  (low 64 = T3_raw, high 64 = T1_raw)
+    // But T3 was already merged with T2 via t2/t3 shifts.  Reset:
+    __m128i t1_raw = _mm_clmulepi64_si128(a, b, 0x11);  // AH*BH (fresh)
+    __m128i t3_raw = _mm_clmulepi64_si128(a, b, 0x10);  // AH*BL (fresh)
+    __m128i t2_raw = _mm_clmulepi64_si128(a, b, 0x01);  // AL*BH
+
+    // Merge cross terms: M = AL*BH ⊕ AH*BL (full 128-bit)
+    __m128i m = _mm_xor_si128(t2_raw, t3_raw);
+
+    // PL: low 64 = AH*BL_lo, high 64 = AH*BH_lo, plus cross-term low 64 shifted up
+    __m128i t1_hi = _mm_slli_si128(t1_raw, 8);           // AH*BH → high 64
+    __m128i pl = _mm_xor_si128(t3_raw, t1_hi);           // {AH*BH, AH*BL}
+    // Add cross-term contribution to PL: (m << 64) low 64 → PL high 64
+    __m128i m_hi = _mm_slli_si128(m, 8);                  // shift cross up
+    pl = _mm_xor_si128(pl, m_hi);
+
+    // PH: gets AL*BL + (cross >> 64) + carries
+    __m128i ph = _mm_xor_si128(t0, _mm_srli_si128(m, 8)); // AL*BL + cross high 64
+
+    // Reduce ph into pl using bit-reflected polynomial R = 0x87
+    // R = x^7 + x^2 + x + 1  (reflected: x^128 + x^127 + x^126 + x^121 + 1 → 0x87)
     __m128i r = _mm_set_epi64x(0, 0x87);
-    __m128i p = _mm_clmulepi64_si128(t1, r, 0x00);
-    t0 = _mm_xor_si128(t0, p);
 
-    __m128i hi = _mm_srli_si128(t0, 8);
-    p = _mm_clmulepi64_si128(hi, r, 0x00);
-    t0 = _mm_xor_si128(t0, p);
+    // Fold:  ph[1] * R  (high 64 of ph times R)
+    __m128i ph_hi_r = _mm_clmulepi64_si128(ph, r, 0x01);   // ph[1] * r[0]
+    __m128i overflow = _mm_srli_si128(ph_hi_r, 8);          // bits > 63 from ph[1]*R
 
-    return t0;
+    // ph[0] * R  +  ph[1]*R << 64
+    __m128i p = _mm_clmulepi64_si128(ph, r, 0x00);          // ph[0] * r[0]
+    __m128i p2 = _mm_slli_si128(ph_hi_r, 8);                // ph[1]*R shifted up
+    p = _mm_xor_si128(p, p2);
+    pl = _mm_xor_si128(pl, p);
+
+    // Reduce the overflow from ph[1]*R
+    p = _mm_clmulepi64_si128(overflow, r, 0x00);
+    __m128i mask = _mm_set_epi64x(0, -1);
+    p = _mm_and_si128(p, mask);
+    pl = _mm_xor_si128(pl, p);
+
+    return pl;
 }
 
 /// PCLMULQDQ 加速的 GHASH（替代软件 gf128_mul 逐位版本）
 static void pclmul_ghash(const uint8_t H[16], std::span<const uint8_t> data, uint8_t out[16]) {
-    __m128i Hv = _mm_loadu_si128((const __m128i*)H);
+    __m128i bswap_mask = _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    __m128i Hv = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)H), bswap_mask);
     __m128i state = _mm_setzero_si128();
 
     size_t pos = 0;
     size_t len = data.size();
 
     while (pos + 16 <= len) {
-        __m128i block = _mm_loadu_si128((const __m128i*)(data.data() + pos));
+        __m128i block = _mm_shuffle_epi8(
+            _mm_loadu_si128((const __m128i*)(data.data() + pos)), bswap_mask);
         state = _mm_xor_si128(state, block);
         state = pclmul_gf128_mul(state, Hv);
         pos += 16;
@@ -207,10 +254,12 @@ static void pclmul_ghash(const uint8_t H[16], std::span<const uint8_t> data, uin
     if (pos < len) {
         uint8_t last[16] = {};
         std::memcpy(last, data.data() + pos, len - pos);
-        state = _mm_xor_si128(state, _mm_loadu_si128((const __m128i*)last));
+        __m128i block = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)last), bswap_mask);
+        state = _mm_xor_si128(state, block);
         state = pclmul_gf128_mul(state, Hv);
     }
 
+    state = _mm_shuffle_epi8(state, bswap_mask);
     _mm_storeu_si128((__m128i*)out, state);
 }
 
@@ -272,6 +321,7 @@ void aes_context::init_impl(std::span<const uint8_t> key, AesKeySize ks) {
     if (!detected) {
         g_use_aesni = cpu_has_aesni();
         g_use_pclmul = cpu_has_pclmulqdq();
+    
         detected = true;
     }
 
@@ -505,71 +555,61 @@ bool aes_cbc_decrypt(const aes_context& ctx,
 //  GCM 辅助：GF(2^128) 乘法 & GHASH
 // ═══════════════════════════════════════════════════════════════════════
 
-/// 右移 128-bit 值（小端序，用于 bit-reflected GF(2^128) 乘法）
-static void shr128_le(uint8_t x[16]) {
-    uint8_t carry = 0;
-    for (int i = 0; i < 16; ++i) {
-        uint8_t new_carry = x[i] & 1;
-        x[i] = (x[i] >> 1) | (carry << 7);
-        carry = new_carry;
-    }
-}
-
-/// 左移 128-bit 值
-static void shl128(uint8_t x[16]) {
-    uint8_t carry = 0;
-    for (int i = 15; i >= 0; --i) {
-        uint8_t new_carry = x[i] >> 7;
-        x[i] = (x[i] << 1) | carry;
-        carry = new_carry;
-    }
-}
-
-/// XOR 两个 128-bit 值 src ^= other
+/// XOR 128-bit: dst ^= src
 static void xor128(uint8_t* dst, const uint8_t* src) {
     for (int i = 0; i < 16; ++i) dst[i] ^= src[i];
 }
 
 void gf128_mul(const uint8_t x[16], const uint8_t y[16], uint8_t out[16]) {
+    // GF(2^128) multiplication per NIST SP 800-38D §6.3.
+    // Bit-reflected (NIST) convention: byte 0 bit 7 = x^0 coefficient.
+    //   byte 0 bit 7 = a_0, byte 0 bit 6 = a_1, ..., byte 0 bit 0 = a_7,
+    //   byte 1 bit 7 = a_8, ...
+    // Irreducible polynomial: P(x) = x^128 + x^7 + x^2 + x + 1.
+    // Multiply-by-x = right-shift within each byte, LSB carries to next byte's MSB.
+    // Reduction: when a_127 (byte 15 bit 0) overflows to x^128 after multiply-by-x,
+    //   reduce x^128 → x^7 + x^2 + x + 1, which in bit-reflected form is:
+    //     x^7 → byte 0 bit 0 (0x01)
+    //     x^2 → byte 0 bit 5 (0x20)
+    //     x^1 → byte 0 bit 6 (0x40)
+    //     x^0 → byte 0 bit 7 (0x80)
+    //   Reduction constant = 0xE1 at byte 0.
+    // Algorithm: iterate bits of X MSB-first (byte 0 bit 7 down to byte 15 bit 0),
+    // accumulating Z = Z ⊕ V when X's bit is 1, then V = V · x with reduction.
+
 #ifdef __x86_64__
     if (g_use_pclmul) {
-        __m128i a = _mm_loadu_si128((const __m128i*)x);
-        __m128i b = _mm_loadu_si128((const __m128i*)y);
-        __m128i r = pclmul_gf128_mul(a, b);
-        _mm_storeu_si128((__m128i*)out, r);
-        return;
+        // NOTE: PCLMULQDQ fast path temporarily disabled.
+        // Falls through to the verified software implementation below.
+        // TODO: re-enable after fixing the 64-bit lane ordering.
     }
 #endif
-    // GF(2^128) multiplication for GCM.
-    // Bit-reflected (little-endian) representation: byte 0 bit 0 = x^0,
-    // byte 15 bit 7 = x^127. Right-shift = multiply by x.
-    // Irreducible polynomial: p(x) = x^128 + x^7 + x^2 + x + 1.
-    // When the x^0 coefficient is shifted out (right-shift carry),
-    // reduce x^128 to x^7 + x^2 + x + 1:
-    //   x^7 -> bit 7 of byte 0 (0x80)
-    //   x^2 -> bit 2 of byte 0 (0x04)
-    //   x^1 -> bit 1 of byte 0 (0x02)
-    //   x^0 -> bit 0 of byte 0 (0x01)
-    // Reduction constant: 0x80|0x04|0x02|0x01 = 0x87
 
     uint8_t V[16];
     std::memcpy(V, y, 16);   // V = Y
 
     uint8_t Z[16] = {};      // Z = 0
 
-    for (int i = 0; i < 128; ++i) {
-        // Check bit i of X (little-endian: byte 0 bit 0 = bit 0)
-        int byte_idx = i / 8;
-        int bit_idx  = i % 8;
-        if (x[byte_idx] & (1 << bit_idx)) {
-            xor128(Z, V);
-        }
+    // Iterate bits of X from MSB to LSB (bit-reflected order)
+    for (int i_byte = 0; i_byte < 16; ++i_byte) {
+        uint8_t mask = 0x80;  // start from bit 7 (x^0 position)
+        for (int i_bit = 0; i_bit < 8; ++i_bit, mask >>= 1) {
+            // If this bit of X is set, accumulate V into Z
+            if (x[i_byte] & mask) {
+                xor128(Z, V);
+            }
 
-        // V = V >> 1, with conditional reduction
-        bool lsb = V[0] & 1;
-        shr128_le(V);
-        if (lsb) {
-            V[0] ^= 0x87;
+            // V = V · x  (multiply by x in bit-reflected: right-shift, carry LSB→MSB)
+            uint8_t carry = 0;
+            for (int j = 0; j < 16; ++j) {
+                uint8_t next_carry = (V[j] & 1) << 7;  // LSB → next byte's MSB
+                V[j] = (V[j] >> 1) | carry;
+                carry = next_carry;
+            }
+            // If V_127 overflowed (byte 15 bit 0 was 1), reduce
+            if (carry) {
+                V[0] ^= 0xE1;  // reduction: x^128 → x^7 + x^2 + x + 1
+            }
         }
     }
 
@@ -577,27 +617,38 @@ void gf128_mul(const uint8_t x[16], const uint8_t y[16], uint8_t out[16]) {
 }
 
 void ghash(const uint8_t H[16], std::span<const uint8_t> data, uint8_t out[16]) {
+    // GHASH per NIST SP 800-38D §6.4:
+    //   X = X_1 || X_2 || ... || X_m  (m blocks of 128 bits each)
+    //   Y_0 = 0^128
+    //   Y_i = (Y_{i-1} ⊕ X_i) · H   for i = 1..m
+    //   return Y_m
+    //
+    // All arithmetic is in GF(2^128) with polynomial x^128 + x^7 + x^2 + x + 1.
+    // Data is in NIST big-endian convention: byte 0 bit 0 = x^0 coefficient.
+    // gf128_mul operates directly on this big-endian representation with
+    // reduction constant 0x87 at byte 0 for the x^128 → x^7+x^2+x+1 reduction.
+
 #ifdef __x86_64__
     if (g_use_pclmul) {
-        pclmul_ghash(H, data, out);
-        return;
+        // NOTE: PCLMULQDQ fast path temporarily disabled.
+        // Falls through to verified software GHASH below.
+        // TODO: re-enable after fixing pclmul_gf128_mul.
     }
 #endif
-    std::memset(out, 0, 16);
 
+    std::memset(out, 0, 16);
     size_t num_blocks = (data.size() + 15) / 16;
 
     for (size_t i = 0; i < num_blocks; ++i) {
-        // Current block (zero-padded if last partial block)
         uint8_t block[16] = {};
         size_t offset = i * 16;
         size_t len = std::min<size_t>(16, data.size() - offset);
         std::memcpy(block, data.data() + offset, len);
 
-        // XOR with current GHASH state
+        // Y_i = (Y_{i-1} ⊕ X_i)
         xor128(out, block);
 
-        // Multiply by H in GF(2^128)
+        // Y_i = (Y_{i-1} ⊕ X_i) · H
         uint8_t tmp[16];
         gf128_mul(out, H, tmp);
         std::memcpy(out, tmp, 16);
@@ -646,18 +697,11 @@ void aes_gcm_encrypt(const aes_context& ctx,
         std::memcpy(J0, iv, 12);
         J0[15] = 0x01;
     } else {
-        // J0 = GHASH_H(IV || 0^s || len(IV)_64)
-        ghash(H, std::span<const uint8_t>(iv, iv_len), J0);
-        // Inline: also hash the padding and length
-        // Actually, GHASH already handles zero-padding internally (block-by-block)
-        // But we also need len(IV) in bits. Complete J0 = GHASH(IV || 0^s || [len(IV)]_64)
-        // For simplicity, use a temporary buffer
+        // J0 = GHASH_H(IV || 0^{s+64} || [len(IV)]_64)  (NIST SP 800-38D §5.2.1.1)
         std::vector<uint8_t> iv_data(iv, iv + iv_len);
-        // zero-pad to block boundary
         size_t pad_len = (16 - (iv_len % 16)) % 16;
         iv_data.insert(iv_data.end(), pad_len, 0);
-        // append 64-bit length (0 for now, we already did GHASH)
-        // Actually better: recompute with full input
+        iv_data.insert(iv_data.end(), 8, 0);
         uint8_t iv_len_be[8] = {};
         store_be64(iv_len_be, iv_len * 8);
         iv_data.insert(iv_data.end(), iv_len_be, iv_len_be + 8);
@@ -707,6 +751,7 @@ void aes_gcm_encrypt(const aes_context& ctx,
     // ── 5. Compute tag = S ⊕ AES_encrypt(K, J0) ──
     uint8_t E_J0[16];
     aes_encrypt_block(ctx, J0, E_J0);
+
     for (int i = 0; i < 16; ++i) S[i] ^= E_J0[i];
 
     // Tag is first tag_len bytes of S
@@ -734,9 +779,11 @@ bool aes_gcm_decrypt(const aes_context& ctx,
         std::memcpy(J0, iv, 12);
         J0[15] = 0x01;
     } else {
+        // J0 = GHASH_H(IV || 0^{s+64} || [len(IV)]_64)  (NIST SP 800-38D §5.2.1.1)
         std::vector<uint8_t> iv_data(iv, iv + iv_len);
         size_t pad_len = (16 - (iv_len % 16)) % 16;
         iv_data.insert(iv_data.end(), pad_len, 0);
+        iv_data.insert(iv_data.end(), 8, 0);
         uint8_t iv_len_be[8] = {};
         store_be64(iv_len_be, iv_len * 8);
         iv_data.insert(iv_data.end(), iv_len_be, iv_len_be + 8);

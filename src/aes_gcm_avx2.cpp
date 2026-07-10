@@ -137,9 +137,11 @@ static inline void store_be64_avx2(uint8_t buf[8], uint64_t val) {
     }
 }
 
-/// 构建 J0（GCM 初始 counter）
-static void build_j0_avx2(const uint8_t* iv, size_t iv_len, __m128i H, const __m128i* rk, int rounds, uint8_t J0[16]) {
+/// 构建 J0（GCM 初始 counter, NIST SP 800-38D §6.2）
+static void build_j0_avx2(const uint8_t* iv, size_t iv_len, __m128i H, uint8_t J0[16]) {
     if (iv_len == 12) {
+        // J0 = IV || 0^31 || 1 (NIST SP 800-38D §6.2, 当 len(IV)=96)
+        J0[12] = J0[13] = J0[14] = 0;
         std::memcpy(J0, iv, 12);
         J0[15] = 0x01;
     } else {
@@ -215,7 +217,7 @@ static void avx2_gcm_encrypt_impl(const aes_context& ctx,
 
     // 2. J0
     uint8_t J0_buf[16];
-    build_j0_avx2(iv, iv_len, H, rk, rounds, J0_buf);
+    build_j0_avx2(iv, iv_len, H, J0_buf);
     __m128i J0 = _mm_loadu_si128((const __m128i*)J0_buf);
 
     // 3. 初始化 GHASH 状态
@@ -339,7 +341,7 @@ static bool avx2_gcm_decrypt_impl(const aes_context& ctx,
 
     // 2. J0
     uint8_t J0_buf[16];
-    build_j0_avx2(iv, iv_len, H, rk, rounds, J0_buf);
+    build_j0_avx2(iv, iv_len, H, J0_buf);
     __m128i J0 = _mm_loadu_si128((const __m128i*)J0_buf);
 
     // 3. 先验证标签（GHASH AAD + 密文 + len）

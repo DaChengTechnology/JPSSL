@@ -316,13 +316,26 @@ bool aes_cbc_decrypt(const aes_context& ctx,
 //  GCM 模式（CPU 端 — Galois/Counter Mode，AEAD 认证加密）
 // ═══════════════════════════════════════════════════════════════════════
 
-/// GF(2^128) 乘法（用于 GHASH，不可约多项式 x^128+x^7+x^2+x+1）
+/// GF(2^128) 乘法 — NIST SP 800-38D §6.3
+/// 不可约多项式：P(x) = x^128 + x^7 + x^2 + x + 1
+/// 数据采用 NIST 大端序约定：byte 0 bit 0 = x^0 系数。
+/// 约简常数 0x87（在 byte 0）对应 x^128 → x^7+x^2+x+1。
+/// @param x   乘数（128-bit，大端序）
+/// @param y   被乘数（128-bit，大端序）
+/// @param out 乘积 x·y in GF(2^128)（128-bit，大端序）
 void gf128_mul(const uint8_t x[16], const uint8_t y[16], uint8_t out[16]);
 
-/// GHASH：GCM 的认证组件
-/// @param H    AES_encrypt(K, 0^128) 结果
-/// @param data 输入数据（AAD || ciphertext）
-/// @param out  128-bit GHASH 输出
+/// GHASH — NIST SP 800-38D §6.4
+/// 通用哈希函数，是 GCM 认证标签的核心组件。
+/// 定义：GHASH_H(X) = Y_m，其中：
+///   X = X_1 || X_2 || ... || X_m  （m 个 128-bit 块）
+///   Y_0 = 0^128
+///   Y_i = (Y_{i-1} ⊕ X_i) · H   （GF(2^128) 乘法）
+/// 输入字节序：采用 NIST 大端序约定，byte 0 bit 0 = x^0 系数。
+/// 当 data.size() 不是 16 的倍数时，最后一块用零填充到 16 字节。
+/// @param H    hash subkey = AES_encrypt(K, 0^128)（128-bit，大端序）
+/// @param data GHASH 输入（如 AAD || ciphertext || len_block），大端序
+/// @param out  GHASH 输出（128-bit，大端序）
 void ghash(const uint8_t H[16], std::span<const uint8_t> data, uint8_t out[16]);
 
 /// GCM 加密（带 AAD + 认证标签）

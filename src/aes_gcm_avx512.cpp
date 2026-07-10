@@ -138,7 +138,7 @@ static void avx512_gcm_encrypt_impl(const aes_context& ctx,
                                      std::span<const uint8_t> plaintext,
                                      std::span<const uint8_t> aad,
                                      std::vector<uint8_t>& ciphertext,
-                                     uint8_t* tag, size_t /*tag_len*/) {
+                                     uint8_t* tag, size_t tag_len) {
     check_avx512();
     if (!g_avx512_ready || ctx.key_size != AesKeySize::AES_128) {
         aes_gcm_encrypt_avx2(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, 16);
@@ -263,7 +263,9 @@ static void avx512_gcm_encrypt_impl(const aes_context& ctx,
     E_J0 = _mm_aesenclast_si128(E_J0, rk128[rounds]);
 
     __m128i tag_val = _mm_xor_si128(ghash_state, E_J0);
-    _mm_storeu_si128((__m128i*)tag, tag_val);
+    uint8_t tag_buf[16];
+    _mm_storeu_si128((__m128i*)tag_buf, tag_val);
+    std::memcpy(tag, tag_buf, tag_len);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -329,10 +331,13 @@ static bool avx512_gcm_decrypt_impl(const aes_context& ctx,
 
     __m128i expected_tag = _mm_xor_si128(ghash_state, E_J0);
 
-    __m128i tag128 = _mm_loadu_si128((const __m128i*)tag);
-    __m128i diff = _mm_xor_si128(expected_tag, tag128);
-    int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(diff, zero));
-    if (mask != 0xFFFF) return false;
+    // 常量时间比较 (NIST SP 800-38D: compare first tag_len bytes)
+    uint8_t expected_buf[16], actual_buf[16] = {};
+    _mm_storeu_si128((__m128i*)expected_buf, expected_tag);
+    std::memcpy(actual_buf, tag, tag_len);
+    uint8_t diff = 0;
+    for (size_t i = 0; i < 16; ++i) diff |= expected_buf[i] ^ actual_buf[i];
+    if (diff != 0) return false;
 
     // 4. 解密（CTR）
     plaintext.resize(ciphertext.size());

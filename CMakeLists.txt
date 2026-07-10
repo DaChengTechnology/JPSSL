@@ -12,6 +12,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -maes -mavx2")
 endif()
 
+# ── OpenSSL (Ed25519, SHA-512, TLS interop) ───────────────────────────
+find_package(OpenSSL REQUIRED)
+
 # ── MUSA ───────────────────────────────────────────────────────────────
 list(APPEND CMAKE_MODULE_PATH /usr/local/musa/cmake)
 find_package(MUSA REQUIRED)
@@ -73,6 +76,10 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
         COMPILE_FLAGS "-mavx512f -mavx512vl -mvaes -mvpclmulqdq -mpclmul")
 endif()
 
+# Link OpenSSL for Ed25519, SHA-512
+target_link_libraries(jpssl_cpu PUBLIC OpenSSL::Crypto)
+target_link_libraries(jpssl_cpu_shared PUBLIC OpenSSL::Crypto)
+
 # ═══════════════════════════════════════════════════════════════════════
 #  libjpssl_musa — MUSA GPU 加速库 (AES, ChaCha20, RSA GPU kernels)
 # ═══════════════════════════════════════════════════════════════════════
@@ -120,6 +127,13 @@ target_link_libraries(jpssl-test jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
 # ═══════════════════════════════════════════════════════════════════════
 add_subdirectory(tests/jptest)
 
+# AES 全覆盖单元测试
+add_executable(test_aes tests/test_aes.cpp)
+target_include_directories(test_aes PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(test_aes PRIVATE jpssl_cpu OpenSSL::Crypto)
+
 # TLS 单元测试
 add_executable(test_tls tests/test_tls.cpp)
 target_include_directories(test_tls PRIVATE
@@ -127,18 +141,27 @@ target_include_directories(test_tls PRIVATE
 )
 target_link_libraries(test_tls PRIVATE jpssl_cpu JPTEST::jptest)
 
+# GHash 单元测试（NIST SP 800-38D）
+add_executable(test_ghash tests/test_ghash.cpp)
+target_include_directories(test_ghash PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(test_ghash PRIVATE jpssl_cpu)
+
 # OpenSSL 对比测试
-find_package(OpenSSL QUIET)
-if(OPENSSL_FOUND)
 add_executable(test_openssl_compare tests/test_openssl_compare.cpp)
 target_include_directories(test_openssl_compare PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${MUSA_INCLUDE_DIRS}
 )
 target_link_libraries(test_openssl_compare PRIVATE jpssl_cpu jpssl_musa JPTEST::jptest OpenSSL::SSL OpenSSL::Crypto)
-else()
-    message(STATUS "OpenSSL not found — skipping test_openssl_compare")
-endif()
+
+add_executable(test_ghash_debug tests/test_ghash_debug.cpp)
+target_include_directories(test_ghash_debug PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(test_ghash_debug PRIVATE jpssl_cpu OpenSSL::Crypto)
 
 # ═══════════════════════════════════════════════════════════════════════
 #  安装规则
