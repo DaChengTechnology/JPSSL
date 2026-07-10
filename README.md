@@ -20,6 +20,7 @@
 │  ├─ chacha20_poly1305.cpp  ChaCha20-Poly1305 AEAD │
 │  ├─ rsa.cpp (+body.inc)    RSA 2048/4096 Montgomery│
 │  ├─ sha256.cpp             SHA-256 哈希           │
+│  ├─ sha3.cpp               SHA3-256/384/512 哈希   │
 │  ├─ hmac.cpp               HMAC-SHA256            │
 │  ├─ hkdf.cpp               HKDF-SHA256            │
 │  ├─ x25519.cpp             X25519 ECDH            │
@@ -68,6 +69,7 @@ LD_LIBRARY_PATH=./build ./your_app
 | **ChaCha20-Poly1305** | 流加密, AEAD | — | Keystream kernel |
 | **RSA 2048/4096** | PKCS#1 v1.5 | Montgomery CIOS | 批量模幂 |
 | **SHA-256** | 哈希 | — | — |
+| **SHA3-256/384/512** | 哈希 (FIPS 202, Keccak) | — | — |
 | **HMAC-SHA256** | MAC | — | — |
 | **HKDF-SHA256** | TLS 1.3 密钥派生 | — | — |
 | **X25519** | ECDH 密钥交换 | — | — |
@@ -110,13 +112,19 @@ rsa4096_public_key pub4; rsa4096_private_key prv4;
 rsa4096_keygen(pub4, prv4);
 ```
 
-### SHA256 / HMAC / HKDF
+### SHA256 / SHA3 / HMAC / HKDF
 
 ```cpp
 #include "sha256.hpp"
 sha256_ctx ctx; sha256_init(&ctx);
 sha256_update(&ctx, data, len);
 uint8_t digest[32]; sha256_final(&ctx, digest);
+
+#include "sha3.hpp"
+sha3_ctx ctx;
+sha3_256_init(&ctx);  // or sha3_384_init / sha3_512_init
+sha3_update(&ctx, data, len);
+uint8_t hash[64]; sha3_final(&ctx, hash);
 
 #include "hmac.hpp"
 uint8_t mac[32]; hmac_sha256(key,32, msg,len, mac);
@@ -436,6 +444,7 @@ jpssl/
 │   ├── cpu_features.hpp         CPU 特性检测
 │   ├── rsa.hpp                  RSA 2048/4096
 │   ├── sha256.hpp               SHA-256
+│   ├── sha3.hpp                 SHA3-256/384/512
 │   ├── hmac.hpp                 HMAC-SHA256
 │   ├── hkdf.hpp                 HKDF-SHA256
 │   ├── x25519.hpp               X25519 ECDH
@@ -446,7 +455,7 @@ jpssl/
 │   ├── aes_cpu.cpp / aes_musa.cpp / aes_gpu.mu
 │   ├── chacha20_poly1305.cpp / chacha20_gpu.mu
 │   ├── rsa.cpp / rsa_body.inc / rsa_musa.cpp / rsa_gpu.mu
-│   ├── sha256.cpp / hmac.cpp / hkdf.cpp
+│   ├── sha256.cpp / sha3.cpp / hmac.cpp / hkdf.cpp
 │   ├── x25519.cpp / ed25519.cpp / ecdsa.cpp
 │   ├── tls.cpp / main.cpp
 │   └── main.cpp

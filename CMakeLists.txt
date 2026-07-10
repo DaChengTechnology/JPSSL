@@ -41,6 +41,7 @@ set(CPU_SOURCES
     src/chacha20_poly1305.cpp
     src/rsa.cpp
     src/sha256.cpp
+    src/sha3.cpp
     src/hmac.cpp
     src/hkdf.cpp
     src/x25519.cpp
@@ -133,6 +134,13 @@ target_include_directories(test_aes PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_link_libraries(test_aes PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+# SHA3 单元测试
+add_executable(test_sha3 tests/test_sha3.cpp)
+target_include_directories(test_sha3 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(test_sha3 PRIVATE jpssl_cpu JPTEST::jptest OpenSSL::Crypto)
 
 # TLS 单元测试
 add_executable(test_tls tests/test_tls.cpp)
