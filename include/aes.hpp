@@ -350,6 +350,63 @@ bool aes_gcm_decrypt(const aes_context& ctx,
                      std::vector<uint8_t>& plaintext);
 
 // ═══════════════════════════════════════════════════════════════════════
+//  GCM 模式 — AVX2 / AVX512 硬件加速（PCLMULQDQ + VAES）
+// ═══════════════════════════════════════════════════════════════════════
+
+/// AVX2 GCM 加密（4 路并行，需要 PCLMULQDQ + AES-NI）
+/// 自动分派：如果 CPU 不支持 AVX2，回退到软件实现
+/// @note 仅支持 AES-128，其他密钥长度回退到软件
+void aes_gcm_encrypt_avx2(const aes_context& ctx,
+                          const uint8_t* iv, size_t iv_len,
+                          std::span<const uint8_t> plaintext,
+                          std::span<const uint8_t> aad,
+                          std::vector<uint8_t>& ciphertext,
+                          uint8_t* tag, size_t tag_len = 16);
+
+/// AVX2 GCM 解密
+bool aes_gcm_decrypt_avx2(const aes_context& ctx,
+                          const uint8_t* iv, size_t iv_len,
+                          std::span<const uint8_t> ciphertext,
+                          std::span<const uint8_t> aad,
+                          const uint8_t* tag, size_t tag_len,
+                          std::vector<uint8_t>& plaintext);
+
+/// AVX512 GCM 加密（8 路并行，需要 VAES + VPCLMULQDQ + AVX512F + AVX512VL）
+/// 自动分派：如果 CPU 不支持 AVX512，回退到 AVX2 / 软件
+/// @note 仅支持 AES-128，其他密钥长度回退
+void aes_gcm_encrypt_avx512(const aes_context& ctx,
+                            const uint8_t* iv, size_t iv_len,
+                            std::span<const uint8_t> plaintext,
+                            std::span<const uint8_t> aad,
+                            std::vector<uint8_t>& ciphertext,
+                            uint8_t* tag, size_t tag_len = 16);
+
+/// AVX512 GCM 解密
+bool aes_gcm_decrypt_avx512(const aes_context& ctx,
+                            const uint8_t* iv, size_t iv_len,
+                            std::span<const uint8_t> ciphertext,
+                            std::span<const uint8_t> aad,
+                            const uint8_t* tag, size_t tag_len,
+                            std::vector<uint8_t>& plaintext);
+
+/// GCM 加密 — 自动选择最优实现（AVX512 > AVX2 > AES-NI > 软件）
+/// 统一入口，内部根据 CPU 特性自动分派
+void aes_gcm_encrypt_auto(const aes_context& ctx,
+                          const uint8_t* iv, size_t iv_len,
+                          std::span<const uint8_t> plaintext,
+                          std::span<const uint8_t> aad,
+                          std::vector<uint8_t>& ciphertext,
+                          uint8_t* tag, size_t tag_len = 16);
+
+/// GCM 解密 — 自动选择最优实现
+bool aes_gcm_decrypt_auto(const aes_context& ctx,
+                          const uint8_t* iv, size_t iv_len,
+                          std::span<const uint8_t> ciphertext,
+                          std::span<const uint8_t> aad,
+                          const uint8_t* tag, size_t tag_len,
+                          std::vector<uint8_t>& plaintext);
+
+// ═══════════════════════════════════════════════════════════════════════
 //  MUSA GPU 端扩展：CBC 解密、GCM CTR 加密（CPU 做 XOR/GHASH）
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -364,6 +421,49 @@ bool musa_aes_cbc_decrypt(const uint8_t iv[16],
 /// @param num_blocks counter 块数
 void musa_aes_gcm_ctr_keystream(const uint8_t* counters, uint8_t* keystream,
                                 size_t num_blocks);
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MUSA GPU GCM 完整认证加密（全 GPU 执行：CTR + GHASH）
+// ═══════════════════════════════════════════════════════════════════════
+
+/// MUSA GPU GCM 加密（CTR 生成 + GHASH 全部在 GPU 完成）
+/// @param iv         初始化向量（必须 12 字节，NIST 推荐）
+/// @param plaintext  主机端明文缓冲区
+/// @param aad        主机端附加认证数据
+/// @param ciphertext 输出主机端密文（与明文等长）
+/// @param tag        输出 16 字节认证标签（主机端）
+/// @param tag_len    标签长度（8-16，默认 16）
+void musa_aes_gcm_encrypt(const uint8_t iv[12],
+                          const uint8_t* plaintext, size_t plaintext_len,
+                          const uint8_t* aad, size_t aad_len,
+                          uint8_t* ciphertext, uint8_t* tag, size_t tag_len = 16);
+
+/// MUSA GPU GCM 解密 + 标签验证（全部在 GPU 完成）
+/// @return true 标签验证通过，false 验证失败
+bool musa_aes_gcm_decrypt(const uint8_t iv[12],
+                          const uint8_t* ciphertext, size_t ciphertext_len,
+                          const uint8_t* aad, size_t aad_len,
+                          const uint8_t* tag, size_t tag_len,
+                          uint8_t* plaintext);
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MUSA GPU GCM 持久化池 API（预分配，零分配开销）
+// ═══════════════════════════════════════════════════════════════════════
+
+struct musa_aes_gcm_pool;
+
+/// 创建持久化 GPU GCM 池（预分配大缓冲区，高并发场景）
+musa_aes_gcm_pool* musa_aes_gcm_pool_create(const aes_context& ctx, size_t max_data_bytes = 0);
+
+/// 销毁持久化 GCM 池
+void musa_aes_gcm_pool_destroy(musa_aes_gcm_pool* pool);
+
+/// 使用持久化池进行 GPU GCM 加密
+void musa_aes_gcm_pool_encrypt(musa_aes_gcm_pool* pool,
+                               const uint8_t iv[12],
+                               const uint8_t* plaintext, size_t plaintext_len,
+                               const uint8_t* aad, size_t aad_len,
+                               uint8_t* ciphertext, uint8_t* tag, size_t tag_len = 16);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  MUSA GPU 高并发优化：持久化内存池 + 固定内存 + 多流并发

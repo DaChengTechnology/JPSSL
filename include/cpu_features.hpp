@@ -30,13 +30,49 @@ inline bool cpu_has_avx2() {
 #endif
 }
 
+/// 检查 PCLMULQDQ 是否可用（用于 GF(2^128) 快速乘法）
+inline bool cpu_has_pclmulqdq() {
+#ifdef __x86_64__
+    return __builtin_cpu_supports("pclmul");
+#else
+    return false;
+#endif
+}
+
+/// 检查 AVX512F + AVX512VL 是否可用
+inline bool cpu_has_avx512() {
+#ifdef __x86_64__
+    return __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512vl");
+#else
+    return false;
+#endif
+}
+
+/// 检查 VAES + VPCLMULQDQ 是否可用（AVX2/AVX512 向量化 AES/CLMUL）
+inline bool cpu_has_vpclmulqdq_vaes() {
+#ifdef __x86_64__
+    return __builtin_cpu_supports("vpclmulqdq") && __builtin_cpu_supports("vaes");
+#else
+    return false;
+#endif
+}
+
 /// 一次性获取所有特性
 struct cpu_features {
     bool aesni;
     bool avx2;
+    bool pclmulqdq;
+    bool avx512;
+    bool vpclmulqdq_vaes;
 
     static cpu_features detect() {
-        return {cpu_has_aesni(), cpu_has_avx2()};
+        return {
+            cpu_has_aesni(),
+            cpu_has_avx2(),
+            cpu_has_pclmulqdq(),
+            cpu_has_avx512(),
+            cpu_has_vpclmulqdq_vaes()
+        };
     }
 };
 

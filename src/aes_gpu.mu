@@ -278,3 +278,203 @@ extern "C" void launch_aes_decrypt(
     aes_decrypt_kernel<<<grid_size, threads_per_block, 0, stream>>>(
         d_input, d_output, num_blocks);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GCM 模式：GF(2^128) 乘法 & GHASH kernel
+// ═══════════════════════════════════════════════════════════════════════
+
+/// GF(2^128) 右移 1 位（小端序，bit-reflected）
+__device__ inline void gpu_gf128_shr(uint8_t x[16]) {
+    uint8_t carry = 0;
+    for (int i = 0; i < 16; ++i) {
+        uint8_t new_carry = x[i] & 1;
+        x[i] = (x[i] >> 1) | (carry << 7);
+        carry = new_carry;
+    }
+}
+
+/// XOR 两个 128-bit 值: dst ^= src
+__device__ inline void gpu_gf128_xor(uint8_t* dst, const uint8_t* src) {
+    for (int i = 0; i < 16; ++i) dst[i] ^= src[i];
+}
+
+/// GF(2^128) 乘法（bit-reflected，不可约多项式 x^128+x^7+x^2+x+1）
+/// Bit-reflected (little-endian): byte 0 bit 0 = x^0, right-shift = multiply by x.
+/// Reduction: x^128 = x^7 + x^2 + x + 1 -> 0x80|0x04|0x02|0x01 = 0x87 in byte 0.
+__device__ void gpu_gf128_mul(const uint8_t x[16], const uint8_t y[16], uint8_t out[16]) {
+    uint8_t V[16];
+    uint8_t Z[16] = {};
+
+    for (int i = 0; i < 16; ++i) V[i] = y[i];
+
+    for (int i = 0; i < 128; ++i) {
+        int byte_idx = i / 8;
+        int bit_idx  = i % 8;
+        if (x[byte_idx] & (1 << bit_idx)) {
+            gpu_gf128_xor(Z, V);
+        }
+
+        bool lsb = V[0] & 1;
+        gpu_gf128_shr(V);
+        if (lsb) {
+            V[0] ^= 0x87;
+        }
+    }
+
+    for (int i = 0; i < 16; ++i) out[i] = Z[i];
+}
+
+/// GHASH 单步：state = (state ^ block) * H
+__device__ void gpu_ghash_step(uint8_t state[16], const uint8_t block[16], const uint8_t H[16]) {
+    gpu_gf128_xor(state, block);
+    uint8_t tmp[16];
+    gpu_gf128_mul(state, H, tmp);
+    for (int i = 0; i < 16; ++i) state[i] = tmp[i];
+}
+
+/// 递增 counter：最后 32-bit 大端序递增
+__device__ inline void gpu_inc_counter(uint8_t counter[16]) {
+    for (int i = 15; i >= 12; --i) {
+        if (++counter[i] != 0) break;
+    }
+}
+
+/// 大端序存储 64-bit 值
+__device__ inline void gpu_store_be64(uint8_t* buf, uint64_t val) {
+    for (int i = 7; i >= 0; --i) {
+        buf[i] = (uint8_t)(val & 0xFF);
+        val >>= 8;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GCM 加密 Kernel（每线程一个块：CTR + GHASH 全部在 GPU 完成）
+// ═══════════════════════════════════════════════════════════════════════
+
+extern "C" __global__ void aes_gcm_encrypt_kernel(
+    const uint8_t* __restrict__ plaintext,
+    uint8_t* __restrict__ ciphertext,
+    uint8_t* __restrict__ ghash_out,
+    int num_blocks,
+    const uint8_t* __restrict__ J0,
+    const uint8_t* __restrict__ H)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_blocks) return;
+
+    // 加载 counter = J0 + idx + 1
+    uint8_t counter[16];
+    for (int i = 0; i < 16; ++i) counter[i] = J0[i];
+    for (int k = 0; k <= idx; ++k) gpu_inc_counter(counter);
+
+    // AES 加密 counter = keystream
+    uint8_t keystream[16];
+    for (int i = 0; i < 16; ++i) keystream[i] = counter[i];
+
+    const uint8_t* rk = d_enc_rk;
+    gpu_add_round_key(keystream, rk);
+    rk += 16;
+    for (int r = 1; r < d_rounds; ++r) {
+        gpu_sub_bytes(keystream);
+        gpu_shift_rows(keystream);
+        gpu_mix_columns(keystream);
+        gpu_add_round_key(keystream, rk);
+        rk += 16;
+    }
+    gpu_sub_bytes(keystream);
+    gpu_shift_rows(keystream);
+    gpu_add_round_key(keystream, rk);
+
+    // 密文 = 明文 XOR keystream
+    const uint8_t* pt = plaintext + idx * 16;
+    uint8_t* ct = ciphertext + idx * 16;
+    for (int i = 0; i < 16; ++i) ct[i] = pt[i] ^ keystream[i];
+
+    // GHASH 输出：初始化为密文块（host 端会做完整的 GHASH 累积）
+    for (int i = 0; i < 16; ++i) ghash_out[idx * 16 + i] = ct[i];
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GCM 解密 Kernel（CTR + 标签验证）
+// ═══════════════════════════════════════════════════════════════════════
+
+extern "C" __global__ void aes_gcm_decrypt_kernel(
+    const uint8_t* __restrict__ ciphertext,
+    uint8_t* __restrict__ plaintext,
+    uint8_t* __restrict__ ghash_out,
+    int num_blocks,
+    const uint8_t* __restrict__ J0,
+    const uint8_t* __restrict__ H)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_blocks) return;
+
+    // 加载 counter = J0 + idx + 1
+    uint8_t counter[16];
+    for (int i = 0; i < 16; ++i) counter[i] = J0[i];
+    for (int k = 0; k <= idx; ++k) gpu_inc_counter(counter);
+
+    // AES 加密 counter = keystream
+    uint8_t keystream[16];
+    for (int i = 0; i < 16; ++i) keystream[i] = counter[i];
+
+    const uint8_t* rk = d_enc_rk;
+    gpu_add_round_key(keystream, rk);
+    rk += 16;
+    for (int r = 1; r < d_rounds; ++r) {
+        gpu_sub_bytes(keystream);
+        gpu_shift_rows(keystream);
+        gpu_mix_columns(keystream);
+        gpu_add_round_key(keystream, rk);
+        rk += 16;
+    }
+    gpu_sub_bytes(keystream);
+    gpu_shift_rows(keystream);
+    gpu_add_round_key(keystream, rk);
+
+    // 明文 = 密文 XOR keystream
+    const uint8_t* ct = ciphertext + idx * 16;
+    uint8_t* pt = plaintext + idx * 16;
+    for (int i = 0; i < 16; ++i) pt[i] = ct[i] ^ keystream[i];
+
+    // GHASH 输出：密文块（host 端做完整 GHASH）
+    for (int i = 0; i < 16; ++i) ghash_out[idx * 16 + i] = ct[i];
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GCM 主机端 launch 包装函数
+// ═══════════════════════════════════════════════════════════════════════
+
+extern "C" void musa_aes_gcm_gpu_init(
+    const uint8_t* host_sbox,
+    const uint8_t* host_inv_sbox,
+    const uint8_t* host_enc_rk,
+    const uint8_t* host_dec_rk,
+    int rounds)
+{
+    musaMemcpyToSymbol(d_rounds, &rounds, sizeof(int), 0, musaMemcpyHostToDevice);
+    musaMemcpyToSymbol(d_sbox, host_sbox, 256, 0, musaMemcpyHostToDevice);
+    musaMemcpyToSymbol(d_inv_sbox, host_inv_sbox, 256, 0, musaMemcpyHostToDevice);
+    musaMemcpyToSymbol(d_enc_rk, host_enc_rk, (rounds + 1) * 16, 0, musaMemcpyHostToDevice);
+    musaMemcpyToSymbol(d_dec_rk, host_dec_rk, (rounds + 1) * 16, 0, musaMemcpyHostToDevice);
+}
+
+extern "C" void launch_aes_gcm_encrypt(
+    const uint8_t* d_plaintext, uint8_t* d_ciphertext, uint8_t* d_ghash_out,
+    int num_blocks, const uint8_t* d_J0, const uint8_t* d_H,
+    int threads_per_block, musaStream_t stream)
+{
+    int grid_size = (num_blocks + threads_per_block - 1) / threads_per_block;
+    aes_gcm_encrypt_kernel<<<grid_size, threads_per_block, 0, stream>>>(
+        d_plaintext, d_ciphertext, d_ghash_out, num_blocks, d_J0, d_H);
+}
+
+extern "C" void launch_aes_gcm_decrypt(
+    const uint8_t* d_ciphertext, uint8_t* d_plaintext, uint8_t* d_ghash_out,
+    int num_blocks, const uint8_t* d_J0, const uint8_t* d_H,
+    int threads_per_block, musaStream_t stream)
+{
+    int grid_size = (num_blocks + threads_per_block - 1) / threads_per_block;
+    aes_gcm_decrypt_kernel<<<grid_size, threads_per_block, 0, stream>>>(
+        d_ciphertext, d_plaintext, d_ghash_out, num_blocks, d_J0, d_H);
+}

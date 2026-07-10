@@ -1,0 +1,6 @@
+[submodule "jptest"]
+	path = jptest
+	url = git@192.168.8.3:lvshicheng/jptest.git
+[submodule "tests/jptest"]
+	path = tests/jptest
+	url = git@192.168.8.3:lvshicheng/jptest.git
