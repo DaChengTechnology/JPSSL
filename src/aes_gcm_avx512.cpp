@@ -22,7 +22,7 @@
 namespace jpssl {
 namespace {
 
-#ifdef __x86_64__
+#if defined(__x86_64__) && defined(JP_AVX512)
 
 // ═══════════════════════════════════════════════════════════════════════
 //  PCLMULQDQ GF(2^128) 乘法（128-bit，与 AVX2 版本相同）
@@ -192,13 +192,12 @@ static void avx512_gcm_encrypt_impl(const aes_context& ctx,
 
     size_t i = 0;
     for (; i < num_blocks8; i += 8) {
-        // 打包 8 个 counters 到 2 个 512-bit 寄存器
         __m512i ctrs0 = _mm512_setzero_si512();
         __m512i ctrs1 = _mm512_setzero_si512();
-        for (int k = 0; k < 4; ++k)
-            ctrs0 = _mm512_inserti32x4(ctrs0, ctrs[k], k);
-        for (int k = 0; k < 4; ++k)
-            ctrs1 = _mm512_inserti32x4(ctrs1, ctrs[k + 4], k);
+        ctrs0=_mm512_inserti32x4(ctrs0,ctrs[0],0);ctrs0=_mm512_inserti32x4(ctrs0,ctrs[1],1);
+        ctrs0=_mm512_inserti32x4(ctrs0,ctrs[2],2);ctrs0=_mm512_inserti32x4(ctrs0,ctrs[3],3);
+        ctrs1=_mm512_inserti32x4(ctrs1,ctrs[4],0);ctrs1=_mm512_inserti32x4(ctrs1,ctrs[5],1);
+        ctrs1=_mm512_inserti32x4(ctrs1,ctrs[6],2);ctrs1=_mm512_inserti32x4(ctrs1,ctrs[7],3);
 
         __m512i ks0 = ctrs0;
         __m512i ks1 = ctrs1;
@@ -218,15 +217,15 @@ static void avx512_gcm_encrypt_impl(const aes_context& ctx,
         _mm512_storeu_si512((__m512i*)(ct + 0), ct0);
         _mm512_storeu_si512((__m512i*)(ct + 64), ct1);
 
-        // GHASH 密文块（逐个 128-bit）
-        for (int k = 0; k < 4; ++k) {
-            __m128i blk = _mm512_extracti32x4_epi32(ct0, k);
-            ghash_state = gcm_ghash_core(ghash_state, blk, H);
-        }
-        for (int k = 0; k < 4; ++k) {
-            __m128i blk = _mm512_extracti32x4_epi32(ct1, k);
-            ghash_state = gcm_ghash_core(ghash_state, blk, H);
-        }
+        __m128i blk;
+        blk=_mm512_extracti32x4_epi32(ct0,0);ghash_state=gcm_ghash_core(ghash_state,blk,H);
+        blk=_mm512_extracti32x4_epi32(ct0,1);ghash_state=gcm_ghash_core(ghash_state,blk,H);
+        blk=_mm512_extracti32x4_epi32(ct0,2);ghash_state=gcm_ghash_core(ghash_state,blk,H);
+        blk=_mm512_extracti32x4_epi32(ct0,3);ghash_state=gcm_ghash_core(ghash_state,blk,H);
+        blk=_mm512_extracti32x4_epi32(ct1,0);ghash_state=gcm_ghash_core(ghash_state,blk,H);
+        blk=_mm512_extracti32x4_epi32(ct1,1);ghash_state=gcm_ghash_core(ghash_state,blk,H);
+        blk=_mm512_extracti32x4_epi32(ct1,2);ghash_state=gcm_ghash_core(ghash_state,blk,H);
+        blk=_mm512_extracti32x4_epi32(ct1,3);ghash_state=gcm_ghash_core(ghash_state,blk,H);
 
         // 递增 counters
         for (int k = 0; k < 8; ++k)
@@ -352,10 +351,10 @@ static bool avx512_gcm_decrypt_impl(const aes_context& ctx,
     for (; i < num_blocks8; i += 8) {
         __m512i ctrs0 = _mm512_setzero_si512();
         __m512i ctrs1 = _mm512_setzero_si512();
-        for (int k = 0; k < 4; ++k)
-            ctrs0 = _mm512_inserti32x4(ctrs0, ctrs[k], k);
-        for (int k = 0; k < 4; ++k)
-            ctrs1 = _mm512_inserti32x4(ctrs1, ctrs[k + 4], k);
+        ctrs0=_mm512_inserti32x4(ctrs0,ctrs[0],0);ctrs0=_mm512_inserti32x4(ctrs0,ctrs[1],1);
+        ctrs0=_mm512_inserti32x4(ctrs0,ctrs[2],2);ctrs0=_mm512_inserti32x4(ctrs0,ctrs[3],3);
+        ctrs1=_mm512_inserti32x4(ctrs1,ctrs[4],0);ctrs1=_mm512_inserti32x4(ctrs1,ctrs[5],1);
+        ctrs1=_mm512_inserti32x4(ctrs1,ctrs[6],2);ctrs1=_mm512_inserti32x4(ctrs1,ctrs[7],3);
 
         __m512i ks0 = ctrs0;
         __m512i ks1 = ctrs1;
@@ -394,7 +393,7 @@ static bool avx512_gcm_decrypt_impl(const aes_context& ctx,
     return true;
 }
 
-#endif // __x86_64__
+#endif // __x86_64__ && JP_AVX512
 
 } // anonymous namespace
 
@@ -408,7 +407,7 @@ void aes_gcm_encrypt_avx512(const aes_context& ctx,
                             std::span<const uint8_t> aad,
                             std::vector<uint8_t>& ciphertext,
                             uint8_t* tag, size_t tag_len) {
-#ifdef __x86_64__
+#if defined(__x86_64__) && defined(JP_AVX512)
     avx512_gcm_encrypt_impl(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
 #else
     aes_gcm_encrypt_avx2(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
@@ -421,7 +420,7 @@ bool aes_gcm_decrypt_avx512(const aes_context& ctx,
                             std::span<const uint8_t> aad,
                             const uint8_t* tag, size_t tag_len,
                             std::vector<uint8_t>& plaintext) {
-#ifdef __x86_64__
+#if defined(__x86_64__) && defined(JP_AVX512)
     return avx512_gcm_decrypt_impl(ctx, iv, iv_len, ciphertext, aad, tag, tag_len, plaintext);
 #else
     return aes_gcm_decrypt_avx2(ctx, iv, iv_len, ciphertext, aad, tag, tag_len, plaintext);

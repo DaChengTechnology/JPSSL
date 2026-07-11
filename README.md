@@ -12,15 +12,22 @@
 │  ├─ aes_gpu.mu        AES ECB kernel             │
 │  ├─ chacha20_gpu.mu   ChaCha20 keystream kernel   │
 │  ├─ rsa_gpu.mu        RSA 批量模幂 kernel         │
+│  ├─ sha512_gpu.mu     SHA-384/512 GPU kernel       │
 │  ├─ aes_musa.cpp      主机端封装                  │
-│  └─ rsa_musa.cpp      RSA GPU 封装               │
+│  ├─ rsa_musa.cpp      RSA GPU 封装               │
+│  └─ sha512_musa.cpp   SHA-512 MUSA 封装           │
 ├──────────────────────────────────────────────────┤
 │  libjpssl_cpu (纯 CPU)                           │
 │  ├─ aes_cpu.cpp            AES + AES-NI          │
+│  ├─ aes_gcm_avx2.cpp       AVX2 GCM 4 路并行      │
+│  ├─ aes_gcm_avx512.cpp     AVX512 GCM 8 路并行    │
+│  ├─ aes_gcm_auto.cpp       GCM 自动分派           │
 │  ├─ chacha20_poly1305.cpp  ChaCha20-Poly1305 AEAD │
 │  ├─ rsa.cpp (+body.inc)    RSA 2048/4096 Montgomery│
 │  ├─ sha256.cpp             SHA-256 哈希           │
 │  ├─ sha3.cpp               SHA3-256/384/512 哈希   │
+│  ├─ sha512_cpu.cpp         SHA-384/512 哈希 (CPU) │
+│  ├─ sha512_opt.cpp         SHA-384/512 哈希 (SSE) │
 │  ├─ hmac.cpp               HMAC-SHA256            │
 │  ├─ hkdf.cpp               HKDF-SHA256            │
 │  ├─ x25519.cpp             X25519 ECDH            │
@@ -65,10 +72,11 @@ LD_LIBRARY_PATH=./build ./your_app
 
 | 算法 | 模式 | CPU 加速 | GPU 加速 |
 |------|------|----------|----------|
-| **AES-128/256** | ECB, CBC+PKCS7, GCM | AES-NI (~5 GB/s) | ECB kernel |
+| **AES-128/256** | ECB, CBC+PKCS7, GCM | AES-NI (~5 GB/s), AVX2/AVX512 GCM | ECB kernel |
 | **ChaCha20-Poly1305** | 流加密, AEAD | — | Keystream kernel |
 | **RSA 2048/4096** | PKCS#1 v1.5 | Montgomery CIOS | 批量模幂 |
 | **SHA-256** | 哈希 | — | — |
+| **SHA-384/512** | 哈希 (FIPS 180-4) | SSE4.1 消息调度 | GPU kernel |
 | **SHA3-256/384/512** | 哈希 (FIPS 202, Keccak) | — | — |
 | **HMAC-SHA256** | MAC | — | — |
 | **HKDF-SHA256** | TLS 1.3 密钥派生 | — | — |
@@ -112,13 +120,20 @@ rsa4096_public_key pub4; rsa4096_private_key prv4;
 rsa4096_keygen(pub4, prv4);
 ```
 
-### SHA256 / SHA3 / HMAC / HKDF
+### SHA256 / SHA384/512 / SHA3 / HMAC / HKDF
 
 ```cpp
 #include "sha256.hpp"
 sha256_ctx ctx; sha256_init(&ctx);
 sha256_update(&ctx, data, len);
 uint8_t digest[32]; sha256_final(&ctx, digest);
+
+#include "sha512.hpp"
+sha512_ctx ctx;
+sha512_init(&ctx);  // or sha384_init for SHA-384
+sha512_update(&ctx, data, len);
+uint8_t hash[64]; sha512_final(&ctx, hash);  // output: 64 bytes (SHA-384: 48)
+std::string hex = sha512_hex(hash);           // "e718483d0ce769..."
 
 #include "sha3.hpp"
 sha3_ctx ctx;
@@ -444,6 +459,7 @@ jpssl/
 │   ├── cpu_features.hpp         CPU 特性检测
 │   ├── rsa.hpp                  RSA 2048/4096
 │   ├── sha256.hpp               SHA-256
+│   ├── sha512.hpp               SHA-384/512
 │   ├── sha3.hpp                 SHA3-256/384/512
 │   ├── hmac.hpp                 HMAC-SHA256
 │   ├── hkdf.hpp                 HKDF-SHA256
@@ -453,9 +469,11 @@ jpssl/
 │   └── tls.hpp                  TLS 1.2/1.3
 ├── src/
 │   ├── aes_cpu.cpp / aes_musa.cpp / aes_gpu.mu
+│   ├── aes_gcm_avx2.cpp / aes_gcm_avx512.cpp / aes_gcm_auto.cpp
 │   ├── chacha20_poly1305.cpp / chacha20_gpu.mu
 │   ├── rsa.cpp / rsa_body.inc / rsa_musa.cpp / rsa_gpu.mu
 │   ├── sha256.cpp / sha3.cpp / hmac.cpp / hkdf.cpp
+│   ├── sha512_cpu.cpp / sha512_opt.cpp / sha512_musa.cpp / sha512_gpu.mu
 │   ├── x25519.cpp / ed25519.cpp / ecdsa.cpp
 │   ├── tls.cpp / main.cpp
 │   └── main.cpp
@@ -463,9 +481,23 @@ jpssl/
 └── README.md
 ```
 
+## 条件编译
+
+可通过 CMake 选项控制硬件加速模块的编译：
+
+| 选项 | 默认 | 说明 |
+|------|------|------|
+| `JP_ENABLE_AVX2` | ON | AVX2 GCM (4 路并行) + SHA-512 SIMD 消息调度 |
+| `JP_ENABLE_AVX512` | ON | AVX512 VAES GCM (8 路并行) |
+
+```bash
+# 禁用所有 SIMD 加速（纯标量回退）
+cmake -B build -DJP_ENABLE_AVX2=OFF -DJP_ENABLE_AVX512=OFF
+```
+
 ## 依赖
 
 - **C++20** (GCC 13+ / Clang 16+)
 - **CMake** 3.20+
 - **MUSA SDK** 4.3.0+ (GPU, 可选)
-- **x86_64** (AES-NI / AVX2, 可选)
+- **x86_64** (AES-NI / AVX2 / AVX512, 可选)

@@ -437,17 +437,16 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
         ho+=4+hlen;
     }
 
-    // 派生应用密钥
-    tls13_derive_application_keys(s);
-
     // 生成 Client Finished
     client_finished=tls13_make_finished(s,false);
     tls_transcript_update(s,client_finished.data(),client_finished.size());
 
-    // 加密 Client Finished
+    // 加密 Client Finished（使用握手密钥）
     auto encrypted=tls_encrypt_handshake(s,client_finished.data(),client_finished.size());
     client_finished=encrypted;
 
+    // 派生应用密钥
+    tls13_derive_application_keys(s);
     s.aes_ctx.init(std::span<const uint8_t,16>(s.is_server?s.server_write_key:s.client_write_key,16));
     return true;
 }
@@ -546,9 +545,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     auto encrypted=tls_encrypt_handshake(s,hs_buf.data(),hs_buf.size());
     server_flight.insert(server_flight.end(),encrypted.begin(),encrypted.end());
 
-    // 派生应用密钥（服务端）
-    tls13_derive_application_keys(s);
-    s.aes_ctx.init(std::span<const uint8_t,16>(s.server_write_key,16));
+    // 注意：应用密钥延迟到 tls13_process_client_finished 成功后派生
     return true;
 }
 
@@ -557,6 +554,10 @@ bool tls13_process_client_finished(tls_session& s, const uint8_t* data, size_t l
     if(!tls13_decrypt_handshake(s,data,len,hs))return false;
     if(!tls13_verify_finished(s,hs.data(),hs.size(),false))return false;
     tls_transcript_update(s,hs.data(),hs.size());
+
+    // 握手完成，派生应用密钥
+    tls13_derive_application_keys(s);
+    s.aes_ctx.init(std::span<const uint8_t,16>(s.server_write_key,16));
     return true;
 }
 

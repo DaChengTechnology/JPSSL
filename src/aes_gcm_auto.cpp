@@ -38,12 +38,16 @@ void aes_gcm_encrypt_auto(const aes_context& ctx,
                           uint8_t* tag, size_t tag_len) {
     detect_best();
     switch (g_best_level) {
+#ifdef JP_AVX512
         case 2:
             aes_gcm_encrypt_avx512(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
             break;
+#endif
+#ifdef JP_AVX2
         case 1:
             aes_gcm_encrypt_avx2(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
             break;
+#endif
         default:
             aes_gcm_encrypt(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
             break;
@@ -58,10 +62,14 @@ bool aes_gcm_decrypt_auto(const aes_context& ctx,
                           std::vector<uint8_t>& plaintext) {
     detect_best();
     switch (g_best_level) {
+#ifdef JP_AVX512
         case 2:
             return aes_gcm_decrypt_avx512(ctx, iv, iv_len, ciphertext, aad, tag, tag_len, plaintext);
+#endif
+#ifdef JP_AVX2
         case 1:
             return aes_gcm_decrypt_avx2(ctx, iv, iv_len, ciphertext, aad, tag, tag_len, plaintext);
+#endif
         default:
             return aes_gcm_decrypt(ctx, iv, iv_len, ciphertext, aad, tag, tag_len, plaintext);
     }

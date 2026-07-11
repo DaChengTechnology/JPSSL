@@ -97,21 +97,24 @@ static void aesni_key_expansion_128(const uint8_t key[16], uint8_t rk_buf[176]) 
 static void aesni_key_expansion_192(const uint8_t key[24], uint8_t rk_buf[208]) {
     __m128i* rk = (__m128i*)rk_buf;
     rk[0] = _mm_loadu_si128((const __m128i*)key);
-    // 加载 bytes 16..23 (W4,W5) 作为第二个轮密钥的低 64 位
     rk[1] = _mm_loadl_epi64((const __m128i*)(key + 16));
-
-    // AES-192: 密钥扩展需要 8 轮（生成 13 个 128-bit 轮密钥）
-    // 使用 6-word 密钥调度
-    int rcons[] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
     for (int i = 0; i < 8; ++i) {
-        __m128i t = _mm_aeskeygenassist_si128(rk[i], rcons[i]);
-        t = _mm_shuffle_epi32(t, 0x55);  // 广播 word 1 到所有位置
+        __m128i t;
+        switch (i) {
+            case 0: t = _mm_aeskeygenassist_si128(rk[0], 0x01); break;
+            case 1: t = _mm_aeskeygenassist_si128(rk[1], 0x02); break;
+            case 2: t = _mm_aeskeygenassist_si128(rk[2], 0x04); break;
+            case 3: t = _mm_aeskeygenassist_si128(rk[3], 0x08); break;
+            case 4: t = _mm_aeskeygenassist_si128(rk[4], 0x10); break;
+            case 5: t = _mm_aeskeygenassist_si128(rk[5], 0x20); break;
+            case 6: t = _mm_aeskeygenassist_si128(rk[6], 0x40); break;
+            case 7: t = _mm_aeskeygenassist_si128(rk[7], 0x80); break;
+        }
+        t = _mm_shuffle_epi32(t, 0x55);
         rk[i + 1] = _mm_xor_si128(rk[i + 1], _mm_slli_si128(rk[i + 1], 4));
         rk[i + 1] = _mm_xor_si128(rk[i + 1], _mm_slli_si128(rk[i + 1], 4));
         rk[i + 1] = _mm_xor_si128(rk[i + 1], _mm_slli_si128(rk[i + 1], 4));
         rk[i + 1] = _mm_xor_si128(rk[i + 1], t);
-
-        // 对奇数索引，需要额外处理
         if (i < 7) {
             __m128i next = _mm_xor_si128(rk[i + 1], rk[i]);
             rk[i + 2] = _mm_slli_si128(next, 8);
@@ -125,19 +128,23 @@ static void aesni_key_expansion_256(const uint8_t key[32], uint8_t rk_buf[240]) 
     __m128i* rk = (__m128i*)rk_buf;
     rk[0] = _mm_loadu_si128((const __m128i*)key);
     rk[1] = _mm_loadu_si128((const __m128i*)(key + 16));
-
-    int rcons[] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40};
     for (int i = 0; i < 7; ++i) {
-        // 偶数轮：标准扩展
-        __m128i t = _mm_aeskeygenassist_si128(rk[i * 2 + 1], rcons[i]);
+        __m128i t;
+        switch (i) {
+            case 0: t = _mm_aeskeygenassist_si128(rk[1], 0x01); break;
+            case 1: t = _mm_aeskeygenassist_si128(rk[3], 0x02); break;
+            case 2: t = _mm_aeskeygenassist_si128(rk[5], 0x04); break;
+            case 3: t = _mm_aeskeygenassist_si128(rk[7], 0x08); break;
+            case 4: t = _mm_aeskeygenassist_si128(rk[9], 0x10); break;
+            case 5: t = _mm_aeskeygenassist_si128(rk[11], 0x20); break;
+            case 6: t = _mm_aeskeygenassist_si128(rk[13], 0x40); break;
+        }
         t = _mm_shuffle_epi32(t, 0xFF);
         __m128i k = rk[i * 2];
         k = _mm_xor_si128(k, _mm_slli_si128(k, 4));
         k = _mm_xor_si128(k, _mm_slli_si128(k, 4));
         k = _mm_xor_si128(k, _mm_slli_si128(k, 4));
         rk[i * 2 + 2] = _mm_xor_si128(k, t);
-
-        // 奇数轮：SubWord 后 XOR
         t = _mm_aeskeygenassist_si128(rk[i * 2 + 2], 0x00);
         t = _mm_shuffle_epi32(t, 0xAA);
         k = rk[i * 2 + 1];

@@ -12,6 +12,8 @@
 #include "tls.hpp"
 #include "chacha20_poly1305.hpp"
 #include "rsa.hpp"
+#include "rsa_simd.hpp"
+#include "x25519.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -1031,6 +1033,142 @@ static int test_rsa() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  测试 14: 批量 RSA 模幂（AVX2/AVX-512 SIMD 加速）
+// ═══════════════════════════════════════════════════════════════════════
+
+static int test_batch_rsa() {
+    std::printf("=== Test 14: Batch RSA modpow (SIMD) ===\n");
+
+    int failures = 0;
+
+    // 使用与 test_rsa 相同的随机模数测试 batch modpow 的正确性
+    rsa_bignum mod, exp, base;
+    for (int i = 0; i < RSA_2048_WORDS; ++i) {
+        mod.d[i] = ((uint64_t)rand() << 32) | rand();
+        exp.d[i] = ((uint64_t)rand() << 32) | rand();
+    }
+    mod.d[0] |= 1;
+    mod.d[RSA_2048_WORDS-1] |= (1ULL << 63);
+    exp.d[0] |= 1;
+
+    auto mctx = rsa_mont_init(mod);
+    base = rsa_bignum::from_uint64(12345);
+
+    // 标量 modpow 作为参考
+    rsa_bignum expected;
+    rsa_mont_modpow(expected, base, exp, mctx, mod);
+
+    // 准备 batch 输入（4 份相同 base）
+    std::vector<uint8_t> bases(4 * RSA_2048_BYTES);
+    std::vector<uint8_t> results(4 * RSA_2048_BYTES);
+    for (int i = 0; i < 4; ++i) {
+        base.to_bytes(bases.data() + i * RSA_2048_BYTES);
+    }
+
+    // 通过 rsa_batch_decrypt_dispatch 测试 AVX2 路径
+    rsa_batch_decrypt_dispatch(mod.d, exp.d,
+        mctx.R2_mod_m.d, mctx.R_mod_m.d, mctx.m_prime,
+        bases.data(), results.data(), 4, RSA_2048_WORDS, 2048);
+
+    for (int i = 0; i < 4; ++i) {
+        rsa_bignum got = rsa_bignum::from_bytes(results.data() + i * RSA_2048_BYTES);
+        if (!(got == expected)) {
+            std::printf("  FAIL: batch modpow result %d mismatch\n", i);
+            ++failures;
+        }
+    }
+    if (failures == 0) std::printf("  Batch modpow (x4): PASS\n");
+
+    // 测试 4096-bit batch
+    rsa4096_bignum mod4096, exp4096;
+    for (int i = 0; i < 64; ++i) {
+        mod4096.d[i] = ((uint64_t)rand() << 32) | rand();
+        exp4096.d[i] = ((uint64_t)rand() << 32) | rand();
+    }
+    mod4096.d[0] |= 1;
+    mod4096.d[63] |= (1ULL << 63);
+    exp4096.d[0] |= 1;
+
+    auto mctx4096 = rsa4096_mont_init(mod4096);
+    rsa4096_bignum base4096 = rsa4096_bignum::from_uint64(12345);
+    rsa4096_bignum expected4096;
+    rsa4096_mont_modpow(expected4096, base4096, exp4096, mctx4096, mod4096);
+
+    std::vector<uint8_t> bases4096(4 * 512);
+    std::vector<uint8_t> results4096(4 * 512);
+    for (int i = 0; i < 4; ++i) {
+        base4096.to_bytes(bases4096.data() + i * 512);
+    }
+
+    rsa_batch_decrypt_dispatch(mod4096.d, exp4096.d,
+        mctx4096.R2_mod_m.d, mctx4096.R_mod_m.d, mctx4096.m_prime,
+        bases4096.data(), results4096.data(), 4, 64, 4096);
+
+    for (int i = 0; i < 4; ++i) {
+        rsa4096_bignum got4096 = rsa4096_bignum::from_bytes(results4096.data() + i * 512);
+        if (!(got4096 == expected4096)) {
+            std::printf("  FAIL: 4096 batch modpow result %d mismatch\n", i);
+            ++failures;
+        }
+    }
+    if (failures == 0) std::printf("  4096 batch modpow (x4): PASS\n");
+
+    if (failures == 0) std::printf("  PASS\n\n");
+    return failures;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  测试 15: X25519 RFC 7748 测试向量
+// ═══════════════════════════════════════════════════════════════════════
+
+static int test_x25519() {
+    std::printf("=== Test 15: X25519 RFC 7748 ===\n");
+    uint8_t alice_priv[32] = {
+        0x77,0x07,0x6d,0x0a,0x73,0x18,0xa5,0x7d,
+        0x3c,0x16,0xc1,0x72,0x51,0xb2,0x66,0x45,
+        0xdf,0x4c,0x2f,0x87,0xeb,0xc0,0x99,0x2a,
+        0xb1,0x77,0xfb,0xa5,0x1d,0xb9,0x2c,0x2a
+    };
+    uint8_t bob_priv[32] = {
+        0x5d,0xab,0x08,0x7e,0x62,0x4a,0x8a,0x4b,
+        0x79,0xe1,0x7f,0x8b,0x83,0x80,0x0e,0xe6,
+        0x6f,0x3b,0xb1,0x29,0x26,0x18,0xb6,0xfd,
+        0x1c,0x2f,0x8b,0x27,0xff,0x88,0xe0,0xeb
+    };
+    uint8_t alice_pub_exp[32] = {
+        0x85,0x20,0xf0,0x09,0x89,0x30,0xa7,0x54,
+        0x74,0x8b,0x7d,0xdc,0xb4,0x3e,0xf7,0x5a,
+        0x0d,0xbf,0x3a,0x0d,0x26,0x38,0x1a,0xf4,
+        0xeb,0xa4,0xa9,0x8e,0xaa,0x9b,0x4e,0x6a
+    };
+    uint8_t bob_pub_exp[32] = {
+        0xde,0x9e,0xdb,0x7d,0x7b,0x7d,0xc1,0xb4,
+        0xd3,0x5b,0x61,0xc2,0xec,0xe4,0x35,0x37,
+        0x3f,0x83,0x43,0xc8,0x5b,0x78,0x67,0x4d,
+        0xad,0xfc,0x7e,0x14,0x6f,0x88,0x2b,0x4f
+    };
+    uint8_t shared_exp[32] = {
+        0x4a,0x5d,0x9d,0x5b,0xa4,0xce,0x2d,0xe1,
+        0x72,0x8e,0x3b,0xf4,0x80,0x35,0x0f,0x25,
+        0xe0,0x7e,0x21,0xc9,0x47,0xd1,0x9e,0x33,
+        0x76,0xf0,0x9b,0x3c,0x1e,0x16,0x17,0x42
+    };
+    uint8_t alice_pub[32], bob_pub[32], shared_a[32], shared_b[32];
+    jpssl::x25519_scalar_mult(alice_pub, alice_priv, nullptr);
+    jpssl::x25519_scalar_mult(bob_pub, bob_priv, nullptr);
+    jpssl::x25519_scalar_mult(shared_a, alice_priv, bob_pub_exp);
+    jpssl::x25519_scalar_mult(shared_b, bob_priv, alice_pub_exp);
+    int fail = 0;
+    if (memcmp(alice_pub, alice_pub_exp, 32)) { std::printf("  FAIL: Alice pubkey\n"); fail++; }
+    if (memcmp(bob_pub, bob_pub_exp, 32)) { std::printf("  FAIL: Bob pubkey\n"); fail++; }
+    if (memcmp(shared_a, shared_exp, 32)) { std::printf("  FAIL: Alice shared\n"); fail++; }
+    if (memcmp(shared_b, shared_exp, 32)) { std::printf("  FAIL: Bob shared\n"); fail++; }
+    if (memcmp(shared_a, shared_b, 32)) { std::printf("  FAIL: shared mismatch\n"); fail++; }
+    if (!fail) std::printf("  PASS\n\n");
+    return fail;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  main
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1054,6 +1192,8 @@ int main() {
     failures += test_chacha20_poly1305_aead();
     failures += test_chacha20_gpu();
     failures += test_rsa();
+    failures += test_batch_rsa();
+    failures += test_x25519();
 
     if (failures == 0) {
         std::printf("All tests passed!\n");

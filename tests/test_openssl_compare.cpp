@@ -12,6 +12,7 @@
 #include "jptest/jptest/test_utils.hpp"
 #include "tls.hpp"
 #include "sha256.hpp"
+#include "sha512.hpp"
 #include "hkdf.hpp"
 #include "hmac.hpp"
 #include "aes.hpp"
@@ -19,6 +20,7 @@
 #include <openssl/ssl.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
 #include <chrono>
@@ -227,6 +229,44 @@ void test_aes_gcm_consistency() {
 }
 
 // ========================================================================
+//  SHA-512 输出对比 — jpssl vs OpenSSL
+// ========================================================================
+
+void test_sha512_consistency() {
+    const char* test_cases[] = {"", "Hello, world!", "The quick brown fox jumps over the lazy dog", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", nullptr};
+    for (int i = 0; test_cases[i] != nullptr; ++i) {
+        const char* msg = test_cases[i];
+        size_t len = std::strlen(msg);
+        uint8_t jp_hash[64];
+        sha512_ctx ctx;
+        sha512_init(&ctx);
+        sha512_update(&ctx, (const uint8_t*)msg, len);
+        sha512_final(&ctx, jp_hash);
+        uint8_t ossl_hash[64];
+        SHA512((const unsigned char*)msg, len, ossl_hash);
+        bool equal = std::memcmp(jp_hash, ossl_hash, 64) == 0;
+        TEST_MSG("SHA-512 match length " + std::to_string(len), equal, "jpssl and OpenSSL outputs differ");
+    }
+}
+
+void test_sha384_consistency() {
+    const char* test_cases[] = {"", "Hello, world!", "The quick brown fox jumps over the lazy dog", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", nullptr};
+    for (int i = 0; test_cases[i] != nullptr; ++i) {
+        const char* msg = test_cases[i];
+        size_t len = std::strlen(msg);
+        uint8_t jp_hash[48];
+        sha512_ctx ctx;
+        sha384_init(&ctx);
+        sha512_update(&ctx, (const uint8_t*)msg, len);
+        sha512_final(&ctx, jp_hash);
+        uint8_t ossl_hash[48];
+        SHA384((const unsigned char*)msg, len, ossl_hash);
+        bool equal = std::memcmp(jp_hash, ossl_hash, 48) == 0;
+        TEST_MSG("SHA-384 match length " + std::to_string(len), equal, "jpssl and OpenSSL outputs differ");
+    }
+}
+
+// ========================================================================
 //  性能对比：AES-GCM 吞吐量
 // ========================================================================
 
@@ -378,6 +418,8 @@ int main(int argc, char** argv) {
     OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CRYPTO_STRINGS, nullptr);
 
     RUN_TEST(test_sha256_consistency);
+    RUN_TEST(test_sha512_consistency);
+    RUN_TEST(test_sha384_consistency);
     RUN_TEST(test_hmac_consistency);
     RUN_TEST(test_hkdf_consistency);
     RUN_TEST(test_aes_gcm_consistency);

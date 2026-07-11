@@ -27,7 +27,7 @@
 namespace jpssl {
 namespace {
 
-#ifdef __x86_64__
+#if defined(__x86_64__) && defined(JP_AVX2)
 
 // ═══════════════════════════════════════════════════════════════════════
 //  PCLMULQDQ GF(2^128) 乘法辅助函数
@@ -425,7 +425,7 @@ static bool avx2_gcm_decrypt_impl(const aes_context& ctx,
     return true;
 }
 
-#endif // __x86_64__
+#endif // __x86_64__ && JP_AVX2
 
 } // anonymous namespace
 
@@ -439,7 +439,7 @@ void aes_gcm_encrypt_avx2(const aes_context& ctx,
                           std::span<const uint8_t> aad,
                           std::vector<uint8_t>& ciphertext,
                           uint8_t* tag, size_t tag_len) {
-#ifdef __x86_64__
+#if defined(__x86_64__) && defined(JP_AVX2)
     avx2_gcm_encrypt_impl(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
 #else
     aes_gcm_encrypt(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
@@ -452,7 +452,7 @@ bool aes_gcm_decrypt_avx2(const aes_context& ctx,
                           std::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext) {
-#ifdef __x86_64__
+#if defined(__x86_64__) && defined(JP_AVX2)
     return avx2_gcm_decrypt_impl(ctx, iv, iv_len, ciphertext, aad, tag, tag_len, plaintext);
 #else
     return aes_gcm_decrypt(ctx, iv, iv_len, ciphertext, aad, tag, tag_len, plaintext);

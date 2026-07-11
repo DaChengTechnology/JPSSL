@@ -7,6 +7,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ── 条件编译选项 ─────────────────────────────────────────────────────
+option(JP_ENABLE_AVX2   "Enable AVX2 acceleration"   ON)
+option(JP_ENABLE_AVX512 "Enable AVX512 acceleration" ON)
+
 # ── x86 硬件加速 ──────────────────────────────────────────────────────
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -maes -mavx2")
@@ -42,12 +46,17 @@ set(CPU_SOURCES
     src/rsa.cpp
     src/sha256.cpp
     src/sha3.cpp
+    src/sha512_cpu.cpp
+    src/sha512_opt.cpp
     src/hmac.cpp
     src/hkdf.cpp
     src/x25519.cpp
     src/tls.cpp
     src/ed25519.cpp
     src/ecdsa.cpp
+    src/rsa_batch_avx2.cpp
+    src/rsa_batch_avx512.cpp
+    src/rsa_batch_dispatch.cpp
 )
 
 add_library(jpssl_cpu STATIC ${CPU_SOURCES})
@@ -75,11 +84,28 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     # AVX512 GCM: 需要 AVX512F + AVX512VL + VAES + VPCLMULQDQ + PCLMUL
     set_source_files_properties(src/aes_gcm_avx512.cpp PROPERTIES
         COMPILE_FLAGS "-mavx512f -mavx512vl -mvaes -mvpclmulqdq -mpclmul")
+    # SHA-512 OPT: SHA-NI + SSE4.1 for message schedule acceleration
+    set_source_files_properties(src/sha512_opt.cpp PROPERTIES
+        COMPILE_FLAGS "-msse4.1 -msha")
+    # RSA batch AVX2: 4-wide Montgomery multiplication
+    set_source_files_properties(src/rsa_batch_avx2.cpp PROPERTIES
+        COMPILE_FLAGS "-mavx2")
+    # RSA batch AVX-512: 8-wide Montgomery multiplication
+    set_source_files_properties(src/rsa_batch_avx512.cpp PROPERTIES
+        COMPILE_FLAGS "-mavx512f -mavx512vl")
 endif()
 
-# Link OpenSSL for Ed25519, SHA-512
-target_link_libraries(jpssl_cpu PUBLIC OpenSSL::Crypto)
-target_link_libraries(jpssl_cpu_shared PUBLIC OpenSSL::Crypto)
+if(JP_ENABLE_AVX2)
+    target_compile_definitions(jpssl_cpu PRIVATE JP_AVX2)
+    target_compile_definitions(jpssl_cpu_shared PRIVATE JP_AVX2)
+endif()
+if(JP_ENABLE_AVX512)
+    target_compile_definitions(jpssl_cpu PRIVATE JP_AVX512)
+    target_compile_definitions(jpssl_cpu_shared PRIVATE JP_AVX512)
+endif()
+
+# Link OpenSSL was removed — Ed25519, X25519, SHA-512 are all pure C++20 now
+# OpenSSL::Crypto kept only on individual test targets that compare vs OpenSSL
 
 # ═══════════════════════════════════════════════════════════════════════
 #  libjpssl_musa — MUSA GPU 加速库 (AES, ChaCha20, RSA GPU kernels)
@@ -87,12 +113,14 @@ target_link_libraries(jpssl_cpu_shared PUBLIC OpenSSL::Crypto)
 set(MUSA_SOURCES
     src/aes_musa.cpp
     src/rsa_musa.cpp
+    src/sha512_musa.cpp
 )
 
 set(MUSA_KERNELS
     src/aes_gpu.mu
     src/chacha20_gpu.mu
     src/rsa_gpu.mu
+    src/sha512_gpu.mu
 )
 
 musa_add_library(jpssl_musa STATIC ${MUSA_SOURCES} ${MUSA_KERNELS})
@@ -142,6 +170,17 @@ target_include_directories(test_sha3 PRIVATE
 )
 target_link_libraries(test_sha3 PRIVATE jpssl_cpu JPTEST::jptest OpenSSL::Crypto)
 
+# SHA-512/SHA-384 单元测试
+add_executable(test_sha512 tests/test_sha512.cpp)
+target_include_directories(test_sha512 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(test_sha512 PRIVATE jpssl_cpu OpenSSL::Crypto)
+target_include_directories(test_sha3 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(test_sha3 PRIVATE jpssl_cpu JPTEST::jptest OpenSSL::Crypto)
+
 # TLS 单元测试
 add_executable(test_tls tests/test_tls.cpp)
 target_include_directories(test_tls PRIVATE
@@ -155,6 +194,29 @@ target_include_directories(test_ghash PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_link_libraries(test_ghash PRIVATE jpssl_cpu)
+
+# X25519 RFC 7748 test
+add_executable(test_x25519_rfc tests/test_x25519_rfc.cpp)
+target_include_directories(test_x25519_rfc PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(test_x25519_rfc PRIVATE jpssl_cpu)
+
+# X25519 vs OpenSSL comparison
+add_executable(test_x25519_ossl tests/test_x25519_ossl.cpp)
+target_include_directories(test_x25519_ossl PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(test_x25519_ossl PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+# Ed25519 debug test
+add_executable(test_ed25519_debug tests/test_ed25519_debug.cpp)
+target_include_directories(test_ed25519_debug PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(test_ed25519_debug PRIVATE jpssl_cpu OpenSSL::Crypto)
 
 # OpenSSL 对比测试
 add_executable(test_openssl_compare tests/test_openssl_compare.cpp)
@@ -170,6 +232,17 @@ target_include_directories(test_ghash_debug PRIVATE
     ${MUSA_INCLUDE_DIRS}
 )
 target_link_libraries(test_ghash_debug PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+# SHA-512 三种实现效率对比
+add_executable(bench_sha512 tests/bench_sha512.cpp)
+target_include_directories(bench_sha512 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(bench_sha512 PRIVATE jpssl_cpu jpssl_musa OpenSSL::Crypto)
+if(JP_ENABLE_AVX2)
+    target_compile_definitions(bench_sha512 PRIVATE JP_AVX2)
+endif()
 
 # ═══════════════════════════════════════════════════════════════════════
 #  安装规则

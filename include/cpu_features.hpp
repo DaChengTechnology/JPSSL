@@ -57,6 +57,15 @@ inline bool cpu_has_vpclmulqdq_vaes() {
 #endif
 }
 
+/// 检查 SHA-NI (Intel SHA Extensions) 是否可用
+inline bool cpu_has_sha_ni() {
+#ifdef __x86_64__
+    return __builtin_cpu_supports("sha");
+#else
+    return false;
+#endif
+}
+
 /// 一次性获取所有特性
 struct cpu_features {
     bool aesni;
@@ -64,6 +73,7 @@ struct cpu_features {
     bool pclmulqdq;
     bool avx512;
     bool vpclmulqdq_vaes;
+    bool sha_ni;
 
     static cpu_features detect() {
         return {
@@ -71,7 +81,8 @@ struct cpu_features {
             cpu_has_avx2(),
             cpu_has_pclmulqdq(),
             cpu_has_avx512(),
-            cpu_has_vpclmulqdq_vaes()
+            cpu_has_vpclmulqdq_vaes(),
+            cpu_has_sha_ni()
         };
     }
 };

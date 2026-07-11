@@ -83,6 +83,20 @@ mont_ctx4096 rsa4096_mont_init(const rsa4096_bignum&);
 void rsa_mont_modpow(rsa_bignum&,const rsa_bignum&,const rsa_bignum&,const mont_ctx&,const rsa_bignum&);
 void rsa4096_mont_modpow(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&,const mont_ctx4096&,const rsa4096_bignum&);
 
+// ── 批量 CPU 解密（AVX2/AVX-512 加速）─────────────────────────────────
+/// 批量 RSA-2048 解密：使用同一私钥解密 count 个密文
+/// count 不必是 4/8 的倍数（会自动处理剩余部分）
+/// cts/pts: count × 256 字节（big-endian, PKCS#1 v1.5）
+/// 返回实际解密的个数（PKCS#1 格式不正确的跳过）
+size_t rsa_batch_decrypt(const rsa_private_key&,const uint8_t* cts,uint8_t* pts,size_t count);
+
+/// 批量 RSA-4096 解密
+size_t rsa4096_batch_decrypt(const rsa4096_private_key&,const uint8_t* cts,uint8_t* pts,size_t count);
+
+/// 批量模幂（低层 API，用于 benchmark/debug）
+void rsa_batch_modpow(const rsa_bignum& base,const rsa_bignum& exp,const mont_ctx& mctx,const uint8_t* bases,uint8_t* results,size_t count);
+void rsa4096_batch_modpow(const rsa4096_bignum& mod,const rsa4096_bignum& exp,const mont_ctx4096& mctx,const uint8_t* bases,uint8_t* results,size_t count);
+
 // ── GPU ───────────────────────────────────────────────────────────────
 struct musa_rsa_pool;
 musa_rsa_pool* musa_rsa_pool_create(const rsa_private_key&,size_t=1024);
