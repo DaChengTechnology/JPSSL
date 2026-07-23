@@ -133,8 +133,11 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
                                   std::vector<uint8_t>& client_finished);
 
 // 服务端: 处理 ClientHello 并生成完整回包
+// encrypted_pms: 客户端用 RSA 公钥加密的 pre_master_secret（RSA_PKCS1_SHA256 证书时使用）
+// 若为 nullptr 则直接使用 pre_master_secret 中的明文（兼容旧测试）
 bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
                                std::vector<uint8_t>& server_response,
+                               const uint8_t* encrypted_pms, size_t epms_len,
                                uint8_t pre_master_secret[48],
                                const tls_certificate_manager& cert_manager);
 
@@ -147,6 +150,7 @@ bool tls12_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,
                              const uint8_t* pre_master_secret, size_t pms_len);
 bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t ch_len,
                              std::vector<uint8_t>& server_response,
+                             const uint8_t* encrypted_pms, size_t epms_len,
                              uint8_t pre_master_secret[48],
                              const tls_certificate_manager& cert_manager);
 

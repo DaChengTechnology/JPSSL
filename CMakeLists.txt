@@ -209,6 +209,15 @@ target_include_directories(test_x25519_ossl PRIVATE
 )
 target_link_libraries(test_x25519_ossl PRIVATE jpssl_cpu OpenSSL::Crypto)
 
+# Ed25519 RFC 8032 test
+add_executable(test_ed25519_rfc tests/test_ed25519_rfc.cpp)
+target_include_directories(test_ed25519_rfc PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(test_ed25519_rfc PRIVATE jpssl_cpu OpenSSL::Crypto)
+
 # Ed25519 debug test
 add_executable(test_ed25519_debug tests/test_ed25519_debug.cpp)
 target_include_directories(test_ed25519_debug PRIVATE
@@ -217,6 +226,59 @@ target_include_directories(test_ed25519_debug PRIVATE
     ${MUSA_INCLUDE_DIRS}
 )
 target_link_libraries(test_ed25519_debug PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+# Ed25519 verify direct test
+add_executable(test_verify_direct tests/test_verify_direct.cpp)
+target_include_directories(test_verify_direct PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(test_verify_direct PRIVATE jpssl_cpu)
+
+# Ed25519 keygen debug test
+add_executable(test_debug_keygen tests/test_debug_keygen.cpp)
+target_include_directories(test_debug_keygen PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(test_debug_keygen PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+# Ed25519 GE diagnostics
+add_executable(diag_ge tests/diag_ge.cpp)
+target_include_directories(diag_ge PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(diag_ge PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+# Ed25519 trace test
+add_executable(test_trace_ed tests/test_trace_ed.cpp)
+target_include_directories(test_trace_ed PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(test_trace_ed PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+# Ed25519 scalar mult test
+add_executable(test_get_limbs tests/test_get_limbs.cpp)
+target_include_directories(test_get_limbs PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(test_get_limbs PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+# Ladder debug test
+add_executable(test_ladder_debug tests/test_ladder_debug.cpp)
+target_include_directories(test_ladder_debug PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(test_ladder_debug PRIVATE jpssl_cpu OpenSSL::Crypto)
 
 # OpenSSL 对比测试
 add_executable(test_openssl_compare tests/test_openssl_compare.cpp)

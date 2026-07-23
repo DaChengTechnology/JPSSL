@@ -1,72 +1,66 @@
+#!/usr/bin/env python3
+"""Check if basepoint B is on the curve, then compute 2B correctly using Python bigint"""
 p = 2**255 - 19
+d = (-121665 * pow(121666, -1, p)) % p
+print(f"p = {p}")
+print(f"d = {d}")
 
-# RFC values
+# B from RFC 8032
 Bx = 15112221349535891490771889845789546913814871384922459474716389586016139295636
 By = 46316835694926478169428394003475163141307993866256225615783033603165251855960
-d = -121665 * pow(121666, -1, p) % p
 
-x2 = pow(Bx, 2, p)
-y2 = pow(By, 2, p)
+print(f"\nBx = {Bx}")
+print(f"By = {By}")
 
-print(f"d = {d}")
-print(f"Bx² = {x2}")
-print(f"By² = {y2}")
-print()
+# Verify B on curve: -x^2 + y^2 = 1 + d*x^2*y^2
+lhs = (-pow(Bx, 2, p) + pow(By, 2, p)) % p
+rhs = (1 + d * pow(Bx, 2, p) * pow(By, 2, p)) % p
+print(f"LHS = {lhs}")
+print(f"RHS = {rhs}")
+print(f"B on curve: {lhs == rhs}")
 
-# Try ALL possible equation combinations to find which one makes (Bx, By) satisfy
-# or which x² formula gives Bx²
-forms = [
-    ("-x² + y² = 1 + d*x²*y² (twisted)", 
-     lambda: (y2 - x2) % p,
-     lambda: (1 + d * x2 * y2) % p),
-    ("-x² + y² = 1 - d*x²*y²", 
-     lambda: (y2 - x2) % p,
-     lambda: (1 - d * x2 * y2) % p),
-    ("x² + y² = 1 + d*x²*y² (untwisted)", 
-     lambda: (x2 + y2) % p,
-     lambda: (1 + d * x2 * y2) % p),
-    ("x² + y² = 1 - d*x²*y²", 
-     lambda: (x2 + y2) % p,
-     lambda: (1 - d * x2 * y2) % p),
-    ("-x² - y² = 1 + d*x²*y²", 
-     lambda: (-x2 - y2) % p,
-     lambda: (1 + d * x2 * y2) % p),
-    ("-x² + y² = 1 + d*x²*y²", 
-     lambda: (y2 - x2) % p,
-     lambda: (1 + d * x2 * y2) % p),
-]
+# Compute t for doubling: d * x^2 * y^2
+Bx2 = pow(Bx, 2, p)
+By2 = pow(By, 2, p)
+t = (d * Bx2 % p * By2) % p
+print(f"\nd*Bx^2*By^2 = {t}")
 
-print("=== Curve equation checks ===")
-for name, lhs_fn, rhs_fn in forms:
-    l = lhs_fn()
-    r = rhs_fn()
-    if l == r:
-        print(f"✓ MATCH: {name}")
-        print(f"  LHS = RHS = {l}")
-    else:
-        print(f"✗ No: {name}")
+# Doubling formula for twisted Edwards a=-1:
+# x3 = 2*x*y / (1 + d*x^2*y^2) = 2*x*y * (1+t)^(-1)
+# y3 = (y^2 + x^2) / (1 - d*x^2*y^2) = (y^2 + x^2) * (1-t)^(-1)
 
-print()
+x3 = (2 * Bx * By) % p
+x3 = x3 * pow(1 + t, -1, p) % p
 
-# Now try all possible x² recovery formulas to see which gives Bx²
-forms_x2 = [
-    ("(y² - 1)/(1 + d*y²)", (y2 - 1) * pow(1 + d * y2, -1, p) % p),
-    ("(y² - 1)/(d*y² + 1)", (y2 - 1) * pow(d * y2 + 1, -1, p) % p),
-    ("(1 - y²)/(1 + d*y²)", (1 - y2) * pow(1 + d * y2, -1, p) % p),
-    ("(1 - y²)/(1 - d*y²)", (1 - y2) * pow(1 - d * y2, -1, p) % p),
-    ("(y² - 1)/(1 - d*y²)", (y2 - 1) * pow(1 - d * y2, -1, p) % p),
-    ("(1 - y²)/(d*y² - 1)", (1 - y2) * pow(d * y2 - 1, -1, p) % p),
-    ("(y² - 1)/(d*y² - 1)", (y2 - 1) * pow(d * y2 - 1, -1, p) % p),
-    ("(y² - 1)/(d²*y² + 1)", (y2 - 1) * pow(pow(d,2,p) * y2 + 1, -1, p) % p),
-]
+y3 = (By2 + Bx2) % p
+y3 = y3 * pow(1 - t, -1, p) % p
 
-print(f"Bx² (direct) = {x2}")
-print()
-print("=== x² recovery formulas ===")
-for name, val in forms_x2:
-    if val == x2:
-        print(f"✓ MATCH: {name}")
-        print(f"  x² = {val}")
-    else:
-        print(f"✗ No: {name}")
-        print(f"  got = {val}")
+print(f"\n2B x = {x3}")
+print(f"2B y = {y3}")
+
+# Verify 2B on curve
+lhs2 = (-pow(x3, 2, p) + pow(y3, 2, p)) % p
+rhs2 = (1 + d * pow(x3, 2, p) * pow(y3, 2, p)) % p
+print(f"2B LHS = {lhs2}")
+print(f"2B RHS = {rhs2}")
+print(f"2B on curve: {lhs2 == rhs2}")
+
+# Encode: y only, with sign bit
+y_enc = y3.to_bytes(32, 'little')
+if x3 & 1:
+    y_enc = bytearray(y_enc)
+    y_enc[31] |= 0x80
+    y_enc = bytes(y_enc)
+print(f"\n2B encoded: {y_enc.hex()}")
+print(f"jpssl 2B:   8e2d7ca65bc1760a1b4aad88a996b93ed114dce596cfe13a6e9e78d147a733e0")
+
+# Alternative: use untwisted formula (a=+1)
+x3_u = (2 * Bx * By) % p
+x3_u = x3_u * pow(1 + t, -1, p) % p
+y3_u = (By2 - Bx2) % p
+y3_u = y3_u * pow(1 - t, -1, p) % p
+print(f"\nUntwisted 2B x: {x3_u}")
+print(f"Untwisted 2B y: {y3_u}")
+lhs_u = (pow(x3_u, 2, p) + pow(y3_u, 2, p)) % p
+rhs_u = (1 + d * pow(x3_u, 2, p) * pow(y3_u, 2, p)) % p
+print(f"Untwisted 2B on curve: {lhs_u == rhs_u}")

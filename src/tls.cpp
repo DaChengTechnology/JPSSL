@@ -1,8 +1,15 @@
 #include "tls.hpp"
+#include "sha256.hpp"
 #include <cstring>
 #include <random>
 #include <algorithm>
 namespace jpssl::tls {
+
+static const uint8_t RSA_SHA256_DIGEST_INFO[] = {
+    0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+    0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+    0x00, 0x04, 0x20
+};
 
 static void rand32(uint8_t* buf){static std::mt19937_64 g(std::random_device{}());for(int i=0;i<4;++i){uint64_t v=g();memcpy(buf+i*8,&v,8);}}
 
@@ -26,8 +33,28 @@ bool tls_certificate::sign(const uint8_t* data, size_t data_len, uint8_t* sig, s
             sig_len=64;ed25519_sign(priv.ed25519,data,data_len,sig);return true;
         case SignatureAlgorithm::ECDSA_SECP256R1_SHA256:
             sig_len=64;ecdsa_p256_sign(priv.ecdsa_p256,data,data_len,sig);return true;
-        case SignatureAlgorithm::RSA_PKCS1_SHA256:
-            sig_len=0;return true; // 简化
+        case SignatureAlgorithm::RSA_PKCS1_SHA256: {
+            sig_len=256;
+            uint8_t hash[32];
+            sha256_ctx ctx; sha256_init(&ctx);
+            sha256_update(&ctx, data, data_len);
+            sha256_final(&ctx, hash);
+
+            size_t di_len = sizeof(RSA_SHA256_DIGEST_INFO);
+            size_t pad_len = 256 - 3 - di_len - 32;
+            uint8_t padded[256];
+            padded[0] = 0x00; padded[1] = 0x01;
+            memset(padded + 2, 0xFF, pad_len);
+            padded[2 + pad_len] = 0x00;
+            memcpy(padded + 2 + pad_len + 1, RSA_SHA256_DIGEST_INFO, di_len);
+            memcpy(padded + 2 + pad_len + 1 + di_len, hash, 32);
+
+            rsa_bignum m = rsa_bignum::from_bytes(padded, 256);
+            rsa_bignum s;
+            bn_modpow(s, m, priv.rsa.d, priv.rsa.n);
+            s.to_bytes(sig);
+            return true;
+        }
         default:return false;
     }
 }
@@ -39,8 +66,30 @@ bool tls_certificate::verify(const uint8_t* data, size_t data_len, const uint8_t
         case SignatureAlgorithm::ECDSA_SECP256R1_SHA256:
             if(sig_len!=64)return false;
             return ecdsa_p256_verify(pub.ecdsa_p256,data,data_len,sig);
-        case SignatureAlgorithm::RSA_PKCS1_SHA256:
+        case SignatureAlgorithm::RSA_PKCS1_SHA256: {
+            if(sig_len != 256) return false;
+            uint8_t hash[32];
+            sha256_ctx ctx; sha256_init(&ctx);
+            sha256_update(&ctx, data, data_len);
+            sha256_final(&ctx, hash);
+
+            rsa_bignum s = rsa_bignum::from_bytes(sig, 256);
+            rsa_bignum m;
+            bn_modpow(m, s, pub.rsa.e, pub.rsa.n);
+            uint8_t padded[256];
+            m.to_bytes(padded);
+
+            if(padded[0] != 0x00 || padded[1] != 0x01) return false;
+            size_t pos = 2;
+            while(pos < 256 && padded[pos] == 0xFF) ++pos;
+            if(pos >= 256 || padded[pos] != 0x00) return false;
+            ++pos;
+            size_t di_len = sizeof(RSA_SHA256_DIGEST_INFO);
+            if(pos + di_len + 32 > 256) return false;
+            if(memcmp(padded + pos, RSA_SHA256_DIGEST_INFO, di_len) != 0) return false;
+            if(memcmp(padded + pos + di_len, hash, 32) != 0) return false;
             return true;
+        }
         default:return false;
     }
 }
@@ -96,27 +145,25 @@ static void tls13_derive_handshake_keys(tls_session& s, const uint8_t shared_sec
     hkdf_extract(zero,32,zero,32,early_secret);
     hkdf_extract(early_secret,32,shared_secret,32,s.handshake_secret);
 
-    uint8_t hello_hash[32];
-    sha256_init(&ctx);sha256_update(&ctx,s.client_random,32);sha256_update(&ctx,s.server_random,32);sha256_final(&ctx,hello_hash);
+    tls_transcript_finalize(s);
     uint8_t ch_ts[32],sh_ts[32];
-    hkdf_expand_label(s.handshake_secret,"c hs traffic",hello_hash,32,ch_ts,32);
-    hkdf_expand_label(s.handshake_secret,"s hs traffic",hello_hash,32,sh_ts,32);
+    hkdf_expand_label(s.handshake_secret,"c hs traffic",s.transcript_hash,32,ch_ts,32);
+    hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,32,sh_ts,32);
 
     memcpy(s.client_write_key,ch_ts,32);memcpy(s.server_write_key,sh_ts,32);
-    hkdf_expand_label(s.handshake_secret,"c hs traffic",hello_hash,32,s.client_write_iv,12);
-    hkdf_expand_label(s.handshake_secret,"s hs traffic",hello_hash,32,s.server_write_iv,12);
+    hkdf_expand_label(s.handshake_secret,"c hs traffic",s.transcript_hash,32,s.client_write_iv,12);
+    hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,32,s.server_write_iv,12);
     s.client_seq=0;s.server_seq=0;
 }
 
 static void tls13_derive_application_keys(tls_session& s){
     uint8_t zero[32]={};
     hkdf_extract(s.handshake_secret,32,zero,32,s.master_secret);
-    uint8_t ap_hash[32];sha256_ctx ctx;
-    sha256_init(&ctx);sha256_update(&ctx,s.transcript_hash,32);sha256_final(&ctx,ap_hash);
-    hkdf_expand_label(s.master_secret,"c ap traffic",ap_hash,32,s.client_write_key,32);
-    hkdf_expand_label(s.master_secret,"s ap traffic",ap_hash,32,s.server_write_key,32);
-    hkdf_expand_label(s.master_secret,"c ap traffic",ap_hash,32,s.client_write_iv,12);
-    hkdf_expand_label(s.master_secret,"s ap traffic",ap_hash,32,s.server_write_iv,12);
+    tls_transcript_finalize(s);
+    hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,32,s.client_write_key,32);
+    hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,32,s.server_write_key,32);
+    hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,32,s.client_write_iv,12);
+    hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,32,s.server_write_iv,12);
     s.client_seq=0;s.server_seq=0;
 }
 
@@ -126,18 +173,17 @@ static void tls13_derive_keys(tls_session& s, const uint8_t shared_secret[32]){
     uint8_t zero[32]={};
     hkdf_extract(zero,32,zero,32,early_secret);
     hkdf_extract(early_secret,32,shared_secret,32,s.handshake_secret);
-    uint8_t hello_hash[32];
-    sha256_init(&ctx);sha256_update(&ctx,s.client_random,32);sha256_update(&ctx,s.server_random,32);sha256_final(&ctx,hello_hash);
-    hkdf_expand_label(s.handshake_secret,"c hs traffic",hello_hash,32,s.client_write_key,32);
-    hkdf_expand_label(s.handshake_secret,"s hs traffic",hello_hash,32,s.server_write_key,32);
-    hkdf_expand_label(s.handshake_secret,"c hs traffic",hello_hash,32,s.client_write_iv,12);
-    hkdf_expand_label(s.handshake_secret,"s hs traffic",hello_hash,32,s.server_write_iv,12);
+    tls_transcript_finalize(s);
+    hkdf_expand_label(s.handshake_secret,"c hs traffic",s.transcript_hash,32,s.client_write_key,32);
+    hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,32,s.server_write_key,32);
+    hkdf_expand_label(s.handshake_secret,"c hs traffic",s.transcript_hash,32,s.client_write_iv,12);
+    hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,32,s.server_write_iv,12);
     hkdf_extract(s.handshake_secret,32,zero,32,s.master_secret);
-    uint8_t ap_hash[32];sha256_init(&ctx);sha256_update(&ctx,hello_hash,32);sha256_final(&ctx,ap_hash);
-    hkdf_expand_label(s.master_secret,"c ap traffic",ap_hash,32,s.client_write_key,32);
-    hkdf_expand_label(s.master_secret,"s ap traffic",ap_hash,32,s.server_write_key,32);
-    hkdf_expand_label(s.master_secret,"c ap traffic",ap_hash,32,s.client_write_iv,12);
-    hkdf_expand_label(s.master_secret,"s ap traffic",ap_hash,32,s.server_write_iv,12);
+    tls_transcript_finalize(s);
+    hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,32,s.client_write_key,32);
+    hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,32,s.server_write_key,32);
+    hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,32,s.client_write_iv,12);
+    hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,32,s.server_write_iv,12);
     s.client_seq=0;s.server_seq=0;
 }
 
@@ -145,7 +191,7 @@ static void tls13_derive_keys(tls_session& s, const uint8_t shared_secret[32]){
 //  构建 Finished 消息
 // ═══════════════════════════════════════════════════════════════════════
 static std::vector<uint8_t> tls13_make_finished(tls_session& s, bool for_server){
-    const uint8_t* base_key=for_server?s.server_write_key:s.client_write_key;
+    (void)for_server;
     uint8_t finished_key[32];
     hkdf_expand_label(s.handshake_secret,"finished",nullptr,0,finished_key,32);
 
@@ -161,11 +207,11 @@ static std::vector<uint8_t> tls13_make_finished(tls_session& s, bool for_server)
 }
 
 static bool tls13_verify_finished(tls_session& s, const uint8_t* hs_msg, size_t hs_len, bool for_server){
+    (void)for_server;
     if(hs_len<4 || hs_msg[0]!=(uint8_t)HandshakeType::FINISHED)return false;
     size_t vd_len=(hs_msg[1]<<16)|(hs_msg[2]<<8)|hs_msg[3];
     if(vd_len!=32 || hs_len!=4+vd_len)return false;
 
-    const uint8_t* base_key=for_server?s.server_write_key:s.client_write_key;
     uint8_t finished_key[32];
     hkdf_expand_label(s.handshake_secret,"finished",nullptr,0,finished_key,32);
 
@@ -568,9 +614,9 @@ bool tls13_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,
                              const uint8_t* server_response, size_t resp_len){
     tls13_make_client_hello(s,client_hello);
     std::vector<uint8_t> cf;
-    // 简化版：直接解析 ServerHello 明文
     s.ver=TLSVersion::V13;
     memcpy(s.server_random,server_response+6,32);
+    tls_transcript_update(s,server_response,resp_len);
     uint8_t server_pub[32];
     memcpy(server_pub,server_response+50,32);
     uint8_t client_priv[32];memcpy(client_priv,s.client_write_key,32);
@@ -585,6 +631,8 @@ bool tls13_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
                              std::vector<uint8_t>& server_response,
                              const tls_certificate_manager& cert_manager){
     s.ver=TLSVersion::V13;s.is_server=true;rand32(s.server_random);memcpy(s.client_random,client_hello+11,32);
+    s.transcript_ready=false;
+    tls_transcript_update(s,client_hello,ch_len);
     size_t ext_offset=11+32+1+2+1;
     if(ext_offset+2<=ch_len){
         uint16_t ext_len_total=(client_hello[ext_offset]<<8)|client_hello[ext_offset+1];
@@ -613,6 +661,7 @@ bool tls13_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
     server_response.insert(server_response.end(),server_pub,server_pub+32);
     size_t len=server_response.size()-4;
     server_response[1]=(uint8_t)(len>>16);server_response[2]=(uint8_t)(len>>8);server_response[3]=(uint8_t)len;
+    tls_transcript_update(s,server_response.data(),server_response.size());
     tls13_derive_keys(s,shared_secret);
     s.aes_ctx.init(std::span<const uint8_t,16>(s.server_write_key,16));
     return true;
@@ -721,6 +770,7 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
 // ═══════════════════════════════════════════════════════════════════════
 bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
                                std::vector<uint8_t>& server_response,
+                               const uint8_t* encrypted_pms, size_t epms_len,
                                uint8_t pre_master_secret[48],
                                const tls_certificate_manager& cert_manager){
     s.ver=TLSVersion::V12;s.is_server=true;
@@ -736,7 +786,14 @@ bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
             s.server_name=tls_parse_server_name(client_hello+ext_offset+2,ext_len_total);
     }
     const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
-    (void)cert;
+
+    // RSA 解密 pre_master_secret
+    if(encrypted_pms && epms_len > 0 && cert && cert->sig_alg == SignatureAlgorithm::RSA_PKCS1_SHA256){
+        std::vector<uint8_t> pt;
+        if(!rsa_decrypt(cert->priv.rsa, encrypted_pms, pt)) return false;
+        size_t pms_len = pt.size() < 48 ? pt.size() : 48;
+        memcpy(pre_master_secret, pt.data(), pms_len);
+    }
 
     // ServerHello
     server_response.clear();
@@ -803,6 +860,7 @@ bool tls12_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,
 
 bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t ch_len,
                              std::vector<uint8_t>& server_response,
+                             const uint8_t* encrypted_pms, size_t epms_len,
                              uint8_t pre_master_secret[48],
                              const tls_certificate_manager& cert_manager){
     s.ver=TLSVersion::V12;rand32(s.server_random);memcpy(s.client_random,client_hello+11,32);
@@ -814,7 +872,15 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
             s.server_name=tls_parse_server_name(client_hello+ext_offset+2,ext_len_total);
     }
     const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
-    (void)cert;
+
+    // RSA 解密 pre_master_secret
+    if(encrypted_pms && epms_len > 0 && cert && cert->sig_alg == SignatureAlgorithm::RSA_PKCS1_SHA256){
+        std::vector<uint8_t> pt;
+        if(!rsa_decrypt(cert->priv.rsa, encrypted_pms, pt)) return false;
+        size_t pms_len = pt.size() < 48 ? pt.size() : 48;
+        memcpy(pre_master_secret, pt.data(), pms_len);
+    }
+
     server_response.clear();
     server_response.push_back((uint8_t)HandshakeType::SERVER_HELLO);
     server_response.push_back(0);server_response.push_back(0);server_response.push_back(0);

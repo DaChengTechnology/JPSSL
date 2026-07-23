@@ -1,40 +1,56 @@
-// Test fe_add + fe_tobytes for value 157687840
+// Check limb ranges after ge_frombytes(A)
 #include "fe_25519.hpp"
+#include "ed25519.cpp"
 #include <cstdio>
-using namespace jpssl::fe_impl;
+#include <cstring>
+#include <algorithm>
+using namespace jpssl;
+using namespace fe_impl;
 
 int main() {
-    fe x2, z2, a;
-    uint8_t out[32];
+    uint8_t pub[32] = {0xd7,0x5a,0x98,0x01,0x82,0xb1,0x0a,0xb7,0xd5,0x4b,0xfe,0xd3,0xc9,0x64,0x07,0x3a,0x0e,0xe1,0x72,0xf3,0xda,0xa6,0x23,0x25,0xaf,0x02,0x1a,0x68,0xf7,0x07,0x51,0x1a};
+    ge_p3 A;
+    ge_frombytes(&A, pub);
     
-    // x2 = 6400
-    uint8_t x2b[32] = {0x00,0x19};
-    // z2 = 157681440 = 0x09660720
-    uint8_t z2b[32] = {0x20,0x07,0x66,0x09};
+    printf("A.X limbs: ");
+    for(int i=0;i<10;i++) printf("%d ", A.X[i]);
+    printf("\nmin=%d max=%d\n", *std::min_element(A.X,A.X+10), *std::max_element(A.X,A.X+10));
     
-    fe_frombytes(x2, x2b);
-    fe_frombytes(z2, z2b);
+    printf("A.Y limbs: ");
+    for(int i=0;i<10;i++) printf("%d ", A.Y[i]);
+    printf("\nmin=%d max=%d\n", *std::min_element(A.Y,A.Y+10), *std::max_element(A.Y,A.Y+10));
     
-    // Print internal limbs
-    printf("x2 limbs: [");
-    for(int i=0;i<10;i++) printf("%d%s", x2[i], i<9?",":"");
-    printf("]\n");
-    printf("z2 limbs: [");
-    for(int i=0;i<10;i++) printf("%d%s", z2[i], i<9?",":"");
-    printf("]\n");
-    
-    fe_add(a, x2, z2);
-    
-    printf("a limbs: [");
-    for(int i=0;i<10;i++) printf("%d%s", a[i], i<9?",":"");
-    printf("]\n");
-    
-    fe_tobytes(out, a);
-    
-    printf("output bytes: ");
-    for(int i=0;i<32;i++) printf("%02x", out[i]);
+    printf("A.Z limbs: ");
+    for(int i=0;i<10;i++) printf("%d ", A.Z[i]);
     printf("\n");
-    printf("expected:     2020660900000000000000000000000000000000000000000000000000000000\n");
+    
+    printf("A.T limbs: ");
+    for(int i=0;i<10;i++) printf("%d ", A.T[i]);
+    printf("\nmin=%d max=%d\n", *std::min_element(A.T,A.T+10), *std::max_element(A.T,A.T+10));
+    
+    // Compare with B
+    const ge_p3* B = ge_get_basepoint();
+    printf("\nB.X limbs: ");
+    for(int i=0;i<10;i++) printf("%d ", B->X[i]);
+    printf("\nmin=%d max=%d\n", *std::min_element(B->X,B->X+10), *std::max_element(B->X,B->X+10));
+    
+    printf("B.Y limbs: ");
+    for(int i=0;i<10;i++) printf("%d ", B->Y[i]);
+    printf("\nmin=%d max=%d\n", *std::min_element(B->Y,B->Y+10), *std::max_element(B->Y,B->Y+10));
+    
+    // Test: fe_mul(A.T, A.X, A.Y) -- does this match what ge_frombytes computed?
+    fe t2;
+    fe_mul(t2, A.X, A.Y);
+    printf("\nA.T == A.X*A.Y: %s\n", memcmp(A.T, t2, sizeof(fe))==0?"YES":"NO");
+    
+    // Check if A.T satisfies T = X*Y/Z invariant
+    fe xy, zt;
+    fe_mul(xy, A.X, A.Y);  // X*Y
+    fe_mul(zt, A.Z, A.T);  // Z*T
+    uint8_t xy_bytes[32], zt_bytes[32];
+    fe_tobytes(xy_bytes, xy);
+    fe_tobytes(zt_bytes, zt);
+    printf("X*Y == Z*T: %s\n", memcmp(xy_bytes, zt_bytes, 32)==0?"YES":"NO");
     
     return 0;
 }

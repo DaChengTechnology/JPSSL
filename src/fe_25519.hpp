@@ -44,62 +44,71 @@ inline void fe_frombytes(fe h, const uint8_t* s) {
 }
 
 inline void fe_tobytes(uint8_t* s, fe h) {
-    int64_t h0 = h[0], h1 = h[1], h2 = h[2], h3 = h[3], h4 = h[4];
-    int64_t h5 = h[5], h6 = h[6], h7 = h[7], h8 = h[8], h9 = h[9];
-    int64_t c;
+    int32_t h0 = h[0], h1 = h[1], h2 = h[2], h3 = h[3], h4 = h[4];
+    int32_t h5 = h[5], h6 = h[6], h7 = h[7], h8 = h[8], h9 = h[9];
+    int32_t q;
 
-    // ref10 fe_tobytes carry: use floor division (h >> shift) for canonicalization
-    // This handles both positive (carry overflow) and negative (borrow) correctly
-    // Full carry chain from low to high with wrap-around
-    for (int pass = 0; pass < 2; pass++) {
-        c = h0 >> 26; h1 += c; h0 -= c << 26;
-        c = h1 >> 25; h2 += c; h1 -= c << 25;
-        c = h2 >> 26; h3 += c; h2 -= c << 26;
-        c = h3 >> 25; h4 += c; h3 -= c << 25;
-        c = h4 >> 26; h5 += c; h4 -= c << 26;
-        c = h5 >> 25; h6 += c; h5 -= c << 25;
-        c = h6 >> 26; h7 += c; h6 -= c << 26;
-        c = h7 >> 25; h8 += c; h7 -= c << 25;
-        c = h8 >> 26; h9 += c; h8 -= c << 26;
-        c = h9 >> 25; h0 += c * 19; h9 -= c << 25;
-    }
+    // Freeze: compute q = floor(h / (2^255-19))
+    q = (19 * h9 + (((int32_t)1) << 24)) >> 25;
+    q = (h0 + q) >> 26;
+    q = (h1 + q) >> 25;
+    q = (h2 + q) >> 26;
+    q = (h3 + q) >> 25;
+    q = (h4 + q) >> 26;
+    q = (h5 + q) >> 25;
+    q = (h6 + q) >> 26;
+    q = (h7 + q) >> 25;
+    q = (h8 + q) >> 26;
+    q = (h9 + q) >> 25;
 
-    uint32_t u0 = (uint32_t)h0, u1 = (uint32_t)h1, u2 = (uint32_t)h2;
-    uint32_t u3 = (uint32_t)h3, u4 = (uint32_t)h4, u5 = (uint32_t)h5;
-    uint32_t u6 = (uint32_t)h6, u7 = (uint32_t)h7, u8 = (uint32_t)h8, u9 = (uint32_t)h9;
+    // h = h - (2^255-19)q = h + 19q (mod 2^255)
+    h0 += 19 * q;
 
-    s[0] = (uint8_t)u0;
-    s[1] = (uint8_t)(u0 >> 8);
-    s[2] = (uint8_t)(u0 >> 16);
-    s[3] = (uint8_t)((u0 >> 24) | ((u1 & 0x3f) << 2));
-    s[4] = (uint8_t)(u1 >> 6);
-    s[5] = (uint8_t)(u1 >> 14);
-    s[6] = (uint8_t)((u1 >> 22) | ((u2 & 0x1f) << 3));
-    s[7] = (uint8_t)(u2 >> 5);
-    s[8] = (uint8_t)(u2 >> 13);
-    s[9] = (uint8_t)((u2 >> 21) | ((u3 & 7) << 5));
-    s[10] = (uint8_t)(u3 >> 3);
-    s[11] = (uint8_t)(u3 >> 11);
-    s[12] = (uint8_t)((u3 >> 19) | ((u4 & 3) << 6));
-    s[13] = (uint8_t)(u4 >> 2);
-    s[14] = (uint8_t)(u4 >> 10);
-    s[15] = (uint8_t)(u4 >> 18);
-    s[16] = (uint8_t)u5;
-    s[17] = (uint8_t)(u5 >> 8);
-    s[18] = (uint8_t)(u5 >> 16);
-    s[19] = (uint8_t)((u5 >> 24) | ((u6 & 0x7f) << 1));
-    s[20] = (uint8_t)(u6 >> 7);
-    s[21] = (uint8_t)(u6 >> 15);
-    s[22] = (uint8_t)((u6 >> 23) | ((u7 & 0x1f) << 3));
-    s[23] = (uint8_t)(u7 >> 5);
-    s[24] = (uint8_t)(u7 >> 13);
-    s[25] = (uint8_t)((u7 >> 21) | ((u8 & 0xf) << 4));
-    s[26] = (uint8_t)(u8 >> 4);
-    s[27] = (uint8_t)(u8 >> 12);
-    s[28] = (uint8_t)((u8 >> 20) | ((u9 & 3) << 6));
-    s[29] = (uint8_t)(u9 >> 2);
-    s[30] = (uint8_t)(u9 >> 10);
-    s[31] = (uint8_t)(u9 >> 18);
+    // Carry with bit masking
+    h1 += h0 >> 26; h0 &= 0x3ffffff;
+    h2 += h1 >> 25; h1 &= 0x1ffffff;
+    h3 += h2 >> 26; h2 &= 0x3ffffff;
+    h4 += h3 >> 25; h3 &= 0x1ffffff;
+    h5 += h4 >> 26; h4 &= 0x3ffffff;
+    h6 += h5 >> 25; h5 &= 0x1ffffff;
+    h7 += h6 >> 26; h6 &= 0x3ffffff;
+    h8 += h7 >> 25; h7 &= 0x1ffffff;
+    h9 += h8 >> 26; h8 &= 0x3ffffff;
+    h9 &= 0x1ffffff;
+
+    // Encode
+    s[0] = (uint8_t)(h0 >> 0);
+    s[1] = (uint8_t)(h0 >> 8);
+    s[2] = (uint8_t)(h0 >> 16);
+    s[3] = (uint8_t)((h0 >> 24) | ((h1 & 0x3f) << 2));
+    s[4] = (uint8_t)(h1 >> 6);
+    s[5] = (uint8_t)(h1 >> 14);
+    s[6] = (uint8_t)((h1 >> 22) | ((h2 & 0x1f) << 3));
+    s[7] = (uint8_t)(h2 >> 5);
+    s[8] = (uint8_t)(h2 >> 13);
+    s[9] = (uint8_t)((h2 >> 21) | ((h3 & 7) << 5));
+    s[10] = (uint8_t)(h3 >> 3);
+    s[11] = (uint8_t)(h3 >> 11);
+    s[12] = (uint8_t)((h3 >> 19) | ((h4 & 3) << 6));
+    s[13] = (uint8_t)(h4 >> 2);
+    s[14] = (uint8_t)(h4 >> 10);
+    s[15] = (uint8_t)(h4 >> 18);
+    s[16] = (uint8_t)(h5 >> 0);
+    s[17] = (uint8_t)(h5 >> 8);
+    s[18] = (uint8_t)(h5 >> 16);
+    s[19] = (uint8_t)((h5 >> 24) | ((h6 & 0x7f) << 1));
+    s[20] = (uint8_t)(h6 >> 7);
+    s[21] = (uint8_t)(h6 >> 15);
+    s[22] = (uint8_t)((h6 >> 23) | ((h7 & 0x1f) << 3));
+    s[23] = (uint8_t)(h7 >> 5);
+    s[24] = (uint8_t)(h7 >> 13);
+    s[25] = (uint8_t)((h7 >> 21) | ((h8 & 0xf) << 4));
+    s[26] = (uint8_t)(h8 >> 4);
+    s[27] = (uint8_t)(h8 >> 12);
+    s[28] = (uint8_t)((h8 >> 20) | ((h9 & 3) << 6));
+    s[29] = (uint8_t)(h9 >> 2);
+    s[30] = (uint8_t)(h9 >> 10);
+    s[31] = (uint8_t)(h9 >> 18);
 }
 
 inline void fe_0(fe h) { memset(h, 0, sizeof(int32_t) * 10); }
@@ -148,6 +157,11 @@ inline void fe_mul(fe h, const fe f, const fe g) {
 
 inline void fe_sq(fe h, const fe f) {
     fe_mul(h, f, f);
+}
+
+inline void fe_sq2(fe h, const fe f) {
+    fe_mul(h, f, f);
+    fe_add(h, h, h);
 }
 
 inline void fe_invert(fe out, const fe z) {
@@ -199,37 +213,42 @@ inline int fe_equal(const fe f, const fe g) {
     return !fe_isnonzero(t);
 }
 
-static const int32_t sqrtm1_limbs[10] = {958640, -7943707, 9377950, 3500422, 12389472, -272473, 8408223, -2005645, 326686, 11406484};
+static const int32_t sqrtm1_limbs[10] = {-32595792, -7943725, 9377950, 3500415, 12389472, -272473, -25146209, -2005654, 326686, 11406482};
 
 inline void fe_pow22523(fe out, const fe z) {
-    fe t0, t1, t2, t3;
-    fe_sq(t0, z); fe_sq(t1, t0); fe_sq(t1, t1);
-    fe_mul(t1, z, t1); fe_mul(t0, t0, t1);
-    fe_sq(t0, t0); fe_mul(t0, t1, t0);
-    fe_sq(t2, t0);
-    for (int i = 1; i < 5; ++i) fe_sq(t2, t2);
-    fe_mul(t1, t2, t0);
+    fe t0, t1, t2;
+    int i;
+    fe_sq(t0, z);
+    fe_sq(t1, t0);
+    for (i = 1; i < 2; ++i) fe_sq(t1, t1);
+    fe_mul(t1, z, t1);
+    fe_mul(t0, t0, t1);
+    fe_sq(t0, t0);
+    fe_mul(t0, t1, t0);
+    fe_sq(t1, t0);
+    for (i = 1; i < 5; ++i) fe_sq(t1, t1);
+    fe_mul(t0, t1, t0);
+    fe_sq(t1, t0);
+    for (i = 1; i < 10; ++i) fe_sq(t1, t1);
+    fe_mul(t1, t1, t0);
     fe_sq(t2, t1);
-    for (int i = 1; i < 10; ++i) fe_sq(t2, t2);
-    fe_mul(t2, t2, t1);
-    fe_sq(t3, t2);
-    for (int i = 1; i < 20; ++i) fe_sq(t3, t3);
-    fe_mul(t2, t3, t2);
-    fe_sq(t2, t2);
-    for (int i = 1; i < 10; ++i) fe_sq(t2, t2);
-    fe_mul(t1, t2, t1);
-    fe_sq(t2, t1);
-    for (int i = 1; i < 50; ++i) fe_sq(t2, t2);
-    fe_mul(t2, t2, t1);
-    fe_sq(t3, t2);
-    for (int i = 1; i < 100; ++i) fe_sq(t3, t3);
-    fe_mul(t2, t3, t2);
-    fe_sq(t2, t2);
-    for (int i = 1; i < 50; ++i) fe_sq(t2, t2);
+    for (i = 1; i < 20; ++i) fe_sq(t2, t2);
     fe_mul(t1, t2, t1);
     fe_sq(t1, t1);
-    for (int i = 1; i < 5; ++i) fe_sq(t1, t1);
-    fe_mul(out, t1, t0);
+    for (i = 1; i < 10; ++i) fe_sq(t1, t1);
+    fe_mul(t0, t1, t0);
+    fe_sq(t1, t0);
+    for (i = 1; i < 50; ++i) fe_sq(t1, t1);
+    fe_mul(t1, t1, t0);
+    fe_sq(t2, t1);
+    for (i = 1; i < 100; ++i) fe_sq(t2, t2);
+    fe_mul(t1, t2, t1);
+    fe_sq(t1, t1);
+    for (i = 1; i < 50; ++i) fe_sq(t1, t1);
+    fe_mul(t0, t1, t0);
+    fe_sq(t0, t0);
+    for (i = 1; i < 2; ++i) fe_sq(t0, t0);
+    fe_mul(out, t0, z);
 }
 
 inline int fe_sqrt_ratio(fe out, const fe u, const fe v) {

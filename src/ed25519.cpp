@@ -25,6 +25,7 @@ using fe_impl::fe_isnonzero;
 using fe_impl::fe_equal;
 using fe_impl::fe_pow22523;
 using fe_impl::fe_sqrt_ratio;
+using fe_impl::fe_sq2;
 
 // ═══════════════════════════════════════════════════════════════════
 //  Constants
@@ -58,7 +59,7 @@ static const int32_t* Bx_limbs() {
     static bool init = false;
     if (!init) {
         init = true;
-        uint8_t bytes[32] = {148,59,97,128,114,104,141,41,245,123,43,86,22,125,36,239,189,229,9,244,90,53,236,174,94,133,111,205,211,54,105,33};
+        uint8_t bytes[32] = {26,213,37,143,96,45,86,201,178,167,37,149,96,199,44,105,92,220,214,253,49,226,164,192,254,83,110,205,211,54,105,33};
         fe_frombytes(x, bytes);
     }
     return x;
@@ -171,11 +172,18 @@ static void sc_mul_add(uint8_t* out, const uint8_t* a, const uint8_t* b, const u
             p[i + j] = (uint64_t)carry;
             carry >>= 64;
         }
-        p[i + 4] += (uint64_t)carry;
+        // Propagate carry beyond the product range
+        int idx = i + 4;
+        while (carry && idx < 8) {
+            carry += p[idx];
+            p[idx] = (uint64_t)carry;
+            carry >>= 64;
+            idx++;
+        }
     }
     unsigned __int128 carry = 0;
     for (int i = 0; i < 8; i++) {
-        carry += p[i] + (i < 4 ? c_l[i] : 0);
+        carry += (unsigned __int128)p[i] + (i < 4 ? (unsigned __int128)c_l[i] : (unsigned __int128)0);
         p[i] = (uint64_t)carry;
         carry >>= 64;
     }
@@ -233,23 +241,16 @@ static void ge_p1p1_to_p3(ge_p3* r, const ge_p1p1* p) {
 }
 
 static void ge_p2_dbl(ge_p1p1* r, const ge_p2* p) {
-    fe a, b, c, e, g, f, h, t;
-    fe_sq(a, p->X);
-    fe_sq(b, p->Y);
-    fe_sq(c, p->Z);
-    fe_add(c, c, c);
-    fe_add(t, p->X, p->Y);
-    fe_sq(t, t);
-    fe_sub(t, t, a);
-    fe_sub(e, t, b);
-    fe_sub(g, b, a);
-    fe_sub(f, g, c);
-    fe_add(h, a, b);
-    fe_neg(h, h);
-    fe_mul(r->X, e, f);
-    fe_mul(r->Y, g, h);
-    fe_mul(r->T, e, h);
-    fe_mul(r->Z, f, g);
+    fe t0;
+    fe_sq(r->X, p->X);       // X = A = X^2
+    fe_sq(r->Z, p->Y);       // Z = B = Y^2
+    fe_sq2(r->T, p->Z);      // T = C = 2*Z^2
+    fe_add(r->Y, p->X, p->Y); // Y = X+Y
+    fe_sq(t0, r->Y);          // t0 = (X+Y)^2
+    fe_add(r->Y, r->Z, r->X); // Y = B+A = A+B (H)
+    fe_sub(r->Z, r->Z, r->X); // Z = B-A (G)
+    fe_sub(r->X, t0, r->Y);   // X = (X+Y)^2 - (A+B) = 2XY (E)
+    fe_sub(r->T, r->T, r->Z); // T = C - (B-A) = A-B+2Z^2 (F)
 }
 
 static void ge_p3_dbl(ge_p1p1* r, const ge_p3* p) {
@@ -259,85 +260,69 @@ static void ge_p3_dbl(ge_p1p1* r, const ge_p3* p) {
 }
 
 static void ge_add(ge_p1p1* r, const ge_p3* p, const ge_p3* q) {
-    fe a, b, c, d, e, f, g, h, t;
-    fe_sub(a, p->Y, p->X);
-    fe_sub(t, q->Y, q->X);
-    fe_mul(a, a, t);
-    fe_add(b, p->Y, p->X);
-    fe_add(t, q->Y, q->X);
-    fe_mul(b, b, t);
+    fe t0, a, b, c, d;
+    fe_add(a, p->Y, p->X);          // a = Y1+X1
+    fe_sub(b, p->Y, p->X);          // b = Y1-X1
+    fe_sub(c, q->Y, q->X);          // c = Y2-X2
+    fe_add(d, q->Y, q->X);          // d = Y2+X2
+    fe_mul(a, a, d);                // a = (Y1+X1)*(Y2+X2)
+    fe_mul(b, b, c);                // b = (Y1-X1)*(Y2-X2)
     fe_mul(c, p->T, q->T);
-    fe_mul(c, c, d2_limbs());
+    fe_mul(c, c, d2_limbs());       // c = T1*T2*2d
     fe_mul(d, p->Z, q->Z);
-    fe_add(d, d, d);
-    fe_sub(e, b, a);
-    fe_sub(f, d, c);
-    fe_add(g, d, c);
-    fe_add(h, b, a);
-    fe_mul(r->X, e, f);
-    fe_mul(r->Y, g, h);
-    fe_mul(r->T, e, h);
-    fe_mul(r->Z, f, g);
+    fe_add(d, d, d);                // d = 2*Z1*Z2
+    fe_sub(r->X, a, b);             // X = E = (Y1+X1)(Y2+X2) - (Y1-X1)(Y2-X2)
+    fe_add(r->Y, a, b);             // Y = H = (Y1+X1)(Y2+X2) + (Y1-X1)(Y2-X2)
+    fe_add(r->Z, d, c);             // Z = G = 2*Z1*Z2 + T1*T2*2d
+    fe_sub(r->T, d, c);             // T = F = 2*Z1*Z2 - T1*T2*2d
 }
 
 static void ge_sub(ge_p1p1* r, const ge_p3* p, const ge_p3* q) {
-    fe a, b, c, d, e, f, g, h, t;
-    fe_sub(a, p->Y, p->X);
-    fe_add(t, q->Y, q->X);
-    fe_mul(a, a, t);
-    fe_add(b, p->Y, p->X);
-    fe_sub(t, q->Y, q->X);
-    fe_mul(b, b, t);
+    fe a, b, c, d;
+    fe_add(a, p->Y, p->X);          // a = Y1+X1
+    fe_sub(b, p->Y, p->X);          // b = Y1-X1
+    fe_add(c, q->Y, q->X);          // c = Y2+X2 (swapped for subtraction)
+    fe_sub(d, q->Y, q->X);          // d = Y2-X2 (swapped for subtraction)
+    fe_mul(a, a, d);                // a = (Y1+X1)*(Y2-X2)
+    fe_mul(b, b, c);                // b = (Y1-X1)*(Y2+X2)
     fe_mul(c, p->T, q->T);
     fe_mul(c, c, d2_limbs());
-    fe_neg(c, c);
+    fe_neg(c, c);                   // c = -T1*T2*2d
     fe_mul(d, p->Z, q->Z);
-    fe_add(d, d, d);
-    fe_sub(e, b, a);
-    fe_sub(f, d, c);
-    fe_add(g, d, c);
-    fe_add(h, b, a);
-    fe_mul(r->X, e, f);
-    fe_mul(r->Y, g, h);
-    fe_mul(r->T, e, h);
-    fe_mul(r->Z, f, g);
+    fe_add(d, d, d);                // d = 2*Z1*Z2
+    fe_sub(r->X, a, b);             // X = E
+    fe_add(r->Y, a, b);             // Y = H
+    fe_add(r->Z, d, c);             // Z = G = 2*Z1*Z2 - T1*T2*2d
+    fe_sub(r->T, d, c);             // T = F = 2*Z1*Z2 + T1*T2*2d
 }
 
 static void ge_madd(ge_p1p1* r, const ge_p3* p, const ge_precomp* q) {
-    fe a, b, c, d, e, f, g, h;
-    fe_sub(a, p->Y, p->X);
-    fe_mul(a, a, q->y_minus_x);
-    fe_add(b, p->Y, p->X);
-    fe_mul(b, b, q->y_plus_x);
-    fe_mul(c, p->T, q->xy2d);
-    fe_add(d, p->Z, p->Z);
-    fe_sub(e, b, a);
-    fe_sub(f, d, c);
-    fe_add(g, d, c);
-    fe_add(h, b, a);
-    fe_mul(r->X, e, f);
-    fe_mul(r->Y, g, h);
-    fe_mul(r->T, e, h);
-    fe_mul(r->Z, f, g);
+    fe t0, a, b;
+    fe_add(a, p->Y, p->X);          // a = Y1+X1
+    fe_sub(b, p->Y, p->X);          // b = Y1-X1
+    fe_mul(a, a, q->y_plus_x);      // a = (Y1+X1)*(Y2+X2)
+    fe_mul(b, b, q->y_minus_x);     // b = (Y1-X1)*(Y2-X2)
+    fe_mul(r->T, q->xy2d, p->T);    // T = T1*T2*2d
+    fe_add(t0, p->Z, p->Z);        // t0 = 2*Z1 (Z2=1 for precomp)
+    fe_sub(r->X, a, b);             // X = E
+    fe_add(r->Y, a, b);             // Y = H
+    fe_add(r->Z, t0, r->T);         // Z = G = 2*Z1 + T1*T2*2d
+    fe_sub(r->T, t0, r->T);         // T = F = 2*Z1 - T1*T2*2d
 }
 
 static void ge_msub(ge_p1p1* r, const ge_p3* p, const ge_precomp* q) {
-    fe a, b, c, d, e, f, g, h;
-    fe_sub(a, p->Y, p->X);
-    fe_mul(a, a, q->y_plus_x);
-    fe_add(b, p->Y, p->X);
-    fe_mul(b, b, q->y_minus_x);
-    fe_mul(c, p->T, q->xy2d);
-    fe_neg(c, c);
-    fe_add(d, p->Z, p->Z);
-    fe_sub(e, b, a);
-    fe_sub(f, d, c);
-    fe_add(g, d, c);
-    fe_add(h, b, a);
-    fe_mul(r->X, e, f);
-    fe_mul(r->Y, g, h);
-    fe_mul(r->T, e, h);
-    fe_mul(r->Z, f, g);
+    fe t0, a, b;
+    fe_add(a, p->Y, p->X);          // a = Y1+X1
+    fe_sub(b, p->Y, p->X);          // b = Y1-X1
+    fe_mul(a, a, q->y_minus_x);      // a = (Y1+X1)*(Y2-X2) (swapped for sub)
+    fe_mul(b, b, q->y_plus_x);      // b = (Y1-X1)*(Y2+X2) (swapped for sub)
+    fe_mul(r->T, q->xy2d, p->T);    // T = T1*T2*2d
+    fe_neg(r->T, r->T);            // T = -T1*T2*2d
+    fe_add(t0, p->Z, p->Z);        // t0 = 2*Z1
+    fe_sub(r->X, a, b);             // X = E
+    fe_add(r->Y, a, b);             // Y = H
+    fe_add(r->Z, t0, r->T);         // Z = G = 2*Z1 - T1*T2*2d
+    fe_sub(r->T, t0, r->T);         // T = F = 2*Z1 + T1*T2*2d
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -354,8 +339,8 @@ static int ge_frombytes(ge_p3* h, const uint8_t s[32]) {
     fe_sub(u, u, h->Z);
     int ret = fe_sqrt_ratio(h->X, u, v);
     if (ret == 0) return -1;
-    fe_mul(h->T, h->X, h->Y);
     if (fe_isnegative(h->X) != (s[31] >> 7)) fe_neg(h->X, h->X);
+    fe_mul(h->T, h->X, h->Y);
     return 0;
 }
 
@@ -581,11 +566,14 @@ bool ed25519_verify(const uint8_t pub[32], const uint8_t* msg, size_t msg_len, c
     sha512_update(&ctx, msg, msg_len);
     sha512_final(&ctx, hram);
     sc_reduce(hram);
-    uint8_t neg_k[32];
-    sc_negate(neg_k, hram);
     const ge_p3* B = ge_get_basepoint();
-    ge_p3 expected_R;
-    ge_double_scalarmult_vartime(&expected_R, neg_k, &A, sig + 32, B);
+    // Compute expected_R = S*B - k*A
+    ge_p3 SB, kA, expected_R;
+    ge_scalarmult_base(&SB, sig + 32);
+    ge_scalarmult(&kA, hram, &A);
+    ge_p1p1 t;
+    ge_sub(&t, &SB, &kA);
+    ge_p1p1_to_p3(&expected_R, &t);
     uint8_t expected_bytes[32], r_bytes[32];
     ge_tobytes(expected_bytes, &expected_R);
     ge_tobytes(r_bytes, &R);

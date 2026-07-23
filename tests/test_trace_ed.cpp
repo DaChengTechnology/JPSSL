@@ -1,135 +1,97 @@
-#include "ed25519.hpp"
+// Direct test: ge_scalarmult with scalar=1 and known values
 #include "sha512.hpp"
+#include "ed25519.cpp"
 #include <cstdio>
 #include <cstring>
+using namespace jpssl;
+using namespace fe_impl;
 
-static void hexb(const char* label, const uint8_t* d, int n) {
-    printf("  %s: ", label);
-    for (int i = 0; i < n; i++) printf("%02x", d[i]);
+static void hex(const char* label, const uint8_t* d, int n) {
+    printf("%s: ", label);
+    for (int i=0;i<n;i++) printf("%02x",d[i]);
     printf("\n");
 }
 
-// Include the internal headers to trace step by step
-#include "fe_25519.hpp"
-
 int main() {
-    using namespace jpssl;
-    using namespace jpssl::fe_impl;
-
-    // RFC 8032 test vector 1: key generation
-    uint8_t seed[32] = {
-        0x9d,0x61,0xb1,0x9d,0xef,0xfd,0x5a,0x60,
-        0xba,0x84,0x4a,0xf4,0x92,0xec,0x2c,0xc4,
-        0x44,0x49,0xc5,0x69,0x7b,0x32,0x69,0x19,
-        0x70,0x3b,0xac,0x03,0x1c,0xae,0x7f,0x60
-    };
-
-    uint8_t expected_pub[32] = {
-        0xd7,0x5a,0x98,0x01,0x82,0xb1,0x0a,0xb7,
-        0xd5,0x4b,0xfe,0xd3,0xc9,0x64,0x07,0x3a,
-        0x0e,0xe1,0x72,0xf3,0xda,0xa6,0x23,0x25,
-        0xaf,0x02,0x1a,0x68,0xf7,0x07,0x51,0x1a
-    };
-
-    // Step 1: SHA-512(seed)
-    uint8_t h[64];
-    sha512_ctx ctx;
-    sha512_init(&ctx);
-    sha512_update(&ctx, seed, 32);
-    sha512_final(&ctx, h);
-    printf("=== Step 1: SHA-512(seed) ===\n");
-    hexb("hash", h, 64);
-
-    // Step 2: Clamp
-    h[0] &= 248;
-    h[31] &= 127;
-    h[31] |= 64;
-    printf("=== Step 2: Clamped scalar ===\n");
-    hexb("clamped", h, 32);
-
-    // Let's decode the scalar as a big integer
-    // The expected public key corresponds to scalar mult of clamped seed by basepoint
-
-    // Verify with OpenSSL via command line
-    printf("\n=== Cross-check with OpenSSL ===\n");
-    // Write seed to temp file and use openssl
-    {
-        FILE* f = fopen("/tmp/ed_seed.bin", "wb");
-        fwrite(seed, 1, 32, f);
-        fclose(f);
-    }
-    int r = system("openssl pkey -provider legacy -provider default -in /tmp/ed_seed.bin -inform DER -pubout 2>/dev/null || "
-                   "echo 'openssl pkey failed'");
-    if (r != 0) {
-        // Try with genpkey
-        system("openssl genpkey -algorithm ED25519 -outform DER 2>/dev/null");
-    }
-
-    // Better: compute public key using openssl
-    printf("\nOpenSSL derived public key:\n");
-    // First create a seed file and use openssl to derive key
-    FILE* f = fopen("/tmp/ed_priv.pem", "wb");
-    fprintf(f, "-----BEGIN PRIVATE KEY-----\n");
-    // Just skip openssl cross-check for now
-    fclose(f);
-
-    // Step 3: compute scalar multiplication manually step by step
-    // We need access to ge_scalarmult_base which is in anonymous namespace
-    // Let's just use the public API
-
-    uint8_t priv[64];
-    memcpy(priv, seed, 32);
-    // priv+32 will be filled by ed25519_sign
-
-    uint8_t sig[64];
-    ed25519_sign(priv, (const uint8_t*)"", 0, sig);
-    hexb("  computed pub", priv + 32, 32);
-    hexb("  expected pub", expected_pub, 32);
-    bool pub_match = memcmp(priv + 32, expected_pub, 32) == 0;
-    printf("  pubkey match: %s\n", pub_match ? "YES" : "NO");
-
-    // Verify the RFC 8032 expected signature
-    bool verify_ok = ed25519_verify(expected_pub, (const uint8_t*)"", 0, sig);
-    printf("  verify RFC sig: %s\n", verify_ok ? "OK" : "FAIL");
+    // RFC 8032 Test 1 public key
+    uint8_t pub[32] = {0xd7,0x5a,0x98,0x01,0x82,0xb1,0x0a,0xb7,0xd5,0x4b,0xfe,0xd3,0xc9,0x64,0x07,0x3a,0x0e,0xe1,0x72,0xf3,0xda,0xa6,0x23,0x25,0xaf,0x02,0x1a,0x68,0xf7,0x07,0x51,0x1a};
     
-    // Also test: does the computed pubkey verify the computed signature?
-    bool self_ok = ed25519_verify(priv+32, (const uint8_t*)"", 0, sig);
-    printf("  self verify: %s\n", self_ok ? "OK" : "FAIL");
-
-    // Test 2: generate fresh keypair and sign/verify
-    printf("\n=== Test: fresh keypair ===\n");
-    uint8_t priv2[64], pub2[32], sig2[64];
-    ed25519_keygen(pub2, priv2);
-    hexb("  pub2", pub2, 32);
-    ed25519_sign(priv2, (const uint8_t*)"test", 4, sig2);
-    bool ok2 = ed25519_verify(pub2, (const uint8_t*)"test", 4, sig2);
-    printf("  verify ok: %s\n", ok2 ? "YES" : "NO");
-
-    // If fails, trace the verify process
-    if (!ok2) {
-        printf("\n=== Tracing verify failure ===\n");
-        // Extract components
-        uint8_t r_bytes[32], s_bytes[32];
-        memcpy(r_bytes, sig2, 32);
-        memcpy(s_bytes, sig2 + 32, 32);
-        hexb("  R", r_bytes, 32);
-        hexb("  S", s_bytes, 32);
-        
-        // Check S < l
-        uint64_t L64[4] = {0x5812631a5cf5d3ed, 0x14def9dea2f79cd6, 0, 0x1000000000000000};
-        uint64_t s_l[4];
-        for (int i = 0; i < 4; i++)
-            s_l[i] = (uint64_t)s_bytes[8*i] | ((uint64_t)s_bytes[8*i+1] << 8) |
-                     ((uint64_t)s_bytes[8*i+2] << 16) | ((uint64_t)s_bytes[8*i+3] << 24) |
-                     ((uint64_t)s_bytes[8*i+4] << 32) | ((uint64_t)s_bytes[8*i+5] << 40) |
-                     ((uint64_t)s_bytes[8*i+6] << 48) | ((uint64_t)s_bytes[8*i+7] << 56);
-        int cmp = 0;
-        for (int j = 3; j >= 0; j--) {
-            if (s_l[j] > L64[j]) { cmp = 1; break; }
-            if (s_l[j] < L64[j]) { cmp = -1; break; }
-        }
-        printf("  S < l: %s (cmp=%d)\n", cmp < 0 ? "yes" : "no", cmp);
-    }
-
-    return pub_match && verify_ok && self_ok && ok2 ? 0 : 1;
+    // Decode A
+    ge_p3 A;
+    int ret = ge_frombytes(&A, pub);
+    printf("Decode A: ret=%d\n\n", ret);
+    
+    // Test 1: 1*A should equal A (ge_scalarmult)
+    printf("=== Test: 1*A via ge_scalarmult ===\n");
+    uint8_t s1[32] = {1,0};
+    ge_p3 r1;
+    ge_scalarmult(&r1, s1, &A);
+    uint8_t r1_enc[32]; ge_tobytes(r1_enc, &r1);
+    hex("1*A", r1_enc, 32);
+    hex("A  ", pub, 32);
+    printf("Match: %s\n\n", memcmp(r1_enc, pub, 32)==0?"YES":"NO");
+    
+    // Test 2: ge_double_scalarmult_vartime with k and S from RFC test
+    printf("=== Test: S*B - k*A using ge_double_scalarmult_vartime ===\n");
+    
+    // k from RFC test (verified correct)
+    uint8_t k[32] = {0x04,0x54,0x52,0x2e,0x16,0x7e,0x3e,0x8a,0x13,0x2c,0xec,0x31,0x61,0x25,0xd8,0xf8,0x6c,0xdf,0x00,0xc6,0xe7,0x04,0x05,0x29,0x3d,0x19,0x96,0x4c,0x8e,0xea,0xbc,0x86};
+    // S from RFC test
+    uint8_t S[32] = {0x0b,0x10,0x7a,0x8e,0x43,0x41,0x51,0x65,0x24,0xbe,0x5b,0x59,0xf0,0xf5,0x5b,0xd2,0x6b,0xb4,0xf9,0x1c,0x70,0x39,0x1e,0xc6,0xac,0x3b,0xa3,0x90,0x15,0x82,0xb8,0x5f};
+    // R from signature
+    uint8_t R[32] = {0xe5,0x56,0x43,0x00,0xc3,0x60,0xac,0x72,0x90,0x86,0xe2,0xcc,0x80,0x6e,0x82,0x8a,0x84,0x87,0x7f,0x1e,0xb8,0xe5,0xd9,0x74,0xd8,0x73,0xe0,0x65,0x22,0x49,0x01,0x55};
+    
+    // Method 1: neg_k = l - k, then S*B + neg_k*A
+    uint8_t neg_k[32];
+    sc_negate(neg_k, k);
+    hex("neg_k", neg_k, 32);
+    
+    ge_p3 SB, negKA;
+    ge_scalarmult_base(&SB, S);
+    ge_scalarmult(&negKA, neg_k, &A);
+    
+    ge_p1p1 t;
+    ge_add(&t, &SB, &negKA);
+    ge_p3 expected_R;
+    ge_p1p1_to_p3(&expected_R, &t);
+    uint8_t expected_R_enc[32];
+    ge_tobytes(expected_R_enc, &expected_R);
+    hex("S*B + neg_k*A", expected_R_enc, 32);
+    hex("R (sig)", R, 32);
+    printf("Match: %s\n\n", memcmp(expected_R_enc, R, 32)==0?"YES":"NO");
+    
+    // Method 2: use ge_sub
+    ge_p3 kA;
+    ge_scalarmult(&kA, k, &A);
+    uint8_t kA_enc[32]; ge_tobytes(kA_enc, &kA);
+    hex("k*A", kA_enc, 32);
+    
+    ge_p1p1 t_sub;
+    ge_sub(&t_sub, &SB, &kA);
+    ge_p3 expected_R2;
+    ge_p1p1_to_p3(&expected_R2, &t_sub);
+    uint8_t expected_R2_enc[32];
+    ge_tobytes(expected_R2_enc, &expected_R2);
+    hex("S*B - k*A (sub)", expected_R2_enc, 32);
+    printf("Match (sub): %s\n\n", memcmp(expected_R2_enc, R, 32)==0?"YES":"NO");
+    
+    // Method 3: use ge_double_scalarmult_vartime with (neg_k, A, S, B)
+    const ge_p3* B = ge_get_basepoint();
+    ge_p3 result_vt;
+    ge_double_scalarmult_vartime(&result_vt, neg_k, &A, S, B);
+    uint8_t result_vt_enc[32];
+    ge_tobytes(result_vt_enc, &result_vt);
+    hex("vartime(neg_k,S)", result_vt_enc, 32);
+    printf("Match (vartime): %s\n\n", memcmp(result_vt_enc, R, 32)==0?"YES":"NO");
+    
+    // Method 4: S*B - k*A via ge_double_scalarmult_vartime with (S, B, neg_k, A)
+    // This computes S*B + neg_k*A = R
+    ge_p3 result_vt2;
+    ge_double_scalarmult_vartime(&result_vt2, S, B, neg_k, &A);
+    uint8_t result_vt2_enc[32];
+    ge_tobytes(result_vt2_enc, &result_vt2);
+    hex("vartime(S,neg_k)", result_vt2_enc, 32);
+    printf("Match (vartime2): %s\n\n", memcmp(result_vt2_enc, R, 32)==0?"YES":"NO");
+    
+    return 0;
 }

@@ -12,6 +12,8 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <cstdlib>
+#include <span>
 
 using namespace jpssl::tls;
 using namespace jpssl;
@@ -84,6 +86,10 @@ void test_rsa_certificate() {
 
     bool verify_ok = cert->verify(test_data, sizeof(test_data) - 1, sig, sig_len);
     TEST("RSA-2048 verify valid signature", verify_ok);
+
+    sig[0] ^= 0xFF;
+    bool verify_bad = cert->verify(test_data, sizeof(test_data) - 1, sig, sig_len);
+    TEST("RSA-2048 reject tampered signature", !verify_bad);
 }
 
 // ========================================================================
@@ -257,6 +263,7 @@ void test_tls12_full_handshake() {
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
     rsa_keygen(server_cert->pub.rsa, server_cert->priv.rsa);
+    const rsa_public_key& server_pub = server_cert->pub.rsa;
     cert_mgr.add_certificate("localhost", std::move(server_cert));
 
     // ── 客户端发起握手 ──
@@ -267,14 +274,23 @@ void test_tls12_full_handshake() {
     TEST("TLS 1.2 client make ClientHello", ch_ok);
     TEST("ClientHello size > 0", !client_hello.empty());
 
-    // ── 服务端处理 ──
-    tls_session server;
+    // ── 客户端生成 pre_master_secret 并用 RSA 公钥加密 ──
     uint8_t pre_master[48];
+    for (int i = 0; i < 48; ++i) pre_master[i] = (uint8_t)(rand() % 256);
+    pre_master[0] = 0x03; pre_master[1] = 0x03;
+    uint8_t encrypted_pms[256];
+    rsa_encrypt(server_pub, std::span<const uint8_t>(pre_master, 48), encrypted_pms);
+
+    // ── 服务端处理（RSA 解密 pre_master_secret） ──
+    tls_session server;
+    uint8_t decrypted_pms[48];
     std::vector<uint8_t> server_response;
     bool sh_ok = tls12_make_server_flight(server, client_hello.data(), client_hello.size(),
-                                          server_response, pre_master, cert_mgr);
+                                          server_response, encrypted_pms, 256,
+                                          decrypted_pms, cert_mgr);
     TEST("TLS 1.2 server make ServerFlight", sh_ok);
     TEST("Server version is TLS 1.2", server.ver == TLSVersion::V12);
+    TEST("RSA decrypted pre_master matches", memcmp(pre_master, decrypted_pms, 48) == 0);
 
     // ── 客户端处理回包，生成 Finished ──
     std::vector<uint8_t> client_finished;

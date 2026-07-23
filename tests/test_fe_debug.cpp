@@ -1,81 +1,75 @@
-// Minimal debug: verify fe_frombytes ↔ fe_tobytes roundtrip
-#include "fe_25519.hpp"
+// Full ed25519 sign/verify test with RFC 8032 vectors
+#include "sha512.hpp"
+#include "ed25519.cpp"
 #include <cstdio>
 #include <cstring>
+using namespace jpssl;
 
-using fe = jpssl::fe_impl::fe;
-using jpssl::fe_impl::fe_frombytes;
-using jpssl::fe_impl::fe_tobytes;
-using jpssl::fe_impl::fe_mul;
-using jpssl::fe_impl::fe_add;
-using jpssl::fe_impl::fe_sub;
-
-void hex(const char* label, const uint8_t* d, int n) {
+static void hex(const char* label, const uint8_t* d, int n) {
     printf("%s: ", label);
-    for (int i = 0; i < n; i++) printf("%02x", d[i]);
+    for (int i=0;i<n;i++) printf("%02x",d[i]);
     printf("\n");
 }
 
 int main() {
-    // Test 1: fe_frombytes + fe_tobytes roundtrip for value 9
-    uint8_t nine[32] = {9};
-    fe x;
-    fe_frombytes(x, nine);
-    uint8_t out[32];
-    fe_tobytes(out, x);
-    printf("Test 1 - Roundtrip 9: %s\n", memcmp(nine, out, 32) == 0 ? "PASS" : "FAIL");
-    if (memcmp(nine, out, 32)) { hex("  Got     ", out, 32); hex("  Expected", nine, 32); }
-
-    // Test 2: fe_frombytes + fe_tobytes for value 0
-    uint8_t zero[32] = {};
-    fe_frombytes(x, zero);
-    fe_tobytes(out, x);
-    printf("Test 2 - Roundtrip 0: %s\n", memcmp(zero, out, 32) == 0 ? "PASS" : "FAIL");
-    if (memcmp(zero, out, 32)) { hex("  Got     ", out, 32); hex("  Expected", zero, 32); }
-
-    // Test 3: fe_frombytes + fe_tobytes for value 1
-    uint8_t one[32] = {1};
-    fe_frombytes(x, one);
-    fe_tobytes(out, x);
-    printf("Test 3 - Roundtrip 1: %s\n", memcmp(one, out, 32) == 0 ? "PASS" : "FAIL");
-    if (memcmp(one, out, 32)) { hex("  Got     ", out, 32); hex("  Expected", one, 32); }
-
-    // Test 4: fe_mul basic: 0 * 1 = 0
-    fe a, b, c;
-    fe_frombytes(a, zero);
-    fe_frombytes(b, one);
-    fe_mul(c, a, b);
-    fe_tobytes(out, c);
-    printf("Test 4 - 0*1=0:     %s\n", memcmp(zero, out, 32) == 0 ? "PASS" : "FAIL");
-    if (memcmp(zero, out, 32)) { hex("  Got     ", out, 32); }
-
-    // Test 5: fe_mul: 1 * 1 = 1
-    fe_mul(c, b, b);
-    fe_tobytes(out, c);
-    printf("Test 5 - 1*1=1:     %s\n", memcmp(one, out, 32) == 0 ? "PASS" : "FAIL");
-    if (memcmp(one, out, 32)) { hex("  Got     ", out, 32); }
-
-    // Test 6: fe_mul: 9 * 1 = 9
-    fe_frombytes(a, nine);
-    fe_mul(c, a, b);
-    fe_tobytes(out, c);
-    printf("Test 6 - 9*1=9:     %s\n", memcmp(nine, out, 32) == 0 ? "PASS" : "FAIL");
-    if (memcmp(nine, out, 32)) { hex("  Got     ", out, 32); }
-
-    // Test 7: fe_mul: 9 * 9 = 81 (in GF(2^255-19), 9^2 mod p)
-    uint8_t expected_81[32] = {81}; // 9*9=81 < p, so no reduction
-    fe_mul(c, a, a);
-    fe_tobytes(out, c);
-    printf("Test 7 - 9*9=81:    %s\n", memcmp(expected_81, out, 32) == 0 ? "PASS" : "FAIL");
-    if (memcmp(expected_81, out, 32)) { hex("  Got     ", out, 32); hex("  Expected", expected_81, 32); }
-
-    // Test 8: fe_add: 1+1=2
-    fe_add(c, b, b);
-    fe_tobytes(out, c);
-    uint8_t two[32] = {2};
-    printf("Test 8 - 1+1=2:     %s\n", memcmp(two, out, 32) == 0 ? "PASS" : "FAIL");
-    if (memcmp(two, out, 32)) { hex("  Got     ", out, 32); }
-
-    printf("\nDone.\n");
+    uint8_t pub[32] = {0xd7,0x5a,0x98,0x01,0x82,0xb1,0x0a,0xb7,0xd5,0x4b,0xfe,0xd3,0xc9,0x64,0x07,0x3a,0x0e,0xe1,0x72,0xf3,0xda,0xa6,0x23,0x25,0xaf,0x02,0x1a,0x68,0xf7,0x07,0x51,0x1a};
+    uint8_t expected_sig[64] = {
+        0xe5,0x56,0x43,0x00,0xc3,0x60,0xac,0x72,0x90,0x86,0xe2,0xcc,0x80,0x6e,0x82,0x8a,
+        0x84,0x87,0x7f,0x1e,0xb8,0xe5,0xd9,0x74,0xd8,0x73,0xe0,0x65,0x22,0x49,0x01,0x55,
+        0x5f,0xb8,0x82,0x15,0x90,0xa3,0x3b,0xac,0xc6,0x1e,0x39,0x70,0x1c,0xf9,0xb4,0x6b,
+        0xd2,0x5b,0xf5,0xf0,0x59,0x5b,0xbe,0x24,0x65,0x51,0x41,0x43,0x8e,0x7a,0x10,0x0b
+    };
+    
+    // Test 1: Sign with RFC seed, compare with expected
+    printf("=== Sign with RFC Test 1 seed ===\n");
+    uint8_t seed[32] = {
+        0x9d,0x61,0xb1,0x9d,0xef,0xfd,0x5a,0x60,
+        0xba,0x84,0x4a,0xf4,0x92,0xec,0x2c,0xc4,
+        0x44,0x49,0xc5,0x69,0x7b,0x32,0x69,0x19,
+        0x70,0x3b,0xac,0x03,0x1c,0xae,0x7f,0x60
+    };
+    
+    // SHA-512(seed) + clamp
+    uint8_t h[64], priv[64];
+    sha512_ctx ctx;
+    sha512_init(&ctx);
+    sha512_update(&ctx, seed, 32);
+    sha512_final(&ctx, h);
+    memcpy(priv, seed, 32);
+    // pub key already computed correctly: ge_scalarmult_base gives expected pub
+    h[0] &= 248; h[31] &= 127; h[31] |= 64;
+    
+    // Sign with priv = seed || pub
+    // ed25519_sign expects priv[0..31]=seed, priv[32..63]=pub
+    // We need to generate pub first
+    ge_p3 A_ge;
+    ge_scalarmult_base(&A_ge, h);
+    uint8_t our_pub[32];
+    ge_tobytes(our_pub, &A_ge);
+    memcpy(priv + 32, our_pub, 32);
+    
+    hex("pub key", priv + 32, 32);
+    hex("expected", pub, 32);
+    
+    uint8_t sig[64];
+    ed25519_sign(priv, nullptr, 0, sig);
+    
+    hex("R (sig)", sig, 32);
+    hex("S (sig)", sig + 32, 32);
+    hex("R (exp)", expected_sig, 32);
+    hex("S (exp)", expected_sig + 32, 32);
+    
+    bool sig_match = memcmp(sig, expected_sig, 64) == 0;
+    printf("Signature match: %s\n", sig_match ? "YES" : "NO");
+    
+    // Test 2: Verify RFC signature
+    printf("\n=== Verify RFC signature ===\n");
+    bool v_ok = ed25519_verify(pub, nullptr, 0, expected_sig);
+    printf("Verify: %s\n", v_ok ? "PASS" : "FAIL");
+    
+    // Test 3: Verify our own signature
+    bool v_ok2 = ed25519_verify(pub, nullptr, 0, sig);
+    printf("Verify (own sig): %s\n", v_ok2 ? "PASS" : "FAIL");
+    
     return 0;
 }
