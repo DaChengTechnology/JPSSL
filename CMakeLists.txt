@@ -53,6 +53,10 @@ set(CPU_SOURCES
     src/x25519.cpp
     src/tls.cpp
     src/ed25519.cpp
+    src/ed25519_avx2.cpp
+    src/ed25519_avx512.cpp
+    src/ed25519_batch_cpu.cpp
+    src/ed25519_batch_dispatch.cpp
     src/ecdsa.cpp
     src/rsa_batch_avx2.cpp
     src/rsa_batch_avx512.cpp
