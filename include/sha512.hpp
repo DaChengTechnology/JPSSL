@@ -12,6 +12,17 @@ void sha512_final(sha512_ctx*,uint8_t*);
 inline std::string sha512_hex(const uint8_t d[64]){char b[129];for(int i=0;i<64;++i)sprintf(b+i*2,"%02x",d[i]);return{b};}
 inline std::string sha384_hex(const uint8_t d[48]){char b[97];for(int i=0;i<48;++i)sprintf(b+i*2,"%02x",d[i]);return{b};}
 
+// One-shot 便捷接口：输入 data + len，直接输出摘要
+inline void sha512(const uint8_t* data, size_t len, uint8_t out[64]){
+    sha512_ctx ctx; sha512_init(&ctx);
+    if(len) sha512_update(&ctx,data,len);
+    sha512_final(&ctx,out);
+}
+inline void sha384(const uint8_t* data, size_t len, uint8_t out[48]){
+    sha512_ctx ctx; sha384_init(&ctx);
+    if(len) sha512_update(&ctx,data,len);
+    sha512_final(&ctx,out);
+}
 // MUSA GPU SHA-512 host API
 void musa_sha512_init();
 void musa_sha512_cleanup();

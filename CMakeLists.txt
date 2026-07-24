@@ -292,6 +292,13 @@ target_include_directories(test_openssl_compare PRIVATE
 )
 target_link_libraries(test_openssl_compare PRIVATE jpssl_cpu jpssl_musa JPTEST::jptest OpenSSL::SSL OpenSSL::Crypto)
 
+# ECDSA P-256 单元测试 (与 OpenSSL 互验)
+add_executable(test_ecdsa tests/test_ecdsa.cpp)
+target_include_directories(test_ecdsa PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(test_ecdsa PRIVATE jpssl_cpu OpenSSL::Crypto)
+
 add_executable(test_ghash_debug tests/test_ghash_debug.cpp)
 target_include_directories(test_ghash_debug PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
