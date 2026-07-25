@@ -269,22 +269,23 @@ tls_decrypt(server, record.data(), record.size(), ct, plaintext);
 
 #### 4. TLS 1.3 简化版握手（一次性）
 
-适合不需要分步处理握手消息的场景。
+适合不需要分步处理握手消息的场景。注意简化版只交换 ServerHello，不包含加密握手消息。
 
 ```cpp
 tls_session client, server;
 tls_certificate_manager cert_mgr;
 cert_mgr.add_certificate("localhost", std::move(cert));
 
-// 客户端生成 ClientHello 并处理服务端回包
-std::vector<uint8_t> ch;
-tls13_handshake_client(client, ch, server_flight.data(), server_flight.size());
-
-// 服务端处理 ClientHello 并生成回包
-std::vector<uint8_t> sh;
+// 服务端处理 ClientHello 并生成 ServerHello
+std::vector<uint8_t> sh, ch;
+tls13_make_client_hello(client, ch);
 tls13_handshake_server(server, ch.data(), ch.size(), sh, cert_mgr);
 
-// 安全通信
+// 客户端处理服务端回包
+std::vector<uint8_t> dummy;
+tls13_process_server_flight(client, sh.data(), sh.size(), dummy, &cert_mgr);
+
+// 安全通信（应用数据加解密）
 auto enc = tls_encrypt(client, ContentType::APPLICATION_DATA,
                        (const uint8_t*)"data", 4);
 ContentType t; std::vector<uint8_t> dec;
@@ -293,30 +294,44 @@ tls_decrypt(server, enc.data(), enc.size(), t, dec);
 
 #### 5. TLS 1.2 握手
 
-TLS 1.2 使用 pre-master secret 进行密钥派生，支持多种密码套件。
+TLS 1.2 使用 RSA 公钥加密 pre-master secret 进行密钥交换。
 
 ```cpp
-// ── 服务端：准备证书 ──
+// ── 服务端：准备 RSA 证书 ──
 tls_certificate_manager cert_mgr;
-cert_mgr.add_certificate("example.com", std::move(server_cert));
+auto rsa_cert = std::make_unique<tls_certificate>();
+rsa_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
+rsa_keygen(rsa_cert->pub.rsa, rsa_cert->priv.rsa);
+cert_mgr.add_certificate("example.com", std::move(rsa_cert));
 
 // ── 客户端：发起握手 ──
 tls_session client;
 client.server_name = "example.com";
 
-// Step 1: 客户端生成 ClientHello
+// Step 1: 客户端生成 ClientHello 并加密 pre-master secret
 std::vector<uint8_t> ch12;
 tls12_make_client_hello(client, ch12);
 
-// ── 服务端：处理 ClientHello，生成回包 ──
-tls_session server;
 uint8_t pre_master[48];
+for (int i = 0; i < 48; i++) pre_master[i] = (uint8_t)(rand() % 256);
+pre_master[0] = 0x03; pre_master[1] = 0x03;  // TLS 1.2 协议版本
+
+uint8_t encrypted_pms[256];
+rsa_encrypt(cert_mgr.get_certificate("example.com")->pub.rsa,
+            std::span<const uint8_t>(pre_master, 48), encrypted_pms);
+
+// ── 服务端：处理 ClientHello，RSA 解密 pre-master ──
+tls_session server;
+uint8_t decrypted_pms[48];
 std::vector<uint8_t> sh12;
-tls12_make_server_flight(server, ch12.data(), ch12.size(), sh12, pre_master, cert_mgr);
+tls12_make_server_flight(server, ch12.data(), ch12.size(), sh12,
+                          encrypted_pms, 256, decrypted_pms, cert_mgr);
+// decrypted_pms 应与 pre_master 一致
 
 // ── 客户端：处理服务端回包，生成 Finished ──
 std::vector<uint8_t> cf12;
-tls12_process_server_flight(client, sh12.data(), sh12.size(), pre_master, 48, cf12);
+tls12_process_server_flight(client, sh12.data(), sh12.size(),
+                              pre_master, 48, cf12);
 
 // ── 服务端：验证客户端 Finished ──
 tls12_process_client_finished(server, cf12.data(), cf12.size());
@@ -363,7 +378,7 @@ if (ok && content_type == ContentType::APPLICATION_DATA) {
 | `tls13_handshake_client(s, ch, resp, len)` | 简化版客户端握手（一次性） |
 | `tls13_handshake_server(s, ch, len, out, cert_mgr)` | 简化版服务端握手（一次性） |
 | `tls12_make_client_hello(s, out)` | 客户端生成 TLS 1.2 ClientHello |
-| `tls12_make_server_flight(s, ch, len, out, pms, cert_mgr)` | 服务端处理 ClientHello，生成回包 + pre-master |
+| `tls12_make_server_flight(s, ch, len, out, encrypted_pms, eplen, pms, cert_mgr)` | 服务端处理 ClientHello，RSA 解密 pre-master，生成回包 |
 | `tls12_process_server_flight(s, resp, len, pms, pms_len, out)` | 客户端处理回包，生成 Finished |
 | `tls12_process_client_finished(s, data, len)` | 服务端验证客户端 Finished |
 | `tls_encrypt(s, ct, data, len)` | 记录层加密 |
@@ -475,7 +490,7 @@ jpssl/
 │   ├── sha256.cpp / sha3.cpp / hmac.cpp / hkdf.cpp
 │   ├── sha512_cpu.cpp / sha512_opt.cpp / sha512_musa.cpp / sha512_gpu.mu
 │   ├── x25519.cpp / ed25519.cpp / ecdsa.cpp
-│   ├── tls.cpp / main.cpp
+│   ├── tls.cpp
 │   └── main.cpp
 ├── CMakeLists.txt
 └── README.md
