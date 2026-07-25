@@ -142,13 +142,13 @@ static void sc_reduce(uint8_t h[64]) {
             }
         }
     }
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 20; i++) {
         int cmp = 0;
         for (int j = 3; j >= 0; j--) {
             if (t[j] > L64[j]) { cmp = 1; break; }
             if (t[j] < L64[j]) { cmp = -1; break; }
         }
-        if (cmp < 0) break;
+        if (cmp <= 0) break;
         uint64_t borrow = 0;
         for (int j = 0; j < 4; j++) {
             unsigned __int128 r = (unsigned __int128)t[j] - L64[j] - borrow;
