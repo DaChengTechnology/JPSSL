@@ -254,17 +254,22 @@ tls13_process_server_flight(client, server_flight.data(), server_flight.size(),
 tls13_process_client_finished(server, client_finished.data(), client_finished.size());
 
 // ═══════════════════════════════════════════════════════
-// 握手完成！现在可以安全通信
+// 握手完成！双向安全通信
 // ═══════════════════════════════════════════════════════
 
-// 客户端发送加密数据
-auto record = tls_encrypt(client, ContentType::APPLICATION_DATA,
-                          (const uint8_t*)"Hello, TLS 1.3!", 16);
-
-// 服务端解密
+// 客户端 → 服务端
+auto client_record = tls_encrypt(client, ContentType::APPLICATION_DATA,
+                                  (const uint8_t*)"Hello, TLS 1.3!", 16);
 ContentType ct; std::vector<uint8_t> plaintext;
-tls_decrypt(server, record.data(), record.size(), ct, plaintext);
+tls_decrypt(server, client_record.data(), client_record.size(), ct, plaintext);
 // plaintext 包含 "Hello, TLS 1.3!"
+
+// 服务端 → 客户端（使用服务端专用 API）
+auto server_record = tls_server_encrypt(server, ContentType::APPLICATION_DATA,
+                                         (const uint8_t*)"Hi from server!", 15);
+ContentType ct2; std::vector<uint8_t> resp;
+tls_decrypt(client, server_record.data(), server_record.size(), ct2, resp);
+// resp 包含 "Hi from server!"
 ```
 
 #### 4. TLS 1.3 简化版握手（一次性）
@@ -348,23 +353,25 @@ tls_decrypt(server, enc.data(), enc.size(), t, dec);
 
 #### 6. 记录层加密/解密（握手完成后）
 
-握手完成后，所有应用数据通过记录层加密传输。
+握手完成后，所有应用数据通过记录层加密传输。`tls_encrypt`/`tls_decrypt` 根据 `session.is_server` 自动选择正确的密钥方向。
 
 ```cpp
-// 加密：ContentType 可以是 APPLICATION_DATA、ALERT 等
+// ── 通用 API（双向） ──
 std::vector<uint8_t> encrypted = tls_encrypt(
     session, ContentType::APPLICATION_DATA,
     plaintext_data, plaintext_len);
+ContentType ct; std::vector<uint8_t> decrypted;
+bool ok = tls_decrypt(session, encrypted.data(), encrypted.size(), ct, decrypted);
 
-// 解密：同时返回内容类型
-ContentType content_type;
-std::vector<uint8_t> decrypted;
-bool ok = tls_decrypt(session, encrypted.data(), encrypted.size(),
-                      content_type, decrypted);
-
-if (ok && content_type == ContentType::APPLICATION_DATA) {
-    // 处理解密后的应用数据
-}
+// ── 服务端专用 API（自文档化，显式方向） ──
+// 服务端发送数据给客户端
+auto server_record = tls_server_encrypt(server, ContentType::APPLICATION_DATA,
+                                         (const uint8_t*)"response", 8);
+// 客户端解密后...
+// 服务端解密客户端发来的数据
+ContentType sct; std::vector<uint8_t> from_client;
+bool s_ok = tls_server_decrypt(server, client_record.data(),
+                                client_record.size(), sct, from_client);
 ```
 
 #### 7. TLS 握手 API 总览
@@ -384,6 +391,9 @@ if (ok && content_type == ContentType::APPLICATION_DATA) {
 | `tls_encrypt(s, ct, data, len)` | 记录层加密 |
 | `tls_decrypt(s, record, len, ct, out)` | 记录层解密 |
 | `tls_encrypt_handshake(s, hs_msg, len)` | 加密握手消息（TLS 1.3 内部） |
+| `tls_server_encrypt(s, ct, data, len)` | 服务端加密发送（等价于 tls_encrypt，显式方向） |
+| `tls_server_decrypt(s, rec, len, ct, out)` | 服务端解密客户端数据（等价于 tls_decrypt） |
+| `tls_server_encrypt_handshake(s, hs, len)` | 服务端加密握手消息（内部使用） |
 
 #### 8. 证书管理 API
 

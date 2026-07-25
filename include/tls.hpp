@@ -166,6 +166,31 @@ bool tls_decrypt(tls_session& s, const uint8_t* record, size_t len, ContentType&
 std::vector<uint8_t> tls_encrypt_handshake(tls_session& s, const uint8_t* hs_msg, size_t hs_len);
 
 // ═══════════════════════════════════════════════════════════════════════
+//  TLS 1.3 服务端专用 API — 显式方向，自文档化
+// ═══════════════════════════════════════════════════════════════════════
+
+/// 服务端发送加密应用数据给客户端（使用 server_write_key）
+/// 等价于 tls_encrypt(s, ct, data, len)，要求 s.is_server == true
+inline std::vector<uint8_t> tls_server_encrypt(tls_session& s, ContentType ct,
+                                                 const uint8_t* data, size_t len) {
+    return tls_encrypt(s, ct, data, len);
+}
+
+/// 服务端解密客户端发来的加密数据（使用 client_write_key）
+/// 等价于 tls_decrypt(s, record, len, ct, out)，要求 s.is_server == true
+inline bool tls_server_decrypt(tls_session& s, const uint8_t* record, size_t len,
+                                ContentType& ct, std::vector<uint8_t>& out) {
+    return tls_decrypt(s, record, len, ct, out);
+}
+
+/// 服务端发送加密握手消息给客户端（TLS 1.3 内部使用）
+/// 等价于 tls_encrypt_handshake(s, hs_msg, hs_len)，要求 s.is_server == true
+inline std::vector<uint8_t> tls_server_encrypt_handshake(tls_session& s,
+                                                          const uint8_t* hs_msg, size_t hs_len) {
+    return tls_encrypt_handshake(s, hs_msg, hs_len);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  辅助函数
 // ═══════════════════════════════════════════════════════════════════════
 void tls_transcript_update(tls_session& s, const uint8_t* data, size_t len);
