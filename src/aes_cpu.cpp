@@ -397,6 +397,32 @@ void aes_encrypt_block(const aes_context& ctx,
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  纯软件单块加密（无 AES-NI 分派）
+// ═══════════════════════════════════════════════════════════════════════
+
+void aes_encrypt_block_sw(const aes_context& ctx,
+                          const uint8_t plain[16],
+                          uint8_t cipher[16]) {
+    std::memcpy(cipher, plain, 16);
+    const uint8_t* rk = ctx.enc_rk.data();
+
+    add_round_key(cipher, rk);
+    rk += 16;
+
+    for (int r = 1; r < ctx.rounds; ++r) {
+        sub_bytes(cipher);
+        shift_rows(cipher);
+        mix_columns(cipher);
+        add_round_key(cipher, rk);
+        rk += 16;
+    }
+
+    sub_bytes(cipher);
+    shift_rows(cipher);
+    add_round_key(cipher, rk);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  单块解密
 // ═══════════════════════════════════════════════════════════════════════
 

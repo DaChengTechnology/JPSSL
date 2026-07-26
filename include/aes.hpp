@@ -249,6 +249,9 @@ private:
 /// 加密单个 16 字节块（CPU）
 void aes_encrypt_block(const aes_context& ctx, const uint8_t plain[16], uint8_t cipher[16]);
 
+/// 纯软件 AES 加密单个 16 字节块（无 AES-NI）
+void aes_encrypt_block_sw(const aes_context& ctx, const uint8_t plain[16], uint8_t cipher[16]);
+
 /// 解密单个 16 字节块（CPU）
 void aes_decrypt_block(const aes_context& ctx, const uint8_t cipher[16], uint8_t plain[16]);
 
@@ -418,6 +421,35 @@ bool aes_gcm_decrypt_auto(const aes_context& ctx,
                           std::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext);
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CCM 模式（CPU 端 — Counter with CBC-MAC，AEAD 认证加密）
+//  NIST SP 800-38C / RFC 3610
+// ═══════════════════════════════════════════════════════════════════════
+
+/// CCM 加密（带 AAD + 认证标签）
+/// @param nonce       临时值（7-13 字节）
+/// @param nonce_len   nonce 长度
+/// @param plaintext   明文
+/// @param aad         附加认证数据（可为空）
+/// @param ciphertext  输出密文（与明文等长，自动调整大小）
+/// @param tag         输出认证标签（调用者分配，至少 tag_len 字节）
+/// @param tag_len     标签长度（4/6/8/10/12/14/16）
+void aes_ccm_encrypt(const aes_context& ctx,
+                     const uint8_t* nonce, size_t nonce_len,
+                     std::span<const uint8_t> plaintext,
+                     std::span<const uint8_t> aad,
+                     std::vector<uint8_t>& ciphertext,
+                     uint8_t* tag, size_t tag_len);
+
+/// CCM 解密（验证认证标签）
+/// @return true 标签验证通过, false 验证失败（输出不应被使用）
+bool aes_ccm_decrypt(const aes_context& ctx,
+                     const uint8_t* nonce, size_t nonce_len,
+                     std::span<const uint8_t> ciphertext,
+                     std::span<const uint8_t> aad,
+                     const uint8_t* tag, size_t tag_len,
+                     std::vector<uint8_t>& plaintext);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  MUSA GPU 端扩展：CBC 解密、GCM CTR 加密（CPU 做 XOR/GHASH）

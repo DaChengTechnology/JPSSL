@@ -45,6 +45,7 @@ set(CPU_SOURCES
     src/chacha20_poly1305.cpp
     src/rsa.cpp
     src/sha256.cpp
+    src/sha256_sha_ni.cpp
     src/sha3.cpp
     src/sha512_cpu.cpp
     src/sha512_opt.cpp
@@ -57,6 +58,7 @@ set(CPU_SOURCES
     src/ed25519_avx512.cpp
     src/ed25519_batch_cpu.cpp
     src/ed25519_batch_dispatch.cpp
+    src/aes_ccm.cpp
     src/ecdsa.cpp
     src/rsa_batch_avx2.cpp
     src/rsa_batch_avx512.cpp
@@ -91,6 +93,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     # SHA-512 OPT: SHA-NI + SSE4.1 for message schedule acceleration
     set_source_files_properties(src/sha512_opt.cpp PROPERTIES
         COMPILE_FLAGS "-msse4.1 -msha")
+    # SHA-256 SHA-NI: Intel SHA Extensions accelerated implementation
+    set_source_files_properties(src/sha256_sha_ni.cpp PROPERTIES
+        COMPILE_FLAGS "-msha")
     # RSA batch AVX2: 4-wide Montgomery multiplication
     set_source_files_properties(src/rsa_batch_avx2.cpp PROPERTIES
         COMPILE_FLAGS "-mavx2")
@@ -292,6 +297,13 @@ target_include_directories(test_openssl_compare PRIVATE
 )
 target_link_libraries(test_openssl_compare PRIVATE jpssl_cpu jpssl_musa JPTEST::jptest OpenSSL::SSL OpenSSL::Crypto)
 
+# AES-CCM 单元测试 (NIST SP 800-38C)
+add_executable(test_aes_ccm tests/test_aes_ccm.cpp)
+target_include_directories(test_aes_ccm PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(test_aes_ccm PRIVATE jpssl_cpu)
+
 # ECDSA P-256 单元测试 (与 OpenSSL 互验)
 add_executable(test_ecdsa tests/test_ecdsa.cpp)
 target_include_directories(test_ecdsa PRIVATE
@@ -305,6 +317,30 @@ target_include_directories(test_ghash_debug PRIVATE
     ${MUSA_INCLUDE_DIRS}
 )
 target_link_libraries(test_ghash_debug PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+# 密码套件吞吐量对比测试（jpssl vs OpenSSL，11 个套件）
+add_executable(bench_cipher_suites tests/bench_cipher_suites.cpp)
+target_include_directories(bench_cipher_suites PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(bench_cipher_suites PRIVATE jpssl_cpu jpssl_musa JPTEST::jptest OpenSSL::SSL OpenSSL::Crypto)
+
+# 硬件加速路径性能对比
+add_executable(bench_hardware_accel tests/bench_hardware_accel.cpp)
+target_include_directories(bench_hardware_accel PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(bench_hardware_accel PRIVATE jpssl_cpu jpssl_musa JPTEST::jptest OpenSSL::SSL OpenSSL::Crypto)
+if(JP_ENABLE_AVX2)
+    target_compile_definitions(bench_hardware_accel PRIVATE JP_AVX2)
+endif()
+target_include_directories(bench_cipher_suites PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(bench_cipher_suites PRIVATE jpssl_cpu jpssl_musa JPTEST::jptest OpenSSL::SSL OpenSSL::Crypto)
 
 # SHA-512 三种实现效率对比
 add_executable(bench_sha512 tests/bench_sha512.cpp)
