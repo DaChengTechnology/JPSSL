@@ -1,5 +1,6 @@
 #include "tls.hpp"
 #include "sha256.hpp"
+#include "sha512.hpp"
 #include <cstring>
 #include <random>
 #include <algorithm>
@@ -12,6 +13,38 @@ static const uint8_t RSA_SHA256_DIGEST_INFO[] = {
 };
 
 static void rand32(uint8_t* buf){static std::mt19937_64 g(std::random_device{}());for(int i=0;i<4;++i){uint64_t v=g();memcpy(buf+i*8,&v,8);}}
+
+static CipherSuite select_cipher_suite(uint16_t id){
+    switch(id){
+        case 0x1301: return CipherSuite::TLS_AES_128_GCM_SHA256;
+        case 0x1302: return CipherSuite::TLS_AES_256_GCM_SHA384;
+        case 0x1303: return CipherSuite::TLS_CHACHA20_POLY1305_SHA256;
+        case 0x1304: return CipherSuite::TLS_AES_128_CCM_SHA256;
+        default: return CipherSuite::TLS_AES_128_GCM_SHA256;
+    }
+}
+
+static bool cipher_needs_aes_ctx(CipherSuite cs){
+    switch(cs){
+        case CipherSuite::TLS_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_AES_128_CCM_SHA256:
+            return true;
+        default: return false;
+    }
+}
+
+static size_t aes_key_len(CipherSuite cs){
+    switch(cs){
+        case CipherSuite::TLS_AES_256_GCM_SHA384: return 32;
+        default: return 16;
+    }
+}
+
+static void aes_ctx_init(aes_context& ctx, const uint8_t* key, size_t key_len){
+    if(key_len==32) ctx.init(std::span<const uint8_t,32>(key,32));
+    else ctx.init(std::span<const uint8_t,16>(key,16));
+}
 
 static size_t client_hello_ext_offset(const uint8_t* ch, size_t ch_len){
     if(ch_len<45)return ch_len;
@@ -29,11 +62,24 @@ static size_t client_hello_ext_offset(const uint8_t* ch, size_t ch_len){
 //  transcript 辅助
 // ═══════════════════════════════════════════════════════════════════════
 void tls_transcript_update(tls_session& s, const uint8_t* data, size_t len){
-    if(!s.transcript_ready){sha256_init(&s.transcript_ctx);s.transcript_ready=true;}
-    sha256_update(&s.transcript_ctx,data,len);
+    if(!s.transcript_ready){
+        if(tls_use_sha384(s.cipher_suite)) sha384_init(&s.transcript_ctx.sha512);
+        else sha256_init(&s.transcript_ctx.sha256);
+        s.transcript_ready=true;
+    }
+    if(tls_use_sha384(s.cipher_suite)) sha512_update(&s.transcript_ctx.sha512,data,len);
+    else sha256_update(&s.transcript_ctx.sha256,data,len);
 }
 void tls_transcript_finalize(tls_session& s){
-    if(s.transcript_ready){sha256_ctx copy=s.transcript_ctx;sha256_final(&copy,s.transcript_hash);}
+    if(s.transcript_ready){
+        if(tls_use_sha384(s.cipher_suite)){
+            sha512_ctx copy=s.transcript_ctx.sha512;
+            sha512_final(&copy,s.transcript_hash);
+        }else{
+            sha256_ctx copy=s.transcript_ctx.sha256;
+            sha256_final(&copy,s.transcript_hash);
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -157,50 +203,101 @@ std::string tls_parse_server_name(const uint8_t* extensions, size_t ext_len){
 //  TLS 1.3 密钥派生
 // ═══════════════════════════════════════════════════════════════════════
 static void tls13_derive_handshake_keys(tls_session& s, const uint8_t* shared_secret, size_t shared_len){
-    uint8_t zero[32]={},early_secret[32],empty_hash[32];
-    sha256_ctx ctx;sha256_init(&ctx);sha256_final(&ctx,empty_hash);
-    hkdf_extract(zero,32,zero,32,early_secret);
-    hkdf_extract(early_secret,32,shared_secret,shared_len,s.handshake_secret);
+    size_t hl=tls_hash_len(s.cipher_suite);
+    bool use384=tls_use_sha384(s.cipher_suite);
+    uint8_t zero[48]={},early_secret[48],empty_hash[48];
+    if(use384){
+        sha512_ctx ctx;sha384_init(&ctx);sha512_final(&ctx,empty_hash);
+        hkdf_extract_sha384(zero,48,zero,48,early_secret);
+        hkdf_extract_sha384(early_secret,48,shared_secret,shared_len,s.handshake_secret);
+    }else{
+        sha256_ctx ctx;sha256_init(&ctx);sha256_final(&ctx,empty_hash);
+        hkdf_extract(zero,32,zero,32,early_secret);
+        hkdf_extract(early_secret,32,shared_secret,shared_len,s.handshake_secret);
+    }
 
     tls_transcript_finalize(s);
-    uint8_t ch_ts[32],sh_ts[32];
-    hkdf_expand_label(s.handshake_secret,"c hs traffic",s.transcript_hash,32,ch_ts,32);
-    hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,32,sh_ts,32);
+    uint8_t ch_ts[48],sh_ts[48];
+    if(use384){
+        hkdf_expand_label_sha384(s.handshake_secret,"c hs traffic",s.transcript_hash,hl,ch_ts,hl);
+        hkdf_expand_label_sha384(s.handshake_secret,"s hs traffic",s.transcript_hash,hl,sh_ts,hl);
+    }else{
+        hkdf_expand_label(s.handshake_secret,"c hs traffic",s.transcript_hash,hl,ch_ts,hl);
+        hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,hl,sh_ts,hl);
+    }
 
-    memcpy(s.client_write_key,ch_ts,32);memcpy(s.server_write_key,sh_ts,32);
-    hkdf_expand_label(s.handshake_secret,"c hs traffic",s.transcript_hash,32,s.client_write_iv,12);
-    hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,32,s.server_write_iv,12);
+    memcpy(s.client_write_key,ch_ts,hl);memcpy(s.server_write_key,sh_ts,hl);
+    if(use384){
+        hkdf_expand_label_sha384(s.handshake_secret,"c hs traffic",s.transcript_hash,hl,s.client_write_iv,12);
+        hkdf_expand_label_sha384(s.handshake_secret,"s hs traffic",s.transcript_hash,hl,s.server_write_iv,12);
+    }else{
+        hkdf_expand_label(s.handshake_secret,"c hs traffic",s.transcript_hash,hl,s.client_write_iv,12);
+        hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,hl,s.server_write_iv,12);
+    }
     s.client_seq=0;s.server_seq=0;
 }
 
 static void tls13_derive_application_keys(tls_session& s){
-    uint8_t zero[32]={};
-    hkdf_extract(s.handshake_secret,32,zero,32,s.master_secret);
+    size_t hl=tls_hash_len(s.cipher_suite);
+    bool use384=tls_use_sha384(s.cipher_suite);
+    uint8_t zero[48]={};
+    if(use384) hkdf_extract_sha384(s.handshake_secret,48,zero,48,s.master_secret);
+    else hkdf_extract(s.handshake_secret,32,zero,32,s.master_secret);
     tls_transcript_finalize(s);
-    hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,32,s.client_write_key,32);
-    hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,32,s.server_write_key,32);
-    hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,32,s.client_write_iv,12);
-    hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,32,s.server_write_iv,12);
+    if(use384){
+        hkdf_expand_label_sha384(s.master_secret,"c ap traffic",s.transcript_hash,hl,s.client_write_key,hl);
+        hkdf_expand_label_sha384(s.master_secret,"s ap traffic",s.transcript_hash,hl,s.server_write_key,hl);
+        hkdf_expand_label_sha384(s.master_secret,"c ap traffic",s.transcript_hash,hl,s.client_write_iv,12);
+        hkdf_expand_label_sha384(s.master_secret,"s ap traffic",s.transcript_hash,hl,s.server_write_iv,12);
+    }else{
+        hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,hl,s.client_write_key,hl);
+        hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,hl,s.server_write_key,hl);
+        hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,hl,s.client_write_iv,12);
+        hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,hl,s.server_write_iv,12);
+    }
     s.client_seq=0;s.server_seq=0;
 }
 
 static void tls13_derive_keys(tls_session& s, const uint8_t* shared_secret, size_t shared_len){
-    uint8_t early_secret[32],empty_hash[32];
-    sha256_ctx ctx;sha256_init(&ctx);sha256_final(&ctx,empty_hash);
-    uint8_t zero[32]={};
-    hkdf_extract(zero,32,zero,32,early_secret);
-    hkdf_extract(early_secret,32,shared_secret,shared_len,s.handshake_secret);
+    size_t hl=tls_hash_len(s.cipher_suite);
+    bool use384=tls_use_sha384(s.cipher_suite);
+    uint8_t early_secret[48],empty_hash[48];
+    uint8_t zero[48]={};
+    if(use384){
+        sha512_ctx ctx;sha384_init(&ctx);sha512_final(&ctx,empty_hash);
+        hkdf_extract_sha384(zero,48,zero,48,early_secret);
+        hkdf_extract_sha384(early_secret,48,shared_secret,shared_len,s.handshake_secret);
+    }else{
+        sha256_ctx ctx;sha256_init(&ctx);sha256_final(&ctx,empty_hash);
+        hkdf_extract(zero,32,zero,32,early_secret);
+        hkdf_extract(early_secret,32,shared_secret,shared_len,s.handshake_secret);
+    }
     tls_transcript_finalize(s);
-    hkdf_expand_label(s.handshake_secret,"c hs traffic",s.transcript_hash,32,s.client_write_key,32);
-    hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,32,s.server_write_key,32);
-    hkdf_expand_label(s.handshake_secret,"c hs traffic",s.transcript_hash,32,s.client_write_iv,12);
-    hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,32,s.server_write_iv,12);
-    hkdf_extract(s.handshake_secret,32,zero,32,s.master_secret);
+    if(use384){
+        hkdf_expand_label_sha384(s.handshake_secret,"c hs traffic",s.transcript_hash,hl,s.client_write_key,hl);
+        hkdf_expand_label_sha384(s.handshake_secret,"s hs traffic",s.transcript_hash,hl,s.server_write_key,hl);
+        hkdf_expand_label_sha384(s.handshake_secret,"c hs traffic",s.transcript_hash,hl,s.client_write_iv,12);
+        hkdf_expand_label_sha384(s.handshake_secret,"s hs traffic",s.transcript_hash,hl,s.server_write_iv,12);
+        hkdf_extract_sha384(s.handshake_secret,48,zero,48,s.master_secret);
+    }else{
+        hkdf_expand_label(s.handshake_secret,"c hs traffic",s.transcript_hash,hl,s.client_write_key,hl);
+        hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,hl,s.server_write_key,hl);
+        hkdf_expand_label(s.handshake_secret,"c hs traffic",s.transcript_hash,hl,s.client_write_iv,12);
+        hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,hl,s.server_write_iv,12);
+        hkdf_extract(s.handshake_secret,32,zero,32,s.master_secret);
+    }
     tls_transcript_finalize(s);
-    hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,32,s.client_write_key,32);
-    hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,32,s.server_write_key,32);
-    hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,32,s.client_write_iv,12);
-    hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,32,s.server_write_iv,12);
+    if(use384){
+        hkdf_expand_label_sha384(s.master_secret,"c ap traffic",s.transcript_hash,hl,s.client_write_key,hl);
+        hkdf_expand_label_sha384(s.master_secret,"s ap traffic",s.transcript_hash,hl,s.server_write_key,hl);
+        hkdf_expand_label_sha384(s.master_secret,"c ap traffic",s.transcript_hash,hl,s.client_write_iv,12);
+        hkdf_expand_label_sha384(s.master_secret,"s ap traffic",s.transcript_hash,hl,s.server_write_iv,12);
+    }else{
+        hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,hl,s.client_write_key,hl);
+        hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,hl,s.server_write_key,hl);
+        hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,hl,s.client_write_iv,12);
+        hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,hl,s.server_write_iv,12);
+    }
     s.client_seq=0;s.server_seq=0;
 }
 
@@ -209,34 +306,42 @@ static void tls13_derive_keys(tls_session& s, const uint8_t* shared_secret, size
 // ═══════════════════════════════════════════════════════════════════════
 static std::vector<uint8_t> tls13_make_finished(tls_session& s, bool for_server){
     (void)for_server;
-    uint8_t finished_key[32];
-    hkdf_expand_label(s.handshake_secret,"finished",nullptr,0,finished_key,32);
+    size_t hl=tls_hash_len(s.cipher_suite);
+    bool use384=tls_use_sha384(s.cipher_suite);
+    uint8_t finished_key[48];
+    if(use384) hkdf_expand_label_sha384(s.handshake_secret,"finished",nullptr,0,finished_key,hl);
+    else hkdf_expand_label(s.handshake_secret,"finished",nullptr,0,finished_key,hl);
 
     tls_transcript_finalize(s);
-    uint8_t verify_data[32];
-    hmac_sha256(finished_key,32,s.transcript_hash,32,verify_data);
+    uint8_t verify_data[48];
+    if(use384) hmac_sha384(finished_key,hl,s.transcript_hash,hl,verify_data);
+    else hmac_sha256(finished_key,hl,s.transcript_hash,hl,verify_data);
 
     std::vector<uint8_t> msg;
     msg.push_back((uint8_t)HandshakeType::FINISHED);
-    msg.push_back(0);msg.push_back(0);msg.push_back(32);
-    msg.insert(msg.end(),verify_data,verify_data+32);
+    msg.push_back(0);msg.push_back(0);msg.push_back((uint8_t)hl);
+    msg.insert(msg.end(),verify_data,verify_data+hl);
     return msg;
 }
 
 static bool tls13_verify_finished(tls_session& s, const uint8_t* hs_msg, size_t hs_len, bool for_server){
     (void)for_server;
     if(hs_len<4 || hs_msg[0]!=(uint8_t)HandshakeType::FINISHED)return false;
+    size_t hl=tls_hash_len(s.cipher_suite);
     size_t vd_len=(hs_msg[1]<<16)|(hs_msg[2]<<8)|hs_msg[3];
-    if(vd_len!=32 || hs_len!=4+vd_len)return false;
+    if(vd_len!=hl || hs_len!=4+vd_len)return false;
 
-    uint8_t finished_key[32];
-    hkdf_expand_label(s.handshake_secret,"finished",nullptr,0,finished_key,32);
+    bool use384=tls_use_sha384(s.cipher_suite);
+    uint8_t finished_key[48];
+    if(use384) hkdf_expand_label_sha384(s.handshake_secret,"finished",nullptr,0,finished_key,hl);
+    else hkdf_expand_label(s.handshake_secret,"finished",nullptr,0,finished_key,hl);
 
     tls_transcript_finalize(s);
-    uint8_t expected[32];
-    hmac_sha256(finished_key,32,s.transcript_hash,32,expected);
+    uint8_t expected[48];
+    if(use384) hmac_sha384(finished_key,hl,s.transcript_hash,hl,expected);
+    else hmac_sha256(finished_key,hl,s.transcript_hash,hl,expected);
 
-    return memcmp(expected,hs_msg+4,32)==0;
+    return memcmp(expected,hs_msg+4,hl)==0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -261,8 +366,9 @@ static std::vector<uint8_t> tls13_make_certificate(const tls_certificate& cert){
 
 static std::vector<uint8_t> tls13_make_cert_verify(const tls_certificate& cert, tls_session& s){
     tls_transcript_finalize(s);
+    size_t hl=tls_hash_len(s.cipher_suite);
     uint8_t sig[128];size_t sig_len=0;
-    if(!cert.sign(s.transcript_hash,32,sig,sig_len))return {};
+    if(!cert.sign(s.transcript_hash,hl,sig,sig_len))return {};
 
     std::vector<uint8_t> msg;
     msg.push_back((uint8_t)HandshakeType::CERT_VERIFY);
@@ -281,8 +387,9 @@ static bool tls13_verify_cert_verify(const tls_certificate& cert, tls_session& s
     if(alg!=(uint16_t)cert.sig_alg)return false;
     uint16_t sig_len=(hs_msg[6]<<8)|hs_msg[7];
     if(4+2+2+sig_len!=hs_len)return false;
+    size_t hl=tls_hash_len(s.cipher_suite);
     tls_transcript_finalize(s);
-    return cert.verify(s.transcript_hash,32,hs_msg+8,sig_len);
+    return cert.verify(s.transcript_hash,hl,hs_msg+8,sig_len);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -313,7 +420,7 @@ std::vector<uint8_t> tls_encrypt_handshake(tls_session& s, const uint8_t* hs_msg
     for(int i=0;i<8;++i)nonce[4+i]^=(uint8_t)(seq>>(56-i*8));
     ++seq;
 
-    aes_context ctx;ctx.init(std::span<const uint8_t,16>(write_key,16));
+    aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
     std::vector<uint8_t> ciphertext;uint8_t tag[16];
     aes_gcm_encrypt(ctx,nonce,12,inner,std::span<const uint8_t>(),ciphertext,tag,16);
 
@@ -345,7 +452,7 @@ static bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_
     for(int i=0;i<8;++i)nonce[4+i]^=(uint8_t)(seq>>(56-i*8));
     ++seq;
 
-    aes_context ctx;ctx.init(std::span<const uint8_t,16>(read_key,16));
+    aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
     std::vector<uint8_t> inner;
     if(!aes_gcm_decrypt(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(),tag,16,inner))
         return false;
@@ -370,8 +477,9 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
     client_hello.push_back(0x03);client_hello.push_back(0x03);
     client_hello.insert(client_hello.end(),s.client_random,s.client_random+32);
     client_hello.push_back(0);
-    client_hello.push_back(0);client_hello.push_back(2);
+    client_hello.push_back(0);client_hello.push_back(4);
     client_hello.push_back(0x13);client_hello.push_back(0x01);
+    client_hello.push_back(0x13);client_hello.push_back(0x02);
     client_hello.push_back(0x01);client_hello.push_back(0x00);
 
     std::vector<uint8_t> ext;
@@ -524,7 +632,7 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
     }
 
     tls13_derive_handshake_keys(s, shared_secret, shared_len);
-    s.aes_ctx.init(std::span<const uint8_t,16>(s.is_server?s.server_write_key:s.client_write_key,16));
+    aes_ctx_init(s.aes_ctx, s.is_server?s.server_write_key:s.client_write_key, aes_key_len(s.cipher_suite));
 
     // 解析加密的握手消息
     std::vector<uint8_t> hs_msgs;
@@ -590,7 +698,7 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
     tls13_derive_application_keys(s);
 
     tls_transcript_update(s,client_finished.data(),client_finished.size());
-    s.aes_ctx.init(std::span<const uint8_t,16>(s.is_server?s.server_write_key:s.client_write_key,16));
+    aes_ctx_init(s.aes_ctx, s.is_server?s.server_write_key:s.client_write_key, aes_key_len(s.cipher_suite));
     return true;
 }
 
@@ -707,7 +815,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
 
     // 派生握手密钥
     tls13_derive_handshake_keys(s,shared_secret,shared_len);
-    s.aes_ctx.init(std::span<const uint8_t,16>(s.server_write_key,16));
+    aes_ctx_init(s.aes_ctx, s.server_write_key, aes_key_len(s.cipher_suite));
 
     // 构建 EncryptedExtensions
     auto ee=tls13_make_encrypted_extensions();
@@ -740,14 +848,21 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
 }
 
 bool tls13_process_client_finished(tls_session& s, const uint8_t* data, size_t len){
+    fprintf(stderr, "[DEBUG] tls13_process_client_finished: data_len=%zu first4=", len);
+    if(len>=4) fprintf(stderr, "%02x%02x%02x%02x", data[0],data[1],data[2],data[3]);
+    else fprintf(stderr, "N/A");
+    fprintf(stderr, "\n");
     std::vector<uint8_t> hs;
-    if(!tls13_decrypt_handshake(s,data,len,hs))return false;
+    bool dec_ok = tls13_decrypt_handshake(s,data,len,hs);
+    fprintf(stderr, "[DEBUG] tls13_process_client_finished: decrypt_handshake=%s hs_len=%zu\n",
+            dec_ok?"OK":"FAIL", hs.size());
+    if(!dec_ok)return false;
     if(!tls13_verify_finished(s,hs.data(),hs.size(),false))return false;
 
     // 握手完成，派生应用密钥（在 transcript 更新前）
     tls13_derive_application_keys(s);
     tls_transcript_update(s,hs.data(),hs.size());
-    s.aes_ctx.init(std::span<const uint8_t,16>(s.server_write_key,16));
+    aes_ctx_init(s.aes_ctx, s.server_write_key, aes_key_len(s.cipher_suite));
     return true;
 }
 
@@ -767,7 +882,7 @@ bool tls13_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,
     uint8_t shared_secret[32];
     x25519_scalar_mult(shared_secret,client_priv,server_pub);
     tls13_derive_keys(s,shared_secret,32);
-    s.aes_ctx.init(std::span<const uint8_t,16>(s.client_write_key,16));
+    aes_ctx_init(s.aes_ctx, s.client_write_key, aes_key_len(s.cipher_suite));
     return true;
 }
 
@@ -834,7 +949,7 @@ bool tls13_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
         server_response[1]=(uint8_t)(len>>16);server_response[2]=(uint8_t)(len>>8);server_response[3]=(uint8_t)len;
         tls_transcript_update(s,server_response.data(),server_response.size());
         tls13_derive_keys(s,shared_secret,56);
-        s.aes_ctx.init(std::span<const uint8_t,16>(s.server_write_key,16));
+        aes_ctx_init(s.aes_ctx, s.server_write_key, aes_key_len(s.cipher_suite));
     } else {
         // X25519 (default)
         uint8_t server_priv[32],server_pub[32],client_pub[32],shared_secret[32];
@@ -858,7 +973,7 @@ bool tls13_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
         server_response[1]=(uint8_t)(len>>16);server_response[2]=(uint8_t)(len>>8);server_response[3]=(uint8_t)len;
         tls_transcript_update(s,server_response.data(),server_response.size());
         tls13_derive_keys(s,shared_secret,32);
-        s.aes_ctx.init(std::span<const uint8_t,16>(s.server_write_key,16));
+        aes_ctx_init(s.aes_ctx, s.server_write_key, aes_key_len(s.cipher_suite));
     }
     return true;
 }
@@ -900,7 +1015,7 @@ void tls12_derive_keys(tls_session& s, const uint8_t pre_master[48]){
     memset(s.client_write_iv+4,0,8);
     memset(s.server_write_iv+4,0,8);
     s.client_seq=0;s.server_seq=0;
-    s.aes_ctx.init(std::span<const uint8_t,16>(s.client_write_key,16));
+    aes_ctx_init(s.aes_ctx, s.client_write_key, aes_key_len(s.cipher_suite));
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1117,7 +1232,7 @@ std::vector<uint8_t> tls_encrypt(tls_session& s, ContentType ct, const uint8_t* 
         aad[11]=(uint8_t)(inner_len>>8);aad[12]=(uint8_t)inner_len;
         std::vector<uint8_t> ciphertext;
         uint8_t tag[16];
-        aes_context ctx;ctx.init(std::span<const uint8_t,16>(write_key,16));
+        aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
         aes_gcm_encrypt(ctx,nonce,12,inner,std::span<const uint8_t>(aad,13),ciphertext,tag,16);
         std::vector<uint8_t> record;
         record.push_back((uint8_t)ct);
@@ -1140,7 +1255,7 @@ std::vector<uint8_t> tls_encrypt(tls_session& s, ContentType ct, const uint8_t* 
     if(is_svr)++s.server_seq;else ++s.client_seq;
     std::vector<uint8_t> ciphertext;
     uint8_t tag[16];
-    aes_context ctx;ctx.init(std::span<const uint8_t,16>(write_key,16));
+    aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
     aes_gcm_encrypt(ctx,nonce,12,inner,std::span<const uint8_t>(),ciphertext,tag,16);
     std::vector<uint8_t> record;
     record.push_back(0x17);
@@ -1175,7 +1290,7 @@ bool tls_decrypt(tls_session& s, const uint8_t* record, size_t record_len, Conte
         aad[11]=(uint8_t)(ct_len>>8);aad[12]=(uint8_t)ct_len;
         if(is_svr)++s.client_seq;else ++s.server_seq;
         std::vector<uint8_t> inner;
-        aes_context ctx;ctx.init(std::span<const uint8_t,16>(read_key,16));
+        aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
         if(!aes_gcm_decrypt(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(aad,13),tag,16,inner))
             return false;
         if(inner.empty())return false;
@@ -1195,7 +1310,7 @@ bool tls_decrypt(tls_session& s, const uint8_t* record, size_t record_len, Conte
     for(int i=0;i<8;++i)nonce[4+i]^=(uint8_t)(seq>>(56-i*8));
     if(is_svr)++s.client_seq;else ++s.server_seq;
     std::vector<uint8_t> inner;
-    aes_context ctx;ctx.init(std::span<const uint8_t,16>(read_key,16));
+    aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
     if(!aes_gcm_decrypt(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(),tag,16,inner))
         return false;
     if(inner.empty())return false;
