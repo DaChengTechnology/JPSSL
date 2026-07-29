@@ -2,8 +2,7 @@
 #include "sha256.hpp"
 #include "sha512.hpp"
 #include <cstring>
-#include <random>
-#include <algorithm>
+#include <cstdio>
 namespace jpssl::tls {
 
 static const uint8_t RSA_SHA256_DIGEST_INFO[] = {
@@ -12,7 +11,14 @@ static const uint8_t RSA_SHA256_DIGEST_INFO[] = {
     0x00, 0x04, 0x20
 };
 
-static void rand32(uint8_t* buf){static std::mt19937_64 g(std::random_device{}());for(int i=0;i<4;++i){uint64_t v=g();memcpy(buf+i*8,&v,8);}}
+// 从 /dev/urandom 读取 32 字节密码学安全随机数
+static void rand32(uint8_t* buf){
+    FILE* f = fopen("/dev/urandom", "rb");
+    if(!f) return;
+    size_t n = fread(buf, 1, 32, f);
+    fclose(f);
+    if(n < 32) memset(buf + n, 0, 32 - n);
+}
 
 static CipherSuite select_cipher_suite(uint16_t id){
     switch(id){
@@ -1355,7 +1361,11 @@ bool tls13_make_new_session_ticket(tls_session& s, std::vector<uint8_t>& ticket_
     memcpy(s.psk_identity, ticket, 32);
     s.psk_identity_len = 32;
     s.ticket_issue_time = (uint64_t)time(nullptr);
-    s.ticket_age_add = (uint32_t)(rand() & 0xFFFFFFFF);
+    {
+        uint32_t r;
+        rand32((uint8_t*)&r);
+        s.ticket_age_add = r;
+    }
     s.psk_valid = true;
 
     if(tls_use_sha384(s.cipher_suite))
