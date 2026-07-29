@@ -27,29 +27,61 @@ enum class SignatureAlgorithm { RSA_PKCS1_SHA256=0x0401, ECDSA_SECP256R1_SHA256=
 // TLS 1.3 NamedGroup (RFC 8446 §4.2.7)
 enum class NamedGroup : uint16_t { X25519=0x001d, X448=0x001e };
 
+// TLS 1.3 CipherSuite (RFC 8446 §B.4)
+enum class CipherSuite : uint16_t {
+    TLS_AES_128_GCM_SHA256       = 0x1301,
+    TLS_AES_256_GCM_SHA384       = 0x1302,
+    TLS_CHACHA20_POLY1305_SHA256 = 0x1303,
+    TLS_AES_128_CCM_SHA256       = 0x1304
+};
+
 struct tls_record { ContentType type; TLSVersion ver; std::vector<uint8_t> payload; };
 
 // ═══════════════════════════════════════════════════════════════════════
 //  TLS 会话状态
 // ═══════════════════════════════════════════════════════════════════════
+// 用于 support SHA-256 和 SHA-384 transcript
+union transcript_ctx_union {
+    sha256_ctx sha256;
+    sha512_ctx sha512;
+    transcript_ctx_union() : sha256{} {}
+};
+
 struct tls_session {
     TLSVersion ver;
     std::string server_name; // SNI: 客户端请求的服务器名称
     uint8_t client_random[32], server_random[32];
-    uint8_t handshake_secret[32], master_secret[32];
+    uint8_t handshake_secret[48], master_secret[48]; // 48 for SHA-384 suites, first 32 for SHA-256
     uint8_t client_write_key[32], server_write_key[32];
     uint8_t client_write_iv[12], server_write_iv[12];
     uint64_t client_seq, server_seq;
     aes_context aes_ctx;
 
     bool is_server = false;
-    sha256_ctx transcript_ctx; // TLS 1.3 握手 transcript 哈希
-    uint8_t transcript_hash[32]; // 已计算的 transcript 哈希
+    CipherSuite cipher_suite = CipherSuite::TLS_AES_128_GCM_SHA256;
+    transcript_ctx_union transcript_ctx; // TLS 1.3 握手 transcript 哈希
+    uint8_t transcript_hash[48]; // 已计算的 transcript 哈希 (32 for SHA-256, 48 for SHA-384)
     bool transcript_ready = false;
     NamedGroup ks_group = NamedGroup::X25519;
     uint8_t ks_priv[56];
     uint8_t ks_pub[56];
 };
+
+// 根据 cipher suite 返回 hash 长度
+inline size_t tls_hash_len(CipherSuite cs) {
+    switch (cs) {
+        case CipherSuite::TLS_AES_256_GCM_SHA384: return 48;
+        default: return 32;
+    }
+}
+
+// 判断 cipher suite 是否使用 SHA-384
+inline bool tls_use_sha384(CipherSuite cs) {
+    switch (cs) {
+        case CipherSuite::TLS_AES_256_GCM_SHA384: return true;
+        default: return false;
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 //  证书结构（含私钥，用于签名 CertificateVerify）

@@ -11,4 +11,21 @@ void hmac_sha256(const uint8_t* key,size_t key_len,const uint8_t* msg,size_t msg
     sha256_init(&ctx);sha256_update(&ctx,ikey,64);sha256_update(&ctx,msg,msg_len);sha256_final(&ctx,tk);
     sha256_init(&ctx);sha256_update(&ctx,okey,64);sha256_update(&ctx,tk,32);sha256_final(&ctx,mac);
 }
+
+void hmac_sha384(const uint8_t* key,size_t key_len,const uint8_t* msg,size_t msg_len,uint8_t mac[48]){
+    // SHA-384 block size = 128, output = 48
+    uint8_t ikey[128],okey[128],tk[48];
+    sha512_ctx ctx;
+    if(key_len>128){
+        sha384_init(&ctx);sha512_update(&ctx,key,key_len);sha512_final(&ctx,tk);
+        key=tk;key_len=48;
+    }
+    memset(ikey,0,128);memset(okey,0,128);
+    memcpy(ikey,key,key_len);memcpy(okey,key,key_len);
+    for(int i=0;i<128;++i){ikey[i]^=0x36;okey[i]^=0x5c;}
+    sha384_init(&ctx);sha512_update(&ctx,ikey,128);
+    sha512_update(&ctx,msg,msg_len);sha512_final(&ctx,tk);
+    sha384_init(&ctx);sha512_update(&ctx,okey,128);
+    sha512_update(&ctx,tk,48);sha512_final(&ctx,mac);
+}
 }

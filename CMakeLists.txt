@@ -207,7 +207,7 @@ add_executable(test_tls tests/test_tls.cpp)
 target_include_directories(test_tls PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(test_tls PRIVATE jpssl_cpu JPTEST::jptest)
+target_link_libraries(test_tls PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES} JPTEST::jptest)
 
 # TLS 1.3 X448/Ed448 handshake test
 add_executable(test_tls448 tests/test_tls448.cpp)
@@ -216,7 +216,7 @@ target_include_directories(test_tls448 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${JPTEST_INCLUDE_DIRS}
 )
-target_link_libraries(test_tls448 PRIVATE jpssl_cpu JPTEST::jptest OpenSSL::Crypto)
+target_link_libraries(test_tls448 PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES} JPTEST::jptest OpenSSL::Crypto)
 
 # X448 RFC 7748 test
 add_executable(test_x448_rfc tests/test_x448_rfc.cpp)

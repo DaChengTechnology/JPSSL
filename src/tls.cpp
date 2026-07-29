@@ -848,15 +848,8 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
 }
 
 bool tls13_process_client_finished(tls_session& s, const uint8_t* data, size_t len){
-    fprintf(stderr, "[DEBUG] tls13_process_client_finished: data_len=%zu first4=", len);
-    if(len>=4) fprintf(stderr, "%02x%02x%02x%02x", data[0],data[1],data[2],data[3]);
-    else fprintf(stderr, "N/A");
-    fprintf(stderr, "\n");
     std::vector<uint8_t> hs;
-    bool dec_ok = tls13_decrypt_handshake(s,data,len,hs);
-    fprintf(stderr, "[DEBUG] tls13_process_client_finished: decrypt_handshake=%s hs_len=%zu\n",
-            dec_ok?"OK":"FAIL", hs.size());
-    if(!dec_ok)return false;
+    if(!tls13_decrypt_handshake(s,data,len,hs))return false;
     if(!tls13_verify_finished(s,hs.data(),hs.size(),false))return false;
 
     // 握手完成，派生应用密钥（在 transcript 更新前）
