@@ -412,6 +412,118 @@ void test_simplified_handshake_api() {
 }
 
 // ========================================================================
+//  测试 10: TLS 1.3 0-RTT — PSK 恢复与 Early Data
+// ========================================================================
+
+void test_tls13_0rtt() {
+    // ── 阶段 1: 完整握手 ──
+    tls_certificate_manager cert_mgr;
+    auto server_cert = std::make_unique<tls_certificate>();
+    server_cert->subject_name = "localhost";
+    server_cert->sig_alg = SignatureAlgorithm::ED25519;
+    ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
+    cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+    tls_session client, server;
+    std::vector<uint8_t> ch, sf, cf;
+    
+    tls13_make_client_hello(client, ch);
+    tls13_make_server_flight(server, ch.data(), ch.size(), sf, cert_mgr);
+    bool ok1 = tls13_process_server_flight(client, sf.data(), sf.size(), cf, &cert_mgr);
+    TEST("0-RTT: Full handshake client done", ok1);
+    
+    bool ok2 = tls13_process_client_finished(server, cf.data(), cf.size());
+    TEST("0-RTT: Full handshake server done", ok2);
+
+    if (!ok1 || !ok2) return;
+
+    // ── 阶段 2: 服务端生成 NewSessionTicket ──
+    std::vector<uint8_t> ticket_msg;
+    bool nst_ok = tls13_make_new_session_ticket(server, ticket_msg);
+    TEST("0-RTT: NewSessionTicket generated", nst_ok);
+    TEST("0-RTT: Ticket non-empty", !ticket_msg.empty());
+
+    // 加密 ticket 发送给客户端
+    auto enc_ticket = tls_encrypt_handshake(server, ticket_msg.data(), ticket_msg.size());
+    TEST("0-RTT: Ticket encrypted", !enc_ticket.empty());
+
+    // ── 阶段 3: 客户端存储 PSK ──
+    // 需要先解密 ticket (客户端从服务器接收加密的 ticket)
+    std::vector<uint8_t> ticket_hs;
+    // 服务端用 server_write_key 加密, 客户端用 server_write_key 解密
+    // 但需要处理记录层... 简化: 直接存储未加密的 ticket_msg
+    bool store_ok = tls13_store_psk(client, ticket_msg.data(), ticket_msg.size());
+    TEST("0-RTT: Client stores PSK", store_ok);
+
+    if (!store_ok) return;
+
+    // ── 阶段 4: PSK 恢复 — 客户端生成 PSK ClientHello ──
+    tls_session client2, server2;
+    client2.psk_valid = true;
+    memcpy(client2.psk_identity, client.psk_identity, client.psk_identity_len);
+    client2.psk_identity_len = client.psk_identity_len;
+    memcpy(client2.psk_value, client.psk_value, tls_hash_len(client.cipher_suite));
+    client2.ticket_age_add = client.ticket_age_add;
+    client2.ticket_issue_time = client.ticket_issue_time;
+    client2.server_name = "localhost";
+    client2.cipher_suite = client.cipher_suite;
+
+    // 设置服务端 PSK (从 server session 复制)
+    server2.psk_valid = true;
+    memcpy(server2.psk_identity, server.psk_identity, server.psk_identity_len);
+    server2.psk_identity_len = server.psk_identity_len;
+    memcpy(server2.psk_value, server.psk_value, tls_hash_len(server.cipher_suite));
+    server2.ticket_age_add = server.ticket_age_add;
+    server2.ticket_issue_time = server.ticket_issue_time;
+    server2.cipher_suite = server.cipher_suite;
+    server2.is_server = true;
+
+    std::vector<uint8_t> psk_ch;
+    bool psk_ch_ok = tls13_make_psk_client_hello(client2, psk_ch);
+    TEST("0-RTT: PSK ClientHello generated", psk_ch_ok);
+    TEST("0-RTT: PSK CH non-empty", !psk_ch.empty());
+
+    if (!psk_ch_ok) return;
+
+    // ── 阶段 5: 服务端处理 PSK ClientHello ──
+    bool accept_early = false;
+    bool psk_ok = tls13_process_psk_client_hello(server2, psk_ch.data(), psk_ch.size(), accept_early);
+    TEST("0-RTT: Server accepts PSK", psk_ok);
+    TEST("0-RTT: Early data accepted", accept_early);
+
+    if (!psk_ok || !accept_early) return;
+
+    // ── 阶段 6: 客户端发送 Early Data ──
+    const uint8_t early_msg[] = "Hello from 0-RTT!";
+    auto early_enc = tls13_encrypt_early_data(client2, early_msg, sizeof(early_msg)-1);
+    TEST("0-RTT: Early data encrypted", !early_enc.empty());
+
+    // ── 阶段 7: 服务端解密 Early Data ──
+    ContentType early_ct;
+    std::vector<uint8_t> early_dec;
+    bool early_dec_ok = tls13_decrypt_early_data(server2, early_enc.data(), early_enc.size(),
+                                                  early_ct, early_dec);
+    TEST("0-RTT: Early data decrypted", early_dec_ok);
+    TEST("0-RTT: Early data matches", early_dec_ok &&
+         early_dec.size() == sizeof(early_msg)-1 &&
+         memcmp(early_dec.data(), early_msg, sizeof(early_msg)-1) == 0);
+
+    // ── 阶段 8: EndOfEarlyData ──
+    auto eoed = tls13_make_end_of_early_data();
+    TEST("0-RTT: EndOfEarlyData non-empty", !eoed.empty());
+    
+    auto enc_eoed = tls_encrypt_handshake(server2, eoed.data(), eoed.size());
+    TEST("0-RTT: EoED encrypted", !enc_eoed.empty());
+
+    // Client processes EoED
+    // Note: we need to set up handshake keys first (server would have derived them)
+    // For this test, just verify the message format
+    bool eoed_ok = tls13_process_end_of_early_data(client2, eoed.data(), eoed.size());
+    TEST("0-RTT: EoED parsed", eoed_ok);
+}
+
+
+// ========================================================================
 //  入口
 // ========================================================================
 
@@ -428,6 +540,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_tls12_full_handshake);
     RUN_TEST(test_sni_multi_domain);
     RUN_TEST(test_simplified_handshake_api);
+    RUN_TEST(test_tls13_0rtt);
 
     return test_summary();
 }

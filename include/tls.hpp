@@ -21,8 +21,8 @@ namespace jpssl::tls {
 
 enum class TLSVersion { V12=0x0303, V13=0x0304 };
 enum class ContentType { CHANGE_CIPHER_SPEC=20, ALERT=21, HANDSHAKE=22, APPLICATION_DATA=23 };
-enum class HandshakeType { CLIENT_HELLO=1, SERVER_HELLO=2, ENCRYPTED_EXTENSIONS=8, CERTIFICATE=11, CERT_VERIFY=15, FINISHED=20 };
-enum class ExtensionType { SERVER_NAME=0, SUPPORTED_VERSIONS=0x2b, KEY_SHARE=0x33, SUPPORTED_GROUPS=0x0a };
+enum class HandshakeType { CLIENT_HELLO=1, SERVER_HELLO=2, NEW_SESSION_TICKET=4, END_OF_EARLY_DATA=5, ENCRYPTED_EXTENSIONS=8, CERTIFICATE=11, CERT_VERIFY=15, FINISHED=20 };
+enum class ExtensionType { SERVER_NAME=0, SUPPORTED_VERSIONS=0x2b, KEY_SHARE=0x33, SUPPORTED_GROUPS=0x0a, PRE_SHARED_KEY=41, PSK_KEY_EXCHANGE_MODES=45, EARLY_DATA=42 };
 enum class SignatureAlgorithm { RSA_PKCS1_SHA256=0x0401, ECDSA_SECP256R1_SHA256=0x0403, ED25519=0x0807, ED448=0x0808 };
 // TLS 1.3 NamedGroup (RFC 8446 §4.2.7)
 enum class NamedGroup : uint16_t { X25519=0x001d, X448=0x001e };
@@ -65,6 +65,20 @@ struct tls_session {
     NamedGroup ks_group = NamedGroup::X25519;
     uint8_t ks_priv[56];
     uint8_t ks_pub[56];
+
+    // 0-RTT / PSK 支持
+    bool psk_valid = false;                // 客户端: 是否有可用 PSK
+    uint8_t psk_identity[32];              // PSK 标识 (ticket)
+    uint8_t psk_identity_len = 0;
+    uint8_t psk_value[48];                 // PSK 值 (resumption secret, hash_len bytes)
+    uint32_t ticket_age_add = 0;           // ticket 混淆 age
+    uint64_t ticket_issue_time = 0;        // ticket 签发时间戳 (用于 replay 保护)
+
+    // 0-RTT early data 密钥 (仅客户端发送, 服务端接收)
+    uint8_t client_early_write_key[32];
+    uint8_t client_early_write_iv[12];
+    uint64_t client_early_seq = 0;
+    bool early_data_accepted = false;      // 服务端: 是否接受了 early_data
 };
 
 // 根据 cipher suite 返回 hash 长度
@@ -231,6 +245,40 @@ inline std::vector<uint8_t> tls_server_encrypt_handshake(tls_session& s,
                                                           const uint8_t* hs_msg, size_t hs_len) {
     return tls_encrypt_handshake(s, hs_msg, hs_len);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TLS 1.3 0-RTT / PSK API
+// ═══════════════════════════════════════════════════════════════════════
+
+// 服务端: 生成 NewSessionTicket (handshake 完成后调用)
+// 在 tls13_process_client_finished 之后, 派生 resumption_master_secret 并生成 ticket
+bool tls13_make_new_session_ticket(tls_session& s, std::vector<uint8_t>& ticket_msg,
+                                   uint32_t ticket_lifetime = 86400);
+
+// 客户端: 存储从 NewSessionTicket 中提取的 PSK
+bool tls13_store_psk(tls_session& s, const uint8_t* ticket_msg, size_t ticket_len);
+
+// 客户端: 用 PSK 生成含 pre_shared_key 扩展的 ClientHello
+// 调用前需先设置 s.psk_valid = true 并填充 psk 字段, 或调用 tls13_store_psk
+bool tls13_make_psk_client_hello(tls_session& s, std::vector<uint8_t>& client_hello);
+
+// 客户端: 加密 0-RTT early data
+std::vector<uint8_t> tls13_encrypt_early_data(tls_session& s,
+                                              const uint8_t* data, size_t len);
+
+// 服务端: 处理 PSK ClientHello, 返回是否接受 early_data
+bool tls13_process_psk_client_hello(tls_session& s, const uint8_t* client_hello, size_t ch_len,
+                                    bool& accept_early_data);
+
+// 服务端: 解密 0-RTT early data (accept_early_data=true 时可用)
+bool tls13_decrypt_early_data(tls_session& s, const uint8_t* record, size_t record_len,
+                              ContentType& ct, std::vector<uint8_t>& out);
+
+// 服务端: 生成 EndOfEarlyData 消息 (accept_early_data=true 且在 EE 之前发送)
+std::vector<uint8_t> tls13_make_end_of_early_data();
+
+// 客户端: 处理 EndOfEarlyData 消息
+bool tls13_process_end_of_early_data(tls_session& s, const uint8_t* data, size_t len);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  辅助函数

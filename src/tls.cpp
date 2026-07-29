@@ -1312,4 +1312,470 @@ bool tls_decrypt(tls_session& s, const uint8_t* record, size_t record_len, Conte
     return true;
 }
 
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TLS 1.3 0-RTT — PSK, Early Data, NewSessionTicket
+// ═══════════════════════════════════════════════════════════════════════
+
+static void tls13_derive_resumption_secret(tls_session& s, uint8_t out[48]){
+    size_t hl=tls_hash_len(s.cipher_suite);
+    uint8_t zero[48]={};
+    if(tls_use_sha384(s.cipher_suite))
+        hkdf_extract_sha384(s.master_secret,48,zero,48,out);
+    else
+        hkdf_extract(s.master_secret,32,zero,32,out);
+}
+
+static void tls13_derive_early_secret_from_psk(tls_session& s, const uint8_t* psk,
+                                                uint8_t early_secret[48]){
+    size_t hl=tls_hash_len(s.cipher_suite);
+    uint8_t zero[48]={};
+    if(tls_use_sha384(s.cipher_suite))
+        hkdf_extract_sha384(zero,48,psk,48,early_secret);
+    else
+        hkdf_extract(zero,32,psk,32,early_secret);
+}
+
+static void tls13_derive_early_traffic_keys(tls_session& s, const uint8_t* psk){
+    size_t hl=tls_hash_len(s.cipher_suite);
+    uint8_t early_secret[48];
+    tls13_derive_early_secret_from_psk(s, psk, early_secret);
+    tls_transcript_finalize(s);
+    size_t key_len = aes_key_len(s.cipher_suite);
+    if(tls_use_sha384(s.cipher_suite)){
+        hkdf_expand_label_sha384(early_secret,"c e traffic",s.transcript_hash,hl,
+                                 s.client_early_write_key, key_len);
+        hkdf_expand_label_sha384(early_secret,"c e traffic",s.transcript_hash,hl,
+                                 s.client_early_write_iv, 12);
+    }else{
+        hkdf_expand_label(early_secret,"c e traffic",s.transcript_hash,hl,
+                          s.client_early_write_key, key_len);
+        hkdf_expand_label(early_secret,"c e traffic",s.transcript_hash,hl,
+                          s.client_early_write_iv, 12);
+    }
+    s.client_early_seq=0;
+}
+
+static void tls13_compute_binder(tls_session& s, const uint8_t* psk,
+                                  const uint8_t* ch_truncated, size_t ch_trunc_len,
+                                  uint8_t* binder){
+    size_t hl=tls_hash_len(s.cipher_suite);
+    uint8_t early_secret[48];
+    tls13_derive_early_secret_from_psk(s, psk, early_secret);
+
+    uint8_t binder_key[48];
+    if(tls_use_sha384(s.cipher_suite))
+        hkdf_expand_label_sha384(early_secret,"ext binder",(const uint8_t*)"",0,binder_key,hl);
+    else
+        hkdf_expand_label(early_secret,"ext binder",(const uint8_t*)"",0,binder_key,hl);
+
+    uint8_t ch_hash[48];
+    if(tls_use_sha384(s.cipher_suite)){
+        sha512_ctx ctx; sha384_init(&ctx);
+        sha512_update(&ctx,ch_truncated,ch_trunc_len);
+        sha512_final(&ctx,ch_hash);
+    }else{
+        sha256_ctx ctx; sha256_init(&ctx);
+        sha256_update(&ctx,ch_truncated,ch_trunc_len);
+        sha256_final(&ctx,ch_hash);
+    }
+
+    if(tls_use_sha384(s.cipher_suite))
+        hmac_sha384(binder_key,hl,ch_hash,hl,binder);
+    else
+        hmac_sha256(binder_key,hl,ch_hash,hl,binder);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  NewSessionTicket
+// ═══════════════════════════════════════════════════════════════════════
+
+bool tls13_make_new_session_ticket(tls_session& s, std::vector<uint8_t>& ticket_msg,
+                                   uint32_t ticket_lifetime){
+    size_t hl=tls_hash_len(s.cipher_suite);
+    uint8_t resumption_secret[48];
+    tls13_derive_resumption_secret(s, resumption_secret);
+
+    // Generate random ticket and nonce (use a 48-byte buffer to avoid rand32 overflow)
+    uint8_t ticket_buf[48];
+    rand32(ticket_buf);
+    uint8_t ticket[32], ticket_nonce[16];
+    memcpy(ticket, ticket_buf, 32);
+    rand32(ticket_buf+16);
+    memcpy(ticket_nonce, ticket_buf+16, 16);
+
+    memcpy(s.psk_identity, ticket, 32);
+    s.psk_identity_len = 32;
+    s.ticket_issue_time = (uint64_t)time(nullptr);
+    s.ticket_age_add = (uint32_t)(rand() & 0xFFFFFFFF);
+    s.psk_valid = true;
+
+    if(tls_use_sha384(s.cipher_suite))
+        hkdf_expand_label_sha384(resumption_secret,"resumption",ticket_nonce,16,s.psk_value,hl);
+    else
+        hkdf_expand_label(resumption_secret,"resumption",ticket_nonce,16,s.psk_value,hl);
+
+    // Build body
+    std::vector<uint8_t> body;
+    body.push_back((uint8_t)(ticket_lifetime>>24));
+    body.push_back((uint8_t)(ticket_lifetime>>16));
+    body.push_back((uint8_t)(ticket_lifetime>>8));
+    body.push_back((uint8_t)(ticket_lifetime));
+    body.push_back((uint8_t)(s.ticket_age_add>>24));
+    body.push_back((uint8_t)(s.ticket_age_add>>16));
+    body.push_back((uint8_t)(s.ticket_age_add>>8));
+    body.push_back((uint8_t)(s.ticket_age_add));
+    body.push_back(16);
+    body.insert(body.end(), ticket_nonce, ticket_nonce+16);
+    body.push_back(0x00); body.push_back(0x20);
+    body.insert(body.end(), ticket, ticket+32);
+    uint16_t ext_len = 2 + 4;
+    body.push_back((uint8_t)(ext_len>>8));
+    body.push_back((uint8_t)(ext_len));
+    body.push_back(0x00); body.push_back(0x2a);
+    body.push_back(0x00); body.push_back(0x04);
+    body.push_back(0xFF); body.push_back(0xFF); body.push_back(0xFF); body.push_back(0xFF);
+
+    ticket_msg.clear();
+    ticket_msg.push_back((uint8_t)HandshakeType::NEW_SESSION_TICKET);
+    size_t blen = body.size();
+    ticket_msg.push_back((uint8_t)(blen>>16));
+    ticket_msg.push_back((uint8_t)(blen>>8));
+    ticket_msg.push_back((uint8_t)(blen));
+    ticket_msg.insert(ticket_msg.end(), body.begin(), body.end());
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PSK storage (client side)
+// ═══════════════════════════════════════════════════════════════════════
+
+bool tls13_store_psk(tls_session& s, const uint8_t* ticket_msg, size_t ticket_len){
+    if(ticket_len<8) return false;
+    if(ticket_msg[0]!=(uint8_t)HandshakeType::NEW_SESSION_TICKET) return false;
+    size_t blen = (ticket_msg[1]<<16)|(ticket_msg[2]<<8)|ticket_msg[3];
+    if(4+blen > ticket_len) return false;
+
+    const uint8_t* body = ticket_msg+4;
+    size_t off = 0;
+    off += 4; // ticket_lifetime
+    s.ticket_age_add = (body[off]<<24)|(body[off+1]<<16)|(body[off+2]<<8)|body[off+3];
+    off += 4;
+    uint8_t nonce_len = body[off++];
+    if(off + nonce_len > blen) return false;
+    const uint8_t* ticket_nonce = body + off;
+    off += nonce_len;
+    uint16_t tkt_len = (body[off]<<8)|body[off+1];
+    off += 2;
+    if(off + tkt_len > blen) return false;
+    const uint8_t* ticket = body + off;
+
+    if(tkt_len > sizeof(s.psk_identity)) tkt_len = sizeof(s.psk_identity);
+    memcpy(s.psk_identity, ticket, tkt_len);
+    s.psk_identity_len = (uint8_t)tkt_len;
+    s.ticket_issue_time = (uint64_t)time(nullptr);
+
+    uint8_t resumption_secret[48];
+    tls13_derive_resumption_secret(s, resumption_secret);
+    size_t hl=tls_hash_len(s.cipher_suite);
+    if(tls_use_sha384(s.cipher_suite))
+        hkdf_expand_label_sha384(resumption_secret,"resumption",ticket_nonce,nonce_len,s.psk_value,hl);
+    else
+        hkdf_expand_label(resumption_secret,"resumption",ticket_nonce,nonce_len,s.psk_value,hl);
+
+    s.psk_valid = true;
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PSK ClientHello
+// ═══════════════════════════════════════════════════════════════════════
+
+bool tls13_make_psk_client_hello(tls_session& s, std::vector<uint8_t>& client_hello){
+    if(!s.psk_valid) return false;
+    s.transcript_ready = false;
+    s.is_server = false;
+    s.ver = TLSVersion::V13;
+    rand32(s.client_random);
+
+    size_t hl=tls_hash_len(s.cipher_suite);
+    std::vector<uint8_t> all_ext;
+
+    // SNI
+    if(!s.server_name.empty()){
+        all_ext.push_back(0x00);all_ext.push_back(0x00);
+        uint16_t sni_len=5+s.server_name.size();
+        all_ext.push_back(0x00);all_ext.push_back((uint8_t)sni_len);
+        uint16_t nl_len=3+s.server_name.size();
+        all_ext.push_back(0x00);all_ext.push_back((uint8_t)nl_len);
+        all_ext.push_back(0x00);
+        all_ext.push_back(0x00);all_ext.push_back((uint8_t)s.server_name.size());
+        for(char c:s.server_name)all_ext.push_back((uint8_t)c);
+    }
+    // supported_versions
+    all_ext.push_back(0x00);all_ext.push_back(0x2b);all_ext.push_back(0x00);all_ext.push_back(0x03);
+    all_ext.push_back(0x02);all_ext.push_back(0x03);all_ext.push_back(0x04);
+    // supported_groups
+    all_ext.push_back(0x00);all_ext.push_back(0x0a);all_ext.push_back(0x00);all_ext.push_back(0x04);
+    all_ext.push_back(0x00);all_ext.push_back(0x02);all_ext.push_back(0x00);all_ext.push_back(0x1d);
+    // signature_algorithms
+    all_ext.push_back(0x00);all_ext.push_back(0x0d);all_ext.push_back(0x00);all_ext.push_back(0x08);
+    all_ext.push_back(0x00);all_ext.push_back(0x06);
+    all_ext.push_back(0x08);all_ext.push_back(0x07);all_ext.push_back(0x04);all_ext.push_back(0x03);
+    all_ext.push_back(0x08);all_ext.push_back(0x08);
+    // key_share X25519
+    {
+        uint8_t cpriv[32],cpub[32];
+        x25519_generate_keypair(cpub,cpriv);
+        memcpy(s.ks_priv, cpriv, 32);
+        all_ext.push_back(0x00);all_ext.push_back(0x33);all_ext.push_back(0x00);all_ext.push_back(0x24);
+        all_ext.push_back(0x00);all_ext.push_back(0x1d);all_ext.push_back(0x00);all_ext.push_back(0x20);
+        all_ext.insert(all_ext.end(),cpub,cpub+32);
+    }
+    // psk_key_exchange_modes
+    all_ext.push_back(0x00);all_ext.push_back(0x2d);all_ext.push_back(0x00);all_ext.push_back(0x02);
+    all_ext.push_back(0x01);all_ext.push_back(0x01);
+    // early_data
+    all_ext.push_back(0x00);all_ext.push_back(0x2a);all_ext.push_back(0x00);all_ext.push_back(0x00);
+
+    // PSK extension
+    uint16_t id_len = s.psk_identity_len;
+    uint64_t now = (uint64_t)time(nullptr);
+    uint64_t age_ms = (now - s.ticket_issue_time) * 1000;
+    uint32_t obf_age = (uint32_t)(age_ms + s.ticket_age_add);
+    size_t identities_len = 2 + id_len + 4;
+    size_t binders_len = 1 + hl;
+    size_t psk_ext_data_len = 2 + identities_len + 2 + binders_len;
+
+    all_ext.push_back(0x00);all_ext.push_back(0x29);
+    all_ext.push_back((uint8_t)(psk_ext_data_len>>8));all_ext.push_back((uint8_t)(psk_ext_data_len));
+    all_ext.push_back((uint8_t)(identities_len>>8));all_ext.push_back((uint8_t)(identities_len));
+    all_ext.push_back((uint8_t)(id_len>>8));all_ext.push_back((uint8_t)(id_len));
+    all_ext.insert(all_ext.end(), s.psk_identity, s.psk_identity + id_len);
+    all_ext.push_back((uint8_t)(obf_age>>24));all_ext.push_back((uint8_t)(obf_age>>16));
+    all_ext.push_back((uint8_t)(obf_age>>8));all_ext.push_back((uint8_t)(obf_age));
+    all_ext.push_back((uint8_t)(binders_len>>8));all_ext.push_back((uint8_t)(binders_len));
+    all_ext.push_back((uint8_t)(hl));
+    size_t binder_pos = all_ext.size();
+    for(size_t i=0;i<hl;i++) all_ext.push_back(0);
+
+    // Build ClientHello
+    client_hello.clear();
+    client_hello.push_back((uint8_t)HandshakeType::CLIENT_HELLO);
+    client_hello.push_back(0);client_hello.push_back(0);client_hello.push_back(0);
+    client_hello.push_back(0x03);client_hello.push_back(0x03);
+    client_hello.insert(client_hello.end(),s.client_random,s.client_random+32);
+    client_hello.push_back(0);
+    client_hello.push_back(0x00);client_hello.push_back(0x08);
+    client_hello.push_back(0x13);client_hello.push_back(0x01);
+    client_hello.push_back(0x13);client_hello.push_back(0x02);
+    client_hello.push_back(0x13);client_hello.push_back(0x03);
+    client_hello.push_back(0x13);client_hello.push_back(0x04);
+    client_hello.push_back(0x01);client_hello.push_back(0x00);
+
+    uint16_t ext_total = (uint16_t)all_ext.size();
+    client_hello.push_back((uint8_t)(ext_total>>8));
+    client_hello.push_back((uint8_t)(ext_total));
+    client_hello.insert(client_hello.end(), all_ext.begin(), all_ext.end());
+
+    // Update CH length BEFORE computing binder (binder covers CH length header)
+    size_t ch_len = client_hello.size() - 4;
+    client_hello[1] = (uint8_t)(ch_len>>16);
+    client_hello[2] = (uint8_t)(ch_len>>8);
+    client_hello[3] = (uint8_t)(ch_len);
+
+    // Compute and write binder
+    size_t ch_trunc_len = 4 + 47 + 2 + binder_pos;
+    uint8_t binder[48];
+    tls13_compute_binder(s, s.psk_value, client_hello.data(), ch_trunc_len, binder);
+    size_t binder_off = 4 + 47 + 2 + binder_pos;
+    for(size_t i=0;i<hl;i++) client_hello[binder_off + i] = binder[i];
+
+    tls_transcript_update(s, client_hello.data(), client_hello.size());
+    tls13_derive_early_traffic_keys(s, s.psk_value);
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Server: process PSK ClientHello
+// ═══════════════════════════════════════════════════════════════════════
+
+bool tls13_process_psk_client_hello(tls_session& s, const uint8_t* ch, size_t ch_len,
+                                    bool& accept_early_data){
+    accept_early_data = false;
+    if(ch_len<45) return false;
+
+    size_t ext_offset = client_hello_ext_offset(ch, ch_len);
+    if(ext_offset+2 > ch_len) return false;
+    uint16_t ext_total = (ch[ext_offset]<<8)|ch[ext_offset+1];
+    size_t eo = ext_offset+2;
+
+    while(eo+4 <= ext_offset+2+ext_total && eo+4 <= ch_len){
+        uint16_t etype = (ch[eo]<<8)|ch[eo+1];
+        uint16_t elen = (ch[eo+2]<<8)|ch[eo+3];
+        if(etype == 0x29 && elen >= 6){
+            const uint8_t* edata = ch+eo+4;
+            uint16_t ilen = (edata[0]<<8)|edata[1];
+            if(2+ilen > elen) return false;
+            uint16_t id_len = (edata[2]<<8)|edata[3];
+            if(4+id_len > ilen) return false;
+            const uint8_t* identity = edata+4;
+            uint32_t obf_age = (edata[4+id_len]<<24)|(edata[4+id_len+1]<<16)|
+                              (edata[4+id_len+2]<<8)|edata[4+id_len+3];
+
+            if(id_len == s.psk_identity_len && memcmp(identity, s.psk_identity, id_len)==0){
+                // Ticket age check
+                uint64_t now = (uint64_t)time(nullptr);
+                uint64_t real_age = (now - s.ticket_issue_time) * 1000;
+                uint32_t claimed_age = obf_age - s.ticket_age_add;
+                int64_t diff = (int64_t)claimed_age - (int64_t)real_age;
+                if(diff < -10000 || diff > 10000) return false;
+
+                // Binder verification
+                size_t hl=tls_hash_len(s.cipher_suite);
+                size_t binders_off = 2 + ilen;
+                uint16_t blen = (edata[binders_off]<<8)|edata[binders_off+1];
+                uint8_t bnd_len = edata[binders_off+2];
+                const uint8_t* binder = edata + binders_off + 3;
+
+                uint8_t expected[48];
+                size_t trunc_len = eo + 4 + binders_off + 3;
+                tls13_compute_binder(s, s.psk_value, ch, trunc_len, expected);
+                if(memcmp(binder, expected, hl) != 0) return false;
+
+                // Check for early_data
+                size_t eo2 = ext_offset+2;
+                while(eo2+4 <= ext_offset+2+ext_total){
+                    if(((ch[eo2]<<8)|ch[eo2+1]) == 0x002a) {
+                        accept_early_data = true;
+                        s.early_data_accepted = true;
+                        // Record ClientHello in transcript before deriving early keys
+                        s.transcript_ready = false;
+                        tls_transcript_update(s, ch, ch_len);
+                        tls13_derive_early_traffic_keys(s, s.psk_value);
+                        break;
+                    }
+                    eo2 += 4 + ((ch[eo2+2]<<8)|ch[eo2+3]);
+                }
+                return true;
+            }
+        }
+        eo += 4 + elen;
+    }
+    return false;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Early data encrypt/decrypt
+// ═══════════════════════════════════════════════════════════════════════
+
+std::vector<uint8_t> tls13_encrypt_early_data(tls_session& s,
+                                              const uint8_t* data, size_t len){
+    std::vector<uint8_t> inner;
+    inner.push_back((uint8_t)ContentType::APPLICATION_DATA);
+    inner.insert(inner.end(), data, data+len);
+    inner.push_back((uint8_t)ContentType::APPLICATION_DATA);
+
+    uint8_t nonce[12];
+    memcpy(nonce, s.client_early_write_iv, 12);
+    for(int i=0;i<8;++i) nonce[4+i] ^= (uint8_t)(s.client_early_seq>>(56-i*8));
+    ++s.client_early_seq;
+
+    std::vector<uint8_t> ciphertext;
+    uint8_t tag[16];
+    // Inline AEAD dispatch
+    switch(s.cipher_suite){
+        case CipherSuite::TLS_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_AES_256_GCM_SHA384: {
+            aes_context ctx;
+            aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
+            aes_gcm_encrypt(ctx, nonce, 12, inner, std::span<const uint8_t>(), ciphertext, tag, 16);
+            break;
+        }
+        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
+            chacha20_poly1305_encrypt(s.client_early_write_key, nonce, inner, std::span<const uint8_t>(), ciphertext, tag);
+            break;
+        case CipherSuite::TLS_AES_128_CCM_SHA256: {
+            aes_context ctx;
+            aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
+            aes_ccm_encrypt(ctx, nonce, 12, inner, std::span<const uint8_t>(), ciphertext, tag, 16);
+            break;
+        }
+    }
+
+    std::vector<uint8_t> record;
+    record.push_back(0x17);
+    record.push_back(0x03); record.push_back(0x03);
+    size_t rlen = ciphertext.size() + 16;
+    record.push_back((uint8_t)(rlen>>8)); record.push_back((uint8_t)(rlen));
+    record.insert(record.end(), ciphertext.begin(), ciphertext.end());
+    record.insert(record.end(), tag, tag+16);
+    return record;
+}
+
+bool tls13_decrypt_early_data(tls_session& s, const uint8_t* record, size_t record_len,
+                              ContentType& ct, std::vector<uint8_t>& out){
+    if(!s.early_data_accepted) return false;
+    if(record_len < 5) return false;
+    size_t rlen = (record[3]<<8)|record[4];
+    if(5+rlen != record_len || rlen < 16) return false;
+    const uint8_t* ciphertext = record+5;
+    size_t ct_len = rlen - 16;
+    const uint8_t* tag = record+5+ct_len;
+
+    uint8_t nonce[12];
+    memcpy(nonce, s.client_early_write_iv, 12);
+    for(int i=0;i<8;++i) nonce[4+i] ^= (uint8_t)(s.client_early_seq>>(56-i*8));
+    ++s.client_early_seq;
+
+    std::vector<uint8_t> inner;
+    bool ok = false;
+    switch(s.cipher_suite){
+        case CipherSuite::TLS_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_AES_256_GCM_SHA384: {
+            aes_context ctx;
+            aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
+            ok = aes_gcm_decrypt(ctx, nonce, 12, std::span<const uint8_t>(ciphertext,ct_len),
+                                 std::span<const uint8_t>(), tag, 16, inner);
+            break;
+        }
+        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
+            ok = chacha20_poly1305_decrypt(s.client_early_write_key, nonce,
+                                           std::span<const uint8_t>(ciphertext,ct_len),
+                                           std::span<const uint8_t>(), tag, inner);
+            break;
+        case CipherSuite::TLS_AES_128_CCM_SHA256: {
+            aes_context ctx;
+            aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
+            ok = aes_ccm_decrypt(ctx, nonce, 12, std::span<const uint8_t>(ciphertext,ct_len),
+                                 std::span<const uint8_t>(), tag, 16, inner);
+            break;
+        }
+    }
+    if(!ok || inner.empty()) return false;
+    ct = (ContentType)inner[0];
+    out.assign(inner.begin()+1, inner.end()-1);
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  EndOfEarlyData
+// ═══════════════════════════════════════════════════════════════════════
+
+std::vector<uint8_t> tls13_make_end_of_early_data(){
+    std::vector<uint8_t> msg;
+    msg.push_back((uint8_t)HandshakeType::END_OF_EARLY_DATA);
+    msg.push_back(0); msg.push_back(0); msg.push_back(0);
+    return msg;
+}
+
+bool tls13_process_end_of_early_data(tls_session& s, const uint8_t* data, size_t len){
+    (void)s;
+    if(len < 4) return false;
+    if(data[0] != (uint8_t)HandshakeType::END_OF_EARLY_DATA) return false;
+    return true;
+}
+
+
 }
