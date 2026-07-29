@@ -305,12 +305,12 @@ static void tls13_derive_keys(tls_session& s, const uint8_t* shared_secret, size
 //  构建 Finished 消息
 // ═══════════════════════════════════════════════════════════════════════
 static std::vector<uint8_t> tls13_make_finished(tls_session& s, bool for_server){
-    (void)for_server;
     size_t hl=tls_hash_len(s.cipher_suite);
     bool use384=tls_use_sha384(s.cipher_suite);
     uint8_t finished_key[48];
-    if(use384) hkdf_expand_label_sha384(s.handshake_secret,"finished",nullptr,0,finished_key,hl);
-    else hkdf_expand_label(s.handshake_secret,"finished",nullptr,0,finished_key,hl);
+    const char* label = for_server ? "s finished" : "c finished";
+    if(use384) hkdf_expand_label_sha384(s.handshake_secret,label,nullptr,0,finished_key,hl);
+    else hkdf_expand_label(s.handshake_secret,label,nullptr,0,finished_key,hl);
 
     tls_transcript_finalize(s);
     uint8_t verify_data[48];
@@ -325,16 +325,16 @@ static std::vector<uint8_t> tls13_make_finished(tls_session& s, bool for_server)
 }
 
 static bool tls13_verify_finished(tls_session& s, const uint8_t* hs_msg, size_t hs_len, bool for_server){
-    (void)for_server;
     if(hs_len<4 || hs_msg[0]!=(uint8_t)HandshakeType::FINISHED)return false;
     size_t hl=tls_hash_len(s.cipher_suite);
     size_t vd_len=(hs_msg[1]<<16)|(hs_msg[2]<<8)|hs_msg[3];
     if(vd_len!=hl || hs_len!=4+vd_len)return false;
 
+    const char* label = for_server ? "s finished" : "c finished";
     bool use384=tls_use_sha384(s.cipher_suite);
     uint8_t finished_key[48];
-    if(use384) hkdf_expand_label_sha384(s.handshake_secret,"finished",nullptr,0,finished_key,hl);
-    else hkdf_expand_label(s.handshake_secret,"finished",nullptr,0,finished_key,hl);
+    if(use384) hkdf_expand_label_sha384(s.handshake_secret,label,nullptr,0,finished_key,hl);
+    else hkdf_expand_label(s.handshake_secret,label,nullptr,0,finished_key,hl);
 
     tls_transcript_finalize(s);
     uint8_t expected[48];
@@ -882,93 +882,7 @@ bool tls13_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,
 bool tls13_handshake_server(tls_session& s, const uint8_t* client_hello, size_t ch_len,
                              std::vector<uint8_t>& server_response,
                              const tls_certificate_manager& cert_manager){
-    s.ver=TLSVersion::V13;s.is_server=true;rand32(s.server_random);memcpy(s.client_random,client_hello+6,32);
-    s.transcript_ready=false;
-    tls_transcript_update(s,client_hello,ch_len);
-    size_t ext_offset=client_hello_ext_offset(client_hello,ch_len);
-    uint16_t ext_len_total=0;
-    if(ext_offset+2<=ch_len){
-        ext_len_total=(client_hello[ext_offset]<<8)|client_hello[ext_offset+1];
-        if(ext_offset+2+ext_len_total<=ch_len)
-            s.server_name=tls_parse_server_name(client_hello+ext_offset+2,ext_len_total);
-    }
-    const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
-    (void)cert;
-
-    server_response.clear();
-    server_response.push_back((uint8_t)HandshakeType::SERVER_HELLO);
-    server_response.push_back(0);server_response.push_back(0);server_response.push_back(0);
-    server_response.push_back(0x03);server_response.push_back(0x03);
-    server_response.insert(server_response.end(),s.server_random,s.server_random+32);
-    server_response.push_back(0);
-    server_response.push_back(0x13);server_response.push_back(0x01);
-    server_response.push_back(0x00);
-    // Detect key share group from ClientHello
-    bool use_x448=false, found_ks=false;
-    size_t eo=ext_offset+2;
-    while(eo+4<=ext_offset+2+ext_len_total){
-        uint16_t et=(client_hello[eo]<<8)|client_hello[eo+1];
-        uint16_t el=(client_hello[eo+2]<<8)|client_hello[eo+3];
-        if(et==0x33 && el>=4){
-            uint16_t g=(client_hello[eo+4]<<8)|client_hello[eo+5];
-            if(g==(uint16_t)NamedGroup::X448 && !found_ks){use_x448=true;found_ks=true;}
-            else if(g==(uint16_t)NamedGroup::X25519 && !found_ks){found_ks=true;}
-        }
-        eo+=4+el;
-    }
-    if(use_x448){
-        // X448 key exchange
-        uint8_t server_priv[56],server_pub[56],client_pub[56],shared_secret[56];
-        x448_generate_keypair(server_pub,server_priv);
-        // extract client_pub
-        {bool _f=false;size_t eo2=ext_offset+2;
-        while(eo2+4<=ext_offset+2+ext_len_total){
-            uint16_t et=(client_hello[eo2]<<8)|client_hello[eo2+1];
-            uint16_t el=(client_hello[eo2+2]<<8)|client_hello[eo2+3];
-            if(et==0x33&&el>=4+56&&client_hello[eo2+4]==0x00&&client_hello[eo2+5]==0x1e&&client_hello[eo2+6]==0x00&&client_hello[eo2+7]==0x38)
-                {memcpy(client_pub,client_hello+eo2+8,56);_f=true;break;}
-            eo2+=4+el;
-        }if(!_f)memcpy(client_pub,client_hello+50,56);}
-        x448_scalar_mult(shared_secret,server_priv,client_pub);
-        uint16_t ext_total=6+62; // supported_versions + key_share
-        server_response.push_back((uint8_t)(ext_total>>8));server_response.push_back((uint8_t)ext_total);
-        server_response.push_back(0x00);server_response.push_back(0x2b);server_response.push_back(0x00);server_response.push_back(0x02);server_response.push_back(0x03);server_response.push_back(0x04);
-        server_response.push_back(0x00);server_response.push_back(0x33);
-        server_response.push_back(0x00);server_response.push_back(0x3e); // 62
-        server_response.push_back(0x00);server_response.push_back(0x1e); // X448
-        server_response.push_back(0x00);server_response.push_back(0x38); // 56
-        server_response.insert(server_response.end(),server_pub,server_pub+56);
-        size_t len=server_response.size()-4;
-        server_response[1]=(uint8_t)(len>>16);server_response[2]=(uint8_t)(len>>8);server_response[3]=(uint8_t)len;
-        tls_transcript_update(s,server_response.data(),server_response.size());
-        tls13_derive_keys(s,shared_secret,56);
-        aes_ctx_init(s.aes_ctx, s.server_write_key, aes_key_len(s.cipher_suite));
-    } else {
-        // X25519 (default)
-        uint8_t server_priv[32],server_pub[32],client_pub[32],shared_secret[32];
-        x25519_generate_keypair(server_pub,server_priv);
-        {bool _f=false;size_t eo2=ext_offset+2;
-        while(eo2+4<=ext_offset+2+ext_len_total){
-            uint16_t et=(client_hello[eo2]<<8)|client_hello[eo2+1];
-            uint16_t el=(client_hello[eo2+2]<<8)|client_hello[eo2+3];
-            if(et==0x33&&el>=4&&client_hello[eo2+4]==0x00&&client_hello[eo2+5]==0x1d&&client_hello[eo2+6]==0x00&&client_hello[eo2+7]==0x20)
-                {memcpy(client_pub,client_hello+eo2+8,32);_f=true;break;}
-            eo2+=4+el;
-        }if(!_f)memcpy(client_pub,client_hello+50,32);}
-        x25519_scalar_mult(shared_secret,server_priv,client_pub);
-        server_response.push_back(0x00);server_response.push_back(0x2e);
-        server_response.push_back(0x00);server_response.push_back(0x2b);server_response.push_back(0x00);server_response.push_back(0x02);server_response.push_back(0x03);server_response.push_back(0x04);
-        server_response.push_back(0x00);server_response.push_back(0x33);server_response.push_back(0x00);server_response.push_back(0x22);
-        server_response.push_back(0x00);server_response.push_back(0x1d);
-        server_response.push_back(0x00);server_response.push_back(0x20);
-        server_response.insert(server_response.end(),server_pub,server_pub+32);
-        size_t len=server_response.size()-4;
-        server_response[1]=(uint8_t)(len>>16);server_response[2]=(uint8_t)(len>>8);server_response[3]=(uint8_t)len;
-        tls_transcript_update(s,server_response.data(),server_response.size());
-        tls13_derive_keys(s,shared_secret,32);
-        aes_ctx_init(s.aes_ctx, s.server_write_key, aes_key_len(s.cipher_suite));
-    }
-    return true;
+    return tls13_make_server_flight(s, client_hello, ch_len, server_response, cert_manager);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1248,8 +1162,22 @@ std::vector<uint8_t> tls_encrypt(tls_session& s, ContentType ct, const uint8_t* 
     if(is_svr)++s.server_seq;else ++s.client_seq;
     std::vector<uint8_t> ciphertext;
     uint8_t tag[16];
-    aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
-    aes_gcm_encrypt(ctx,nonce,12,inner,std::span<const uint8_t>(),ciphertext,tag,16);
+    switch(s.cipher_suite){
+        case CipherSuite::TLS_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_AES_256_GCM_SHA384: {
+            aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
+            aes_gcm_encrypt(ctx,nonce,12,inner,std::span<const uint8_t>(),ciphertext,tag,16);
+            break;
+        }
+        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
+            chacha20_poly1305_encrypt(write_key, nonce, inner, std::span<const uint8_t>(), ciphertext, tag);
+            break;
+        case CipherSuite::TLS_AES_128_CCM_SHA256: {
+            aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
+            aes_ccm_encrypt(ctx, nonce, 12, inner, std::span<const uint8_t>(), ciphertext, tag, 16);
+            break;
+        }
+    }
     std::vector<uint8_t> record;
     record.push_back(0x17);
     record.push_back(0x03);record.push_back(0x03);
@@ -1303,9 +1231,28 @@ bool tls_decrypt(tls_session& s, const uint8_t* record, size_t record_len, Conte
     for(int i=0;i<8;++i)nonce[4+i]^=(uint8_t)(seq>>(56-i*8));
     if(is_svr)++s.client_seq;else ++s.server_seq;
     std::vector<uint8_t> inner;
-    aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
-    if(!aes_gcm_decrypt(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(),tag,16,inner))
-        return false;
+    bool ok = false;
+    switch(s.cipher_suite){
+        case CipherSuite::TLS_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_AES_256_GCM_SHA384: {
+            aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
+            ok = aes_gcm_decrypt(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(),tag,16,inner);
+            break;
+        }
+        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
+            ok = chacha20_poly1305_decrypt(read_key, nonce,
+                                           std::span<const uint8_t>(ciphertext,ct_len),
+                                           std::span<const uint8_t>(), tag, inner);
+            break;
+        case CipherSuite::TLS_AES_128_CCM_SHA256: {
+            aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
+            ok = aes_ccm_decrypt(ctx, nonce, 12,
+                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 std::span<const uint8_t>(), tag, 16, inner);
+            break;
+        }
+    }
+    if(!ok) return false;
     if(inner.empty())return false;
     ct=(ContentType)inner[0];
     out.assign(inner.begin()+1,inner.end()-1);

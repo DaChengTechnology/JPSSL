@@ -397,10 +397,14 @@ void test_simplified_handshake_api() {
                                         server_response, cert_mgr);
     TEST("Simplified: Server handshake", sh_ok);
 
-    std::vector<uint8_t> dummy;
+    std::vector<uint8_t> client_finished;
     bool done = tls13_process_server_flight(client, server_response.data(), server_response.size(),
-                                            dummy, &cert_mgr);
+                                            client_finished, &cert_mgr);
     TEST("Simplified: Client done", done);
+
+    // 服务端验证 Client Finished，派生应用密钥
+    bool svr_fin_ok = tls13_process_client_finished(server, client_finished.data(), client_finished.size());
+    TEST("Simplified: Server finished", svr_fin_ok);
 
     // 测试应用数据加密
     const uint8_t msg[] = "Simplified API test";

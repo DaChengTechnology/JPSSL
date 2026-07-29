@@ -328,11 +328,14 @@ void test_simplified_x448_ed448() {
                                         server_response, cert_mgr);
     TEST("Simplified X448: Server handshake", sh_ok);
 
-    std::vector<uint8_t> dummy;
+    std::vector<uint8_t> client_finished;
     bool done = tls13_process_server_flight(client, server_response.data(), server_response.size(),
-                                            dummy, &cert_mgr);
-    // 注意：简化 API 不带 CertificateVerify，所以只检查密钥派生成功
-    (void)done;
+                                            client_finished, &cert_mgr);
+    TEST("Simplified X448: Client done", done);
+
+    // 服务端验证 Client Finished，派生应用密钥
+    bool svr_fin_ok = tls13_process_client_finished(server, client_finished.data(), client_finished.size());
+    TEST("Simplified X448: Server finished", svr_fin_ok);
 
     // 应用数据
     const uint8_t msg[] = "Simplified X448+Ed448 API";
