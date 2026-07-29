@@ -28,8 +28,8 @@
 │  ├─ sha3.cpp               SHA3-256/384/512 哈希   │
 │  ├─ sha512_cpu.cpp         SHA-384/512 哈希 (CPU) │
 │  ├─ sha512_opt.cpp         SHA-384/512 哈希 (SSE) │
-│  ├─ hmac.cpp               HMAC-SHA256            │
-│  ├─ hkdf.cpp               HKDF-SHA256            │
+│  ├─ hmac.cpp               HMAC-SHA256/SHA384      │
+│  ├─ hkdf.cpp               HKDF-SHA256/SHA384      │
 │  ├─ x25519.cpp             X25519 ECDH            │
 │  ├─ ed25519.cpp            Ed25519 签名/验证      │
 │  ├─ ecdsa.cpp              ECDSA P-256 签名/验证  │
@@ -78,12 +78,12 @@ LD_LIBRARY_PATH=./build ./your_app
 | **SHA-256** | 哈希 | — | — |
 | **SHA-384/512** | 哈希 (FIPS 180-4) | SSE4.1 消息调度 | GPU kernel |
 | **SHA3-256/384/512** | 哈希 (FIPS 202, Keccak) | — | — |
-| **HMAC-SHA256** | MAC | — | — |
-| **HKDF-SHA256** | TLS 1.3 密钥派生 | — | — |
+| **HMAC-SHA256/SHA384** | MAC | — | — |
+| **HKDF-SHA256/SHA384** | TLS 1.3 密钥派生 | — | — |
 | **X25519** | ECDH 密钥交换 | — | — |
 | **Ed25519** | 数字签名 (EdDSA) | — | — |
 | **ECDSA P-256** | 数字签名 (secp256r1) | — | — |
-| **TLS 1.2/1.3** | AES-128-GCM 记录层 | — | — |
+| **TLS 1.2/1.3** | AES-GCM/ChaCha20/CCM 记录层, 0-RTT | — | — |
 
 ## API 示例
 
@@ -143,10 +143,15 @@ uint8_t hash[64]; sha3_final(&ctx, hash);
 
 #include "hmac.hpp"
 uint8_t mac[32]; hmac_sha256(key,32, msg,len, mac);
+uint8_t mac384[48]; hmac_sha384(key,48, msg,len, mac384);
 
 #include "hkdf.hpp"
+// SHA-256
 uint8_t prk[32]; hkdf_extract(salt,16, ikm,32, prk);
 uint8_t okm[64]; hkdf_expand(prk, info,8, okm,64);
+// SHA-384 (用于 TLS 1.3 AES-256-GCM 等套件)
+uint8_t prk384[48]; hkdf_extract_sha384(salt,16, ikm,32, prk384);
+uint8_t okm384[64]; hkdf_expand_sha384(prk384, info,8, okm384,64);
 ```
 
 ### X25519 ECDH
@@ -163,8 +168,8 @@ x25519_scalar_mult(shared, alice_priv, bob_pub);
 
 ### TLS 1.2 / 1.3
 
-TLS 模块提供完整的 TLS 1.2 和 TLS 1.3 握手流程、记录层加解密、SNI 多域名证书管理。
-支持 Ed25519、ECDSA P-256、RSA-2048/4096 等多种证书签名算法。
+TLS 模块提供完整的 TLS 1.2 和 TLS 1.3 握手流程、记录层加解密、SNI 多域名证书管理、0-RTT 早数据。
+支持 AES-128/256-GCM、ChaCha20-Poly1305、AES-128-CCM 等密码套件，以及 Ed25519、ECDSA P-256、RSA-2048/4096 等多种证书签名算法。
 
 ```cpp
 #include "tls.hpp"
@@ -297,7 +302,80 @@ ContentType t; std::vector<uint8_t> dec;
 tls_decrypt(server, enc.data(), enc.size(), t, dec);
 ```
 
-#### 5. TLS 1.2 握手
+#### 5. TLS 1.3 0-RTT（零往返）
+
+0-RTT 允许客户端在握手完成前发送应用数据，基于前一次握手的 PSK（Pre-Shared Key）恢复会话。
+
+```cpp
+// ═══════════════════════════════════════════════════════
+// 阶段 1: 完整握手 + 获取 NewSessionTicket
+// ═══════════════════════════════════════════════════════
+
+tls_session client, server;
+tls_certificate_manager cert_mgr;
+cert_mgr.add_certificate("example.com", std::move(server_cert));
+
+// 完整 TLS 1.3 握手...
+std::vector<uint8_t> ch, sf, cf;
+tls13_make_client_hello(client, ch);
+tls13_make_server_flight(server, ch.data(), ch.size(), sf, cert_mgr);
+tls13_process_server_flight(client, sf.data(), sf.size(), cf, &cert_mgr);
+tls13_process_client_finished(server, cf.data(), cf.size());
+
+// ═══════════════════════════════════════════════════════
+// 阶段 2: 服务端生成会话票据
+// ═══════════════════════════════════════════════════════
+std::vector<uint8_t> ticket_msg;
+tls13_make_new_session_ticket(server, ticket_msg);
+
+// 加密并发送给客户端...
+auto enc_ticket = tls_encrypt_handshake(server, ticket_msg.data(), ticket_msg.size());
+// 客户端接收并存储 PSK
+tls13_store_psk(client, ticket_msg.data(), ticket_msg.size());
+
+// ═══════════════════════════════════════════════════════
+// 阶段 3: 后续连接 — PSK 恢复 + 0-RTT 早数据
+// ═══════════════════════════════════════════════════════
+tls_session client2, server2;
+// 客户端复制 PSK（实际应用中从持久化存储加载）
+client2.psk_valid = true;
+memcpy(client2.psk_identity, client.psk_identity, client.psk_identity_len);
+client2.psk_identity_len = client.psk_identity_len;
+memcpy(client2.psk_value, client.psk_value, tls_hash_len(client.cipher_suite));
+client2.ticket_age_add = client.ticket_age_add;
+client2.ticket_issue_time = client.ticket_issue_time;
+client2.server_name = "example.com";
+
+// 服务端也要有相同的 PSK（实际应用中从数据库/缓存加载）
+server2.psk_valid = true;
+memcpy(server2.psk_identity, server.psk_identity, server.psk_identity_len);
+server2.psk_identity_len = server.psk_identity_len;
+memcpy(server2.psk_value, server.psk_value, tls_hash_len(server.cipher_suite));
+server2.is_server = true;
+
+// 客户端生成含 PSK 扩展的 ClientHello
+std::vector<uint8_t> psk_ch;
+tls13_make_psk_client_hello(client2, psk_ch);
+
+// 服务端处理 PSK ClientHello，接受 early_data
+bool accept_early_data = false;
+tls13_process_psk_client_hello(server2, psk_ch.data(), psk_ch.size(), accept_early_data);
+
+// 客户端发送 0-RTT 早数据（在握手完成前！）
+auto early_data = tls13_encrypt_early_data(client2,
+    (const uint8_t*)"Early data before handshake!", 29);
+
+// 服务端解密早数据
+ContentType ct; std::vector<uint8_t> early_plain;
+tls13_decrypt_early_data(server2, early_data.data(), early_data.size(), ct, early_plain);
+
+// 服务端发送 EndOfEarlyData，然后继续正常握手流程
+auto eoed = tls13_make_end_of_early_data();
+auto enc_eoed = tls_encrypt_handshake(server2, eoed.data(), eoed.size());
+tls13_process_end_of_early_data(client2, eoed.data(), eoed.size());
+```
+
+#### 6. TLS 1.2 握手
 
 TLS 1.2 使用 RSA 公钥加密 pre-master secret 进行密钥交换。
 
@@ -351,7 +429,7 @@ ContentType t; std::vector<uint8_t> dec;
 tls_decrypt(server, enc.data(), enc.size(), t, dec);
 ```
 
-#### 6. 记录层加密/解密（握手完成后）
+#### 7. 记录层加密/解密（握手完成后）
 
 握手完成后，所有应用数据通过记录层加密传输。`tls_encrypt`/`tls_decrypt` 根据 `session.is_server` 自动选择正确的密钥方向。
 
@@ -374,7 +452,7 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
                                 client_record.size(), sct, from_client);
 ```
 
-#### 7. TLS 握手 API 总览
+#### 8. TLS 握手 API 总览
 
 | 函数 | 说明 |
 |------|------|
@@ -384,6 +462,14 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 | `tls13_process_client_finished(s, data, len)` | 服务端验证客户端 Finished |
 | `tls13_handshake_client(s, ch, resp, len)` | 简化版客户端握手（一次性） |
 | `tls13_handshake_server(s, ch, len, out, cert_mgr)` | 简化版服务端握手（一次性） |
+| `tls13_make_new_session_ticket(s, out, lifetime)` | 服务端生成 NewSessionTicket（握手后调用） |
+| `tls13_store_psk(s, ticket, len)` | 客户端从票据中提取并存储 PSK |
+| `tls13_make_psk_client_hello(s, out)` | 客户端生成含 PSK 扩展的 ClientHello（0-RTT） |
+| `tls13_process_psk_client_hello(s, ch, len, accept)` | 服务端处理 PSK ClientHello，验证 binder 和票据 |
+| `tls13_encrypt_early_data(s, data, len)` | 客户端加密 0-RTT 早数据 |
+| `tls13_decrypt_early_data(s, rec, len, ct, out)` | 服务端解密 0-RTT 早数据 |
+| `tls13_make_end_of_early_data()` | 服务端生成 EndOfEarlyData 消息 |
+| `tls13_process_end_of_early_data(s, data, len)` | 客户端处理 EndOfEarlyData |
 | `tls12_make_client_hello(s, out)` | 客户端生成 TLS 1.2 ClientHello |
 | `tls12_make_server_flight(s, ch, len, out, encrypted_pms, eplen, pms, cert_mgr)` | 服务端处理 ClientHello，RSA 解密 pre-master，生成回包 |
 | `tls12_process_server_flight(s, resp, len, pms, pms_len, out)` | 客户端处理回包，生成 Finished |
@@ -395,7 +481,7 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 | `tls_server_decrypt(s, rec, len, ct, out)` | 服务端解密客户端数据（等价于 tls_decrypt） |
 | `tls_server_encrypt_handshake(s, hs, len)` | 服务端加密握手消息（内部使用） |
 
-#### 8. 证书管理 API
+#### 9. 证书管理 API
 
 | 类/函数 | 说明 |
 |---------|------|
@@ -407,19 +493,23 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 | `tls_certificate_manager::get_default_certificate()` | 获取默认证书 |
 | `tls_parse_server_name(extensions, len)` | 从扩展中解析 SNI 域名 |
 
-#### 9. 会话状态
+#### 10. 会话状态
 
 | 字段 | 说明 |
 |------|------|
 | `tls_session::ver` | TLS 版本（V12 / V13） |
 | `tls_session::server_name` | SNI 客户端请求的域名 |
 | `tls_session::client_random` / `server_random` | 32 字节随机数 |
-| `tls_session::handshake_secret` / `master_secret` | 握手机密 / 主密钥（32 字节） |
-| `tls_session::client_write_key` / `server_write_key` | 记录层加密密钥（32 字节） |
+| `tls_session::cipher_suite` | 协商的密码套件（AES-128/256-GCM, ChaCha20, CCM） |
+| `tls_session::handshake_secret` / `master_secret` | 握手机密 / 主密钥（32 或 48 字节，取决于套件） |
+| `tls_session::client_write_key` / `server_write_key` | 记录层加密密钥（16 或 32 字节，取决于套件） |
 | `tls_session::client_write_iv` / `server_write_iv` | 记录层加密 IV（12 字节） |
 | `tls_session::client_seq` / `server_seq` | 记录层序列号（防重放） |
 | `tls_session::is_server` | 是否为服务端会话 |
-| `tls_session::transcript_hash` | 握手 transcript 哈希（32 字节） |
+| `tls_session::transcript_hash` | 握手 transcript 哈希（32 或 48 字节） |
+| `tls_session::psk_valid` / `psk_identity` / `psk_value` | PSK 恢复会话状态（0-RTT） |
+| `tls_session::client_early_write_key` / `client_early_write_iv` | 0-RTT 早数据加密密钥和 IV |
+| `tls_session::early_data_accepted` | 服务端是否接受了 0-RTT 早数据 |
 
 ### Ed25519
 
