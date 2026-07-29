@@ -77,10 +77,74 @@ void sha3_update(sha3_ctx*ctx,const uint8_t*data,size_t len){
 void sha3_final(sha3_ctx*ctx,uint8_t digest[SHA3_512_DIGEST_SIZE]){
     ctx->buf[ctx->buf_len]=0x06;ctx->buf_len++;
     while(ctx->buf_len<ctx->rate_bytes-1)ctx->buf[ctx->buf_len++]=0;
-    ctx->buf[ctx->rate_bytes-1]|=0x80;
+    ctx->buf[ctx->rate_bytes-1]=0x80;
     uint8_t*st=(uint8_t*)ctx->state;
     for(size_t i=0;i<ctx->rate_bytes;++i)st[i]^=ctx->buf[i];
     keccak_f1600(ctx->state);
     memcpy(digest,st,ctx->output_len);
+}
+
+// --- SHAKE XOF (FIPS 202) ---
+void shake128_init(sha3_ctx*ctx){
+    memset(ctx,0,sizeof(*ctx));
+    ctx->rate_bytes=SHAKE128_RATE;
+}
+void shake256_init(sha3_ctx*ctx){
+    memset(ctx,0,sizeof(*ctx));
+    ctx->rate_bytes=SHAKE256_RATE;
+}
+void shake_update(sha3_ctx*ctx,const uint8_t*data,size_t len){
+    size_t rate=ctx->rate_bytes;
+    if(ctx->buf_len>0){
+        size_t space=rate-ctx->buf_len;
+        size_t copy=len<space?len:space;
+        memcpy(ctx->buf+ctx->buf_len,data,copy);
+        ctx->buf_len+=copy;data+=copy;len-=copy;
+        if(ctx->buf_len==rate){keccak_absorb(ctx);ctx->buf_len=0;}
+    }
+    while(len>=rate){
+        uint8_t*st=(uint8_t*)ctx->state;
+        for(size_t i=0;i<rate;++i)st[i]^=data[i];
+        keccak_f1600(ctx->state);
+        data+=rate;len-=rate;
+    }
+    if(len>0){memcpy(ctx->buf,data,len);ctx->buf_len=len;}
+}
+static void shake_pad_and_permute(sha3_ctx*ctx){
+    ctx->buf[ctx->buf_len]=0x1F;
+    for(size_t i=ctx->buf_len+1;i<ctx->rate_bytes;++i)ctx->buf[i]=0;
+    ctx->buf[ctx->rate_bytes-1]=0x80;
+    uint8_t*st=(uint8_t*)ctx->state;
+    for(size_t i=0;i<ctx->rate_bytes;++i)st[i]^=ctx->buf[i];
+    keccak_f1600(ctx->state);
+    ctx->output_len=1;
+    ctx->buf_len=0;
+    memcpy(ctx->buf,ctx->state,ctx->rate_bytes);
+}
+void shake_squeeze(sha3_ctx*ctx,uint8_t* out,size_t outlen){
+    if(ctx->output_len==0)shake_pad_and_permute(ctx);
+    size_t rate=ctx->rate_bytes;
+    size_t off=ctx->buf_len;
+    while(outlen>0){
+        if(off>=rate){
+            keccak_f1600(ctx->state);
+            memcpy(ctx->buf,ctx->state,rate);
+            off=0;
+        }
+        size_t n=rate-off;n=n<outlen?n:outlen;
+        memcpy(out,ctx->buf+off,n);
+        out+=n;off+=n;outlen-=n;
+    }
+    ctx->buf_len=off;
+}
+void shake128(const uint8_t* in,size_t inlen,uint8_t* out,size_t outlen){
+    sha3_ctx ctx;shake128_init(&ctx);
+    shake_update(&ctx,in,inlen);
+    shake_squeeze(&ctx,out,outlen);
+}
+void shake256(const uint8_t* in,size_t inlen,uint8_t* out,size_t outlen){
+    sha3_ctx ctx;shake256_init(&ctx);
+    shake_update(&ctx,in,inlen);
+    shake_squeeze(&ctx,out,outlen);
 }
 }

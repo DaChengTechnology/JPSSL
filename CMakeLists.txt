@@ -52,6 +52,14 @@ set(CPU_SOURCES
     src/hmac.cpp
     src/hkdf.cpp
     src/x25519.cpp
+    src/x448.cpp
+    src/x448_avx2.cpp
+    src/x448_avx512.cpp
+    src/ed448.cpp
+    src/ed448_avx2.cpp
+    src/ed448_avx512.cpp
+    src/ed448_batch_cpu.cpp
+    src/ed448_batch_dispatch.cpp
     src/tls.cpp
     src/ed25519.cpp
     src/ed25519_avx2.cpp
@@ -102,6 +110,10 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     # RSA batch AVX-512: 8-wide Montgomery multiplication
     set_source_files_properties(src/rsa_batch_avx512.cpp PROPERTIES
         COMPILE_FLAGS "-mavx512f -mavx512vl")
+    # Ed448/X448 AVX-512: auto-vectorized fe448 field ops
+    set_source_files_properties(
+        src/ed448_avx512.cpp src/x448_avx512.cpp PROPERTIES
+        COMPILE_FLAGS "-mavx512f -mavx512dq")
 endif()
 
 if(JP_ENABLE_AVX2)
@@ -196,6 +208,38 @@ target_include_directories(test_tls PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_link_libraries(test_tls PRIVATE jpssl_cpu JPTEST::jptest)
+
+# TLS 1.3 X448/Ed448 handshake test
+add_executable(test_tls448 tests/test_tls448.cpp)
+target_include_directories(test_tls448 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${JPTEST_INCLUDE_DIRS}
+)
+target_link_libraries(test_tls448 PRIVATE jpssl_cpu JPTEST::jptest OpenSSL::Crypto)
+
+# X448 RFC 7748 test
+add_executable(test_x448_rfc tests/test_x448_rfc.cpp)
+target_include_directories(test_x448_rfc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_x448_rfc PRIVATE jpssl_cpu)
+
+add_executable(test_ed448_rfc tests/test_ed448_rfc.cpp)
+target_include_directories(test_ed448_rfc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_ed448_rfc PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+add_executable(test_ed448_trace tests/test_ed448_trace.cpp)
+target_include_directories(test_ed448_trace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_ed448_trace PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+# Ed448 batch verify test
+add_executable(test_ed448_batch tests/test_ed448_batch.cpp)
+target_include_directories(test_ed448_batch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_ed448_batch PRIVATE jpssl_cpu)
+
+# SHAKE XOF 单元测试 (FIPS 202 KAT, Ed448 依赖)
+add_executable(test_shake tests/test_shake.cpp)
+target_include_directories(test_shake PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(test_shake PRIVATE jpssl_cpu)
 
 # GHash 单元测试（NIST SP 800-38D）
 add_executable(test_ghash tests/test_ghash.cpp)

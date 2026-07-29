@@ -7,6 +7,8 @@
 #include "hmac.hpp"
 #include "x25519.hpp"
 #include "ed25519.hpp"
+#include "x448.hpp"
+#include "ed448.hpp"
 #include "ecdsa.hpp"
 #include "rsa.hpp"
 #include <cstdint>
@@ -21,7 +23,9 @@ enum class TLSVersion { V12=0x0303, V13=0x0304 };
 enum class ContentType { CHANGE_CIPHER_SPEC=20, ALERT=21, HANDSHAKE=22, APPLICATION_DATA=23 };
 enum class HandshakeType { CLIENT_HELLO=1, SERVER_HELLO=2, ENCRYPTED_EXTENSIONS=8, CERTIFICATE=11, CERT_VERIFY=15, FINISHED=20 };
 enum class ExtensionType { SERVER_NAME=0, SUPPORTED_VERSIONS=0x2b, KEY_SHARE=0x33, SUPPORTED_GROUPS=0x0a };
-enum class SignatureAlgorithm { RSA_PKCS1_SHA256=0x0401, ECDSA_SECP256R1_SHA256=0x0403, ED25519=0x0807 };
+enum class SignatureAlgorithm { RSA_PKCS1_SHA256=0x0401, ECDSA_SECP256R1_SHA256=0x0403, ED25519=0x0807, ED448=0x0808 };
+// TLS 1.3 NamedGroup (RFC 8446 §4.2.7)
+enum class NamedGroup : uint16_t { X25519=0x001d, X448=0x001e };
 
 struct tls_record { ContentType type; TLSVersion ver; std::vector<uint8_t> payload; };
 
@@ -42,6 +46,9 @@ struct tls_session {
     sha256_ctx transcript_ctx; // TLS 1.3 握手 transcript 哈希
     uint8_t transcript_hash[32]; // 已计算的 transcript 哈希
     bool transcript_ready = false;
+    NamedGroup ks_group = NamedGroup::X25519;
+    uint8_t ks_priv[56];
+    uint8_t ks_pub[56];
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -56,6 +63,7 @@ struct tls_certificate {
         PublicKey() : rsa{} {}
         rsa_public_key rsa;
         uint8_t ed25519[32];
+        uint8_t ed448[57];
         uint8_t ecdsa_p256[64];
     } pub;
     // 私钥
@@ -63,6 +71,7 @@ struct tls_certificate {
         PrivateKey() : rsa{} {}
         rsa_private_key rsa;
         uint8_t ed25519[64];
+        uint8_t ed448[57];
         uint8_t ecdsa_p256[32];
     } priv;
     SignatureAlgorithm sig_alg;
@@ -95,6 +104,7 @@ std::string tls_parse_server_name(const uint8_t* extensions, size_t ext_len);
 // ═══════════════════════════════════════════════════════════════════════
 
 // 客户端: 生成 ClientHello（含 SNI 扩展）
+// 密钥交换组由 s.ks_group 决定（默认 X25519，可设为 X448）
 bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello);
 
 // 客户端: 处理服务端回包 (ServerHello + EncryptedExtensions + Certificate + CertificateVerify + Finished)

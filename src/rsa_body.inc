@@ -18,7 +18,7 @@ void BN::to_bytes(uint8_t*out)const{size_t bl=K*8;memset(out,0,bl);for(size_t i=
 BN BN::random_odd(){BN r;static std::mt19937_64 g(std::random_device{}());for(int i=0;i<K;++i)r.d[i]=g();r.d[K-1]|=(uint64_t)1<<63;r.d[0]|=1;return r;}
 
 void bn_add(BN&r,const BN&a,const BN&b){uint64_t c=0;for(int i=0;i<K;++i){uint64_t s=a.d[i]+b.d[i]+c;c=(s<a.d[i])?1:0;r.d[i]=s;}}
-void bn_sub(BN&r,const BN&a,const BN&b){uint64_t bo=0;for(int i=0;i<K;++i){uint64_t df=a.d[i]-b.d[i]-bo;bo=(a.d[i]<b.d[i]+bo)?1:0;r.d[i]=df;}}
+void bn_sub(BN&r,const BN&a,const BN&b){uint64_t bo=0;for(int i=0;i<K;++i){uint64_t sb=b.d[i]+bo;bo=(sb<b.d[i])?1:(a.d[i]<sb)?1:0;uint64_t df=a.d[i]-sb;r.d[i]=df;}}
 void bn_mul(BN&r,const BN&a,const BN&b){BN t;for(int i=0;i<K;++i){if(!a.d[i])continue;uint64_t ca=0;for(int j=0;j<K-i;++j){__uint128_t p=(__uint128_t)a.d[i]*b.d[j]+t.d[i+j]+ca;t.d[i+j]=(uint64_t)p;ca=(uint64_t)(p>>64);}}r=t;}
 
 void bn_divmod(BN&q,BN&r,const BN&a,const BN&b){r=a;q.zero();if(b.is_zero()||r<b)return;int sh=a.bit_length()-b.bit_length();BN bs;bn_lshift(bs,b,sh);for(int i=sh;i>=0;--i){if(!(r<bs)){bn_sub(r,r,bs);q.set_bit(i);}bn_rshift(bs,bs,1);}}
