@@ -68,6 +68,12 @@ set(CPU_SOURCES
     src/ed25519_batch_dispatch.cpp
     src/aes_ccm.cpp
     src/ecdsa.cpp
+    src/sm2.cpp
+    src/sm3.cpp
+    src/sm4.cpp
+    src/sm4_gcm.cpp
+    src/sm4_ccm.cpp
+    src/sm4_gcm_dispatch.cpp
     src/rsa_batch_avx2.cpp
     src/rsa_batch_avx512.cpp
     src/rsa_batch_dispatch.cpp
@@ -347,6 +353,21 @@ target_include_directories(test_aes_ccm PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_link_libraries(test_aes_ccm PRIVATE jpssl_cpu)
+
+# SM2/SM3/SM4 单元测试 (与 OpenSSL 互验)
+add_executable(test_sm tests/test_sm.cpp)
+target_include_directories(test_sm PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(test_sm PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+# RFC 8998 TLS SM cipher suite 测试
+add_executable(test_tls_sm tests/test_tls_sm.cpp)
+target_include_directories(test_tls_sm PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${MUSA_INCLUDE_DIRS}
+)
+target_link_libraries(test_tls_sm PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES} OpenSSL::Crypto)
 
 # ECDSA P-256 单元测试 (与 OpenSSL 互验)
 add_executable(test_ecdsa tests/test_ecdsa.cpp)

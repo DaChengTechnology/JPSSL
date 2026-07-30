@@ -1,6 +1,6 @@
 # jpssl — C++20 高性能密码学库（CPU + MUSA GPU）
 
-跨平台密码学库，支持 **AES**、**ChaCha20-Poly1305**、**RSA**、**TLS 1.2/1.3**、**Ed25519**、**ECDSA**，提供 CPU 优化（AES-NI/AVX2/Montgomery）和 MUSA GPU 加速。同时提供静态库和动态库两种构建方式。
+跨平台密码学库，支持 **AES**、**ChaCha20-Poly1305**、**RSA**、**TLS 1.2/1.3**、**Ed25519**、**ECDSA**，以及 **SM2/SM3/SM4 国密算法**（GM/T 0002/3/4-2012，RFC 8998 TLS 1.3 国密套件）。提供 CPU 优化（AES-NI/AVX2/Montgomery）和 MUSA GPU 加速。同时提供静态库和动态库两种构建方式。
 
 ## 架构
 
@@ -33,6 +33,12 @@
 │  ├─ x25519.cpp             X25519 ECDH            │
 │  ├─ ed25519.cpp            Ed25519 签名/验证      │
 │  ├─ ecdsa.cpp              ECDSA P-256 签名/验证  │
+│  ├─ sm2.cpp                SM2 签名/验证/密钥交换  │
+│  ├─ sm3.cpp                SM3 密码杂凑算法        │
+│  ├─ sm4.cpp                SM4 分组密码            │
+│  ├─ sm4_gcm.cpp            SM4-GCM AEAD 模式       │
+│  ├─ hmac.cpp               HMAC-SHA256/SHA384/SM3   │
+│  ├─ hkdf.cpp               HKDF-SHA256/SHA384/SM3   │
 │  └─ tls.cpp                TLS 1.2/1.3 记录层+握手│
 └──────────────────────────────────────────────────┘
 ```
@@ -78,12 +84,16 @@ LD_LIBRARY_PATH=./build ./your_app
 | **SHA-256** | 哈希 | — | — |
 | **SHA-384/512** | 哈希 (FIPS 180-4) | SSE4.1 消息调度 | GPU kernel |
 | **SHA3-256/384/512** | 哈希 (FIPS 202, Keccak) | — | — |
-| **HMAC-SHA256/SHA384** | MAC | — | — |
-| **HKDF-SHA256/SHA384** | TLS 1.3 密钥派生 | — | — |
+| **HMAC-SHA256/SHA384/SM3** | MAC | — | — |
+| **HKDF-SHA256/SHA384/SM3** | TLS 1.3 密钥派生 | — | — |
 | **X25519** | ECDH 密钥交换 | — | — |
 | **Ed25519** | 数字签名 (EdDSA) | — | — |
 | **ECDSA P-256** | 数字签名 (secp256r1) | — | — |
-| **TLS 1.2/1.3** | AES-GCM/ChaCha20/CCM 记录层, 0-RTT | — | — |
+| **SM2** | 数字签名/密钥交换 (sm2p256v1, GM/T 0003) | — | — |
+| **SM3** | 密码杂凑 (256-bit, GM/T 0004) | — | — |
+| **SM4** | 分组密码 (128-bit, GM/T 0002) | — | — |
+| **SM4-GCM** | SM4 AEAD 认证加密 (NIST SP 800-38D) | — | — |
+| **TLS 1.2/1.3** | AES-GCM/ChaCha20/CCM/SM4-GCM 记录层, 0-RTT, RFC 8998 | — | — |
 
 ## API 示例
 
@@ -144,6 +154,7 @@ uint8_t hash[64]; sha3_final(&ctx, hash);
 #include "hmac.hpp"
 uint8_t mac[32]; hmac_sha256(key,32, msg,len, mac);
 uint8_t mac384[48]; hmac_sha384(key,48, msg,len, mac384);
+uint8_t mac_sm3[32]; hmac_sm3(key,32, msg,len, mac_sm3);
 
 #include "hkdf.hpp"
 // SHA-256
@@ -152,6 +163,88 @@ uint8_t okm[64]; hkdf_expand(prk, info,8, okm,64);
 // SHA-384 (用于 TLS 1.3 AES-256-GCM 等套件)
 uint8_t prk384[48]; hkdf_extract_sha384(salt,16, ikm,32, prk384);
 uint8_t okm384[64]; hkdf_expand_sha384(prk384, info,8, okm384,64);
+// SM3 (用于 TLS 1.3 RFC 8998 国密套件)
+uint8_t prk_sm3[32]; hkdf_extract_sm3(salt,16, ikm,32, prk_sm3);
+uint8_t okm_sm3[64]; hkdf_expand_sm3(prk_sm3, info,8, okm_sm3,64);
+```
+
+### SM2 签名/验证 (GM/T 0003)
+
+```cpp
+#include "sm2.hpp"
+
+uint8_t pub[64], priv[32];
+sm2_keygen(pub, priv);
+
+uint8_t sig[64];
+sm2_sign(priv, (const uint8_t*)"message", 7, sig);
+bool ok = sm2_verify(pub, (const uint8_t*)"message", 7, sig);
+
+// 从私钥派生公钥
+sm2_pub_from_priv(priv, pub);
+
+// 计算用户标识杂凑值 ZA
+uint8_t za[32];
+sm2_compute_za((const uint8_t*)"1234567812345678", 16, pub, pub+32, za);
+```
+
+### SM3 密码杂凑 (GM/T 0004)
+
+```cpp
+#include "sm3.hpp"
+
+// 一次性哈希
+uint8_t digest[32]; sm3_hash(digest, (const uint8_t*)data, len);
+
+// 增量哈希
+sm3_ctx ctx; sm3_init(&ctx);
+sm3_update(&ctx, data, len);
+sm3_final(&ctx, digest);
+std::string hex = sm3_hex(digest);
+```
+
+### SM4 分组密码 (GM/T 0002)
+
+```cpp
+#include "sm4.hpp"
+
+uint8_t key[16];
+sm4_ctx ctx; sm4_init(&ctx, key);
+
+// 单块
+uint8_t cipher[16], recovered[16];
+sm4_encrypt_block(&ctx, plain, cipher);
+sm4_decrypt_block(&ctx, cipher, recovered);
+
+// ECB
+std::vector<uint8_t> ct(plain.size());
+sm4_ecb_encrypt(&ctx, std::span<const uint8_t>(plain), std::span<uint8_t>(ct));
+
+// CBC + PKCS#7
+uint8_t iv[16] = {};
+auto ct = sm4_cbc_encrypt(&ctx, iv, std::span<const uint8_t>(msg, len));
+auto pt = sm4_cbc_decrypt(&ctx, iv, std::span<const uint8_t>(ct));
+```
+
+### SM4-GCM AEAD
+
+```cpp
+#include "sm4_gcm.hpp"
+
+uint8_t key[16], iv[12], tag[16];
+sm4_ctx ctx; sm4_init(&ctx, key);
+
+std::vector<uint8_t> ct;
+sm4_gcm_encrypt(&ctx, iv, 12,
+    std::span<const uint8_t>(plaintext, pt_len),
+    std::span<const uint8_t>(aad, aad_len),
+    ct, tag, 16);
+
+std::vector<uint8_t> recovered;
+bool ok = sm4_gcm_decrypt(&ctx, iv, 12,
+    std::span<const uint8_t>(ct),
+    std::span<const uint8_t>(aad, aad_len),
+    tag, 16, recovered);
 ```
 
 ### X25519 ECDH
@@ -201,6 +294,13 @@ rsa_cert->subject_name = "example.net";
 rsa_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
 rsa_keygen(rsa_cert->pub.rsa, rsa_cert->priv.rsa);
 rsa_cert->cert_data = { /* DER 编码的证书数据 */ };
+
+// ── SM2 证书（RFC 8998 国密 TLS） ──
+auto sm2_cert = std::make_unique<tls_certificate>();
+sm2_cert->subject_name = "example.cn";
+sm2_cert->sig_alg = SignatureAlgorithm::SM2_SM3;
+sm2_keygen(sm2_cert->pub.sm2, sm2_cert->priv.sm2);
+sm2_cert->cert_data = { /* DER 编码的证书数据 */ };
 ```
 
 #### 2. 多域名证书管理（SNI）
@@ -224,6 +324,8 @@ const tls_certificate* def = cert_mgr.get_default_certificate();
 #### 3. TLS 1.3 完整握手（推荐）
 
 TLS 1.3 是最新版本，握手更快、更安全。使用 X25519 进行密钥交换。
+
+支持标准套件（AES-128/256-GCM, ChaCha20, CCM）和 **RFC 8998 国密套件**（TLS_SM4_GCM_SM3 + SM2 签名）。国密套件用法：设置 `client.cipher_suite = CipherSuite::TLS_SM4_GCM_SM3`，服务端使用 SM2 证书自动协商。
 
 ```cpp
 // ── 服务端：准备证书管理器 ──
@@ -500,7 +602,7 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 | `tls_session::ver` | TLS 版本（V12 / V13） |
 | `tls_session::server_name` | SNI 客户端请求的域名 |
 | `tls_session::client_random` / `server_random` | 32 字节随机数 |
-| `tls_session::cipher_suite` | 协商的密码套件（AES-128/256-GCM, ChaCha20, CCM） |
+| `tls_session::cipher_suite` | 协商的密码套件（AES-128/256-GCM, ChaCha20, CCM, SM4-GCM/CCM） |
 | `tls_session::handshake_secret` / `master_secret` | 握手机密 / 主密钥（32 或 48 字节，取决于套件） |
 | `tls_session::client_write_key` / `server_write_key` | 记录层加密密钥（16 或 32 字节，取决于套件） |
 | `tls_session::client_write_iv` / `server_write_iv` | 记录层加密 IV（12 字节） |
@@ -576,20 +678,26 @@ jpssl/
 │   ├── sha256.hpp               SHA-256
 │   ├── sha512.hpp               SHA-384/512
 │   ├── sha3.hpp                 SHA3-256/384/512
-│   ├── hmac.hpp                 HMAC-SHA256
-│   ├── hkdf.hpp                 HKDF-SHA256
+│   ├── hmac.hpp                 HMAC-SHA256/SHA384/SM3
+│   ├── hkdf.hpp                 HKDF-SHA256/SHA384/SM3
 │   ├── x25519.hpp               X25519 ECDH
 │   ├── ed25519.hpp              Ed25519 签名
 │   ├── ecdsa.hpp                ECDSA P-256 签名
-│   └── tls.hpp                  TLS 1.2/1.3
+│   ├── sm2.hpp                  SM2 签名/验证/密钥交换
+│   ├── sm3.hpp                  SM3 密码杂凑
+│   ├── sm4.hpp                  SM4 分组密码
+│   ├── sm4_gcm.hpp              SM4-GCM AEAD
+│   └── tls.hpp                  TLS 1.2/1.3 (含 RFC 8998)
 ├── src/
 │   ├── aes_cpu.cpp / aes_musa.cpp / aes_gpu.mu
 │   ├── aes_gcm_avx2.cpp / aes_gcm_avx512.cpp / aes_gcm_auto.cpp
 │   ├── chacha20_poly1305.cpp / chacha20_gpu.mu
 │   ├── rsa.cpp / rsa_body.inc / rsa_musa.cpp / rsa_gpu.mu
-│   ├── sha256.cpp / sha3.cpp / hmac.cpp / hkdf.cpp
+│   ├── sha256.cpp / sha3.cpp
+│   ├── hmac.cpp / hkdf.cpp
 │   ├── sha512_cpu.cpp / sha512_opt.cpp / sha512_musa.cpp / sha512_gpu.mu
 │   ├── x25519.cpp / ed25519.cpp / ecdsa.cpp
+│   ├── sm2.cpp / sm3.cpp / sm4.cpp / sm4_gcm.cpp
 │   ├── tls.cpp
 │   └── main.cpp
 ├── CMakeLists.txt

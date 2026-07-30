@@ -3,6 +3,7 @@
 #include "aes.hpp"
 #include "chacha20_poly1305.hpp"
 #include "sha256.hpp"
+#include "sha512.hpp"
 #include "hkdf.hpp"
 #include "hmac.hpp"
 #include "x25519.hpp"
@@ -11,6 +12,11 @@
 #include "ed448.hpp"
 #include "ecdsa.hpp"
 #include "rsa.hpp"
+#include "sm2.hpp"
+#include "sm3.hpp"
+#include "sm4.hpp"
+#include "sm4_gcm.hpp"
+#include "sm4_ccm.hpp"
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -21,18 +27,35 @@ namespace jpssl::tls {
 
 enum class TLSVersion { V12=0x0303, V13=0x0304 };
 enum class ContentType { CHANGE_CIPHER_SPEC=20, ALERT=21, HANDSHAKE=22, APPLICATION_DATA=23 };
-enum class HandshakeType { CLIENT_HELLO=1, SERVER_HELLO=2, NEW_SESSION_TICKET=4, END_OF_EARLY_DATA=5, ENCRYPTED_EXTENSIONS=8, CERTIFICATE=11, CERT_VERIFY=15, FINISHED=20 };
+enum class AlertLevel { WARNING=1, FATAL=2 };
+enum class AlertDescription { CLOSE_NOTIFY=0, UNEXPECTED_MESSAGE=10, BAD_RECORD_MAC=20, DECRYPTION_FAILED=21, RECORD_OVERFLOW=22, DECOMPRESSION_FAILURE=30, HANDSHAKE_FAILURE=40, BAD_CERTIFICATE=42, UNSUPPORTED_CERTIFICATE=43, CERTIFICATE_REVOKED=44, CERTIFICATE_EXPIRED=45, CERTIFICATE_UNKNOWN=46, ILLEGAL_PARAMETER=47, UNKNOWN_CA=48, ACCESS_DENIED=49, DECODE_ERROR=50, DECRYPT_ERROR=51, PROTOCOL_VERSION=70, INSUFFICIENT_SECURITY=71, INTERNAL_ERROR=80, USER_CANCELED=90, NO_RENEGOTIATION=100, UNSUPPORTED_EXTENSION=110 };
+enum class HandshakeType { 
+    CLIENT_HELLO=1, SERVER_HELLO=2, NEW_SESSION_TICKET=4, END_OF_EARLY_DATA=5,
+    ENCRYPTED_EXTENSIONS=8, CERTIFICATE=11, SERVER_KEY_EXCHANGE=12,
+    CERTIFICATE_REQUEST=13, SERVER_HELLO_DONE=14, CERT_VERIFY=15,
+    CLIENT_KEY_EXCHANGE=16, FINISHED=20
+};
 enum class ExtensionType { SERVER_NAME=0, SUPPORTED_VERSIONS=0x2b, KEY_SHARE=0x33, SUPPORTED_GROUPS=0x0a, PRE_SHARED_KEY=41, PSK_KEY_EXCHANGE_MODES=45, EARLY_DATA=42 };
-enum class SignatureAlgorithm { RSA_PKCS1_SHA256=0x0401, ECDSA_SECP256R1_SHA256=0x0403, ED25519=0x0807, ED448=0x0808 };
-// TLS 1.3 NamedGroup (RFC 8446 §4.2.7)
-enum class NamedGroup : uint16_t { X25519=0x001d, X448=0x001e };
+enum class SignatureAlgorithm { RSA_PKCS1_SHA256=0x0401, ECDSA_SECP256R1_SHA256=0x0403, ED25519=0x0807, ED448=0x0808, SM2_SM3=0x0708 };
+// TLS 1.3 NamedGroup (RFC 8446 §4.2.7, RFC 8998 §4.2.1)
+enum class NamedGroup : uint16_t { X25519=0x001d, X448=0x001e, curveSM2=0x0029 };
 
-// TLS 1.3 CipherSuite (RFC 8446 §B.4)
+// TLS 1.3 CipherSuite (RFC 8446 §B.4, RFC 8998 §4.1)
 enum class CipherSuite : uint16_t {
+    // TLS 1.2
+    TLS_RSA_WITH_AES_128_GCM_SHA256       = 0x009C,
+    TLS_RSA_WITH_AES_256_GCM_SHA384       = 0x009D,
+    TLS_RSA_WITH_AES_128_CBC_SHA256       = 0x003D,
+    TLS_RSA_WITH_AES_256_CBC_SHA256       = 0x003E,
+    TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 = 0xC02F,
+    TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 = 0xC02B,
+    // TLS 1.3
     TLS_AES_128_GCM_SHA256       = 0x1301,
     TLS_AES_256_GCM_SHA384       = 0x1302,
     TLS_CHACHA20_POLY1305_SHA256 = 0x1303,
-    TLS_AES_128_CCM_SHA256       = 0x1304
+    TLS_AES_128_CCM_SHA256       = 0x1304,
+    TLS_SM4_GCM_SM3              = 0x00C6,
+    TLS_SM4_CCM_SM3              = 0x00C7
 };
 
 struct tls_record { ContentType type; TLSVersion ver; std::vector<uint8_t> payload; };
@@ -40,10 +63,11 @@ struct tls_record { ContentType type; TLSVersion ver; std::vector<uint8_t> paylo
 // ═══════════════════════════════════════════════════════════════════════
 //  TLS 会话状态
 // ═══════════════════════════════════════════════════════════════════════
-// 用于 support SHA-256 和 SHA-384 transcript
+// 用于 support SHA-256、SHA-384 和 SM3 transcript
 union transcript_ctx_union {
     sha256_ctx sha256;
     sha512_ctx sha512;
+    sm3_ctx   sm3;
     transcript_ctx_union() : sha256{} {}
 };
 
@@ -56,6 +80,14 @@ struct tls_session {
     uint8_t client_write_iv[12], server_write_iv[12];
     uint64_t client_seq, server_seq;
     aes_context aes_ctx;
+    sm4_ctx   sm4;                // SM4 cipher context for SM cipher suites
+
+    // TLS 1.2 会话状态
+    uint8_t session_id[32];       // 会话 ID (TLS 1.2 会话恢复)
+    uint8_t session_id_len = 0;
+    bool tls12_ccs_received = false;  // ChangeCipherSpec 已接收
+    bool tls12_ccs_sent = false;     // ChangeCipherSpec 已发送
+    bool tls12_secure = false;       // 加密层已激活
 
     bool is_server = false;
     CipherSuite cipher_suite = CipherSuite::TLS_AES_128_GCM_SHA256;
@@ -97,6 +129,26 @@ inline bool tls_use_sha384(CipherSuite cs) {
     }
 }
 
+// 判断 cipher suite 是否使用 SM3 哈希
+inline bool tls_use_sm3(CipherSuite cs) {
+    switch (cs) {
+        case CipherSuite::TLS_SM4_GCM_SM3:
+        case CipherSuite::TLS_SM4_CCM_SM3:
+            return true;
+        default: return false;
+    }
+}
+
+// 判断 cipher suite 是否使用 SM4 作为 AEAD
+inline bool tls_use_sm4(CipherSuite cs) {
+    switch (cs) {
+        case CipherSuite::TLS_SM4_GCM_SM3:
+        case CipherSuite::TLS_SM4_CCM_SM3:
+            return true;
+        default: return false;
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  证书结构（含私钥，用于签名 CertificateVerify）
 // ═══════════════════════════════════════════════════════════════════════
@@ -111,6 +163,7 @@ struct tls_certificate {
         uint8_t ed25519[32];
         uint8_t ed448[57];
         uint8_t ecdsa_p256[64];
+        uint8_t sm2[64];           // SM2 未压缩公钥 (x||y)
     } pub;
     // 私钥
     union PrivateKey {
@@ -119,6 +172,7 @@ struct tls_certificate {
         uint8_t ed25519[64];
         uint8_t ed448[57];
         uint8_t ecdsa_p256[32];
+        uint8_t sm2[32];           // SM2 私钥
     } priv;
     SignatureAlgorithm sig_alg;
 
@@ -177,28 +231,60 @@ bool tls13_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
                              const tls_certificate_manager& cert_manager);
 
 // ═══════════════════════════════════════════════════════════════════════
-//  TLS 1.2 完整握手 API
+//  TLS 1.2 完整握手 API (RFC 5246)
 // ═══════════════════════════════════════════════════════════════════════
 
-// 客户端: 生成 ClientHello
+// 客户端: 生成 ClientHello (RSA key exchange)
 bool tls12_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello);
 
-// 客户端: 处理服务端回包，生成 Finished
+// 客户端: 处理服务端回包 (ServerHello+Certificate+ServerHelloDone) → 生成 ClientKeyExchange+CCS+Finished
 bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response, size_t resp_len,
                                   const uint8_t* pre_master_secret, size_t pms_len,
                                   std::vector<uint8_t>& client_finished);
 
-// 服务端: 处理 ClientHello 并生成完整回包
-// encrypted_pms: 客户端用 RSA 公钥加密的 pre_master_secret（RSA_PKCS1_SHA256 证书时使用）
-// 若为 nullptr 则直接使用 pre_master_secret 中的明文（兼容旧测试）
+// 服务端: 处理 ClientHello → 生成 ServerHello+Certificate+ServerHelloDone
+// 返回完整的 server_flight (不含加密部分，CCS+Finished 需要单独调用)
 bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
                                std::vector<uint8_t>& server_response,
                                const uint8_t* encrypted_pms, size_t epms_len,
                                uint8_t pre_master_secret[48],
                                const tls_certificate_manager& cert_manager);
 
+// 服务端: 处理 ClientKeyExchange → 生成 CCS + Finished (加密)
+// encrypted_pms: ClientKeyExchange 中的加密 pre-master
+// 返回加密的 Finished 消息 (含 CCS 前缀)
+bool tls12_process_client_key_exchange(tls_session& s, const uint8_t* encrypted_pms, size_t epms_len,
+                                        std::vector<uint8_t>& server_ccs_finished);
+
 // 服务端: 处理客户端 Finished
 bool tls12_process_client_finished(tls_session& s, const uint8_t* data, size_t len);
+
+// 密钥派生
+void tls12_derive_keys(tls_session& s, const uint8_t pre_master[48]);
+
+// ── 消息构造辅助 ────────────────────────────────────────────────────────
+
+// 构造 TLS 1.2 Certificate 消息
+std::vector<uint8_t> tls12_make_certificate(const tls_certificate& cert);
+
+// 构造 ClientKeyExchange (RSA 加密的 pre-master)
+std::vector<uint8_t> tls12_make_client_key_exchange(const rsa_public_key& server_pub,
+                                                     const uint8_t pre_master[48]);
+
+// 构造 ChangeCipherSpec 记录
+std::vector<uint8_t> tls_make_change_cipher_spec();
+
+// 构造 Alert 记录
+std::vector<uint8_t> tls_make_alert(AlertLevel level, AlertDescription desc);
+
+// 构造 ServerHelloDone 消息
+std::vector<uint8_t> tls12_make_server_hello_done();
+
+// 构造 TLS 1.2 Finished (明文，不含 CCS)
+std::vector<uint8_t> tls12_make_finished(tls_session& s, bool for_server);
+
+// 验证 TLS 1.2 Finished
+bool tls12_verify_finished(tls_session& s, const uint8_t* data, size_t len, bool for_server);
 
 // 简化版（兼容旧 API）
 bool tls12_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,
@@ -209,8 +295,6 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
                              const uint8_t* encrypted_pms, size_t epms_len,
                              uint8_t pre_master_secret[48],
                              const tls_certificate_manager& cert_manager);
-
-void tls12_derive_keys(tls_session& s, const uint8_t pre_master[48]);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  记录层加密/解密
