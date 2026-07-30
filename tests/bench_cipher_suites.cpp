@@ -25,7 +25,7 @@
  * 编译：需要链接 OpenSSL (libssl + libcrypto)
  */
 
-#include "jptest/jptest/test_utils.hpp"
+#include "test_utils.hpp"
 #include "tls.hpp"
 #include "aes.hpp"
 #include "chacha20_poly1305.hpp"

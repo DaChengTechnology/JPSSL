@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.20)
 
 project(jpssl VERSION 1.0.0 LANGUAGES CXX)
 
+# ── CTest ───────────────────────────────────────────────────────────────
+include(CTest)
+enable_testing()
+
 # ── C++20 ──────────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -179,9 +183,8 @@ target_include_directories(jpssl-test PRIVATE
 target_link_libraries(jpssl-test jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
 
 # ═══════════════════════════════════════════════════════════════════════
-#  JPTest 单元测试
+#  单元测试 (CTest)
 # ═══════════════════════════════════════════════════════════════════════
-add_subdirectory(tests/jptest)
 
 # AES 全覆盖单元测试
 add_executable(test_aes tests/test_aes.cpp)
@@ -195,7 +198,7 @@ add_executable(test_sha3 tests/test_sha3.cpp)
 target_include_directories(test_sha3 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(test_sha3 PRIVATE jpssl_cpu JPTEST::jptest OpenSSL::Crypto)
+target_link_libraries(test_sha3 PRIVATE jpssl_cpu OpenSSL::Crypto)
 
 # SHA-512/SHA-384 单元测试
 add_executable(test_sha512 tests/test_sha512.cpp)
@@ -206,23 +209,22 @@ target_link_libraries(test_sha512 PRIVATE jpssl_cpu OpenSSL::Crypto)
 target_include_directories(test_sha3 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(test_sha3 PRIVATE jpssl_cpu JPTEST::jptest OpenSSL::Crypto)
+target_link_libraries(test_sha3 PRIVATE jpssl_cpu OpenSSL::Crypto)
 
 # TLS 单元测试
 add_executable(test_tls tests/test_tls.cpp)
 target_include_directories(test_tls PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(test_tls PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES} JPTEST::jptest)
+target_link_libraries(test_tls PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
 
 # TLS 1.3 X448/Ed448 handshake test
 add_executable(test_tls448 tests/test_tls448.cpp)
 target_include_directories(test_tls448 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${JPTEST_INCLUDE_DIRS}
 )
-target_link_libraries(test_tls448 PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES} JPTEST::jptest OpenSSL::Crypto)
+target_link_libraries(test_tls448 PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES} OpenSSL::Crypto)
 
 # X448 RFC 7748 test
 add_executable(test_x448_rfc tests/test_x448_rfc.cpp)
@@ -345,7 +347,7 @@ target_include_directories(test_openssl_compare PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${MUSA_INCLUDE_DIRS}
 )
-target_link_libraries(test_openssl_compare PRIVATE jpssl_cpu jpssl_musa JPTEST::jptest OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(test_openssl_compare PRIVATE jpssl_cpu jpssl_musa OpenSSL::SSL OpenSSL::Crypto)
 
 # AES-CCM 单元测试 (NIST SP 800-38C)
 add_executable(test_aes_ccm tests/test_aes_ccm.cpp)
@@ -389,7 +391,7 @@ target_include_directories(bench_cipher_suites PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${MUSA_INCLUDE_DIRS}
 )
-target_link_libraries(bench_cipher_suites PRIVATE jpssl_cpu jpssl_musa JPTEST::jptest OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(bench_cipher_suites PRIVATE jpssl_cpu jpssl_musa OpenSSL::SSL OpenSSL::Crypto)
 
 # 硬件加速路径性能对比
 add_executable(bench_hardware_accel tests/bench_hardware_accel.cpp)
@@ -397,7 +399,7 @@ target_include_directories(bench_hardware_accel PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${MUSA_INCLUDE_DIRS}
 )
-target_link_libraries(bench_hardware_accel PRIVATE jpssl_cpu jpssl_musa JPTEST::jptest OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(bench_hardware_accel PRIVATE jpssl_cpu jpssl_musa OpenSSL::SSL OpenSSL::Crypto)
 if(JP_ENABLE_AVX2)
     target_compile_definitions(bench_hardware_accel PRIVATE JP_AVX2)
 endif()
@@ -405,7 +407,7 @@ target_include_directories(bench_cipher_suites PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${MUSA_INCLUDE_DIRS}
 )
-target_link_libraries(bench_cipher_suites PRIVATE jpssl_cpu jpssl_musa JPTEST::jptest OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(bench_cipher_suites PRIVATE jpssl_cpu jpssl_musa OpenSSL::SSL OpenSSL::Crypto)
 
 # SHA-512 三种实现效率对比
 add_executable(bench_sha512 tests/bench_sha512.cpp)
@@ -429,3 +431,46 @@ install(TARGETS jpssl_cpu jpssl_cpu_shared jpssl_musa jpssl_musa_shared
 install(DIRECTORY include/ DESTINATION include/jpssl
     FILES_MATCHING PATTERN "*.hpp"
 )
+
+# ═══════════════════════════════════════════════════════════════════════
+#  CTest 注册
+# ═══════════════════════════════════════════════════════════════════════
+
+# TLS / 密码套件测试
+add_test(NAME test_aes            COMMAND test_aes)
+add_test(NAME test_sha3           COMMAND test_sha3)
+add_test(NAME test_sha512         COMMAND test_sha512)
+add_test(NAME test_tls            COMMAND test_tls)
+add_test(NAME test_tls448         COMMAND test_tls448)
+add_test(NAME test_tls_sm         COMMAND test_tls_sm)
+add_test(NAME test_aes_ccm        COMMAND test_aes_ccm)
+
+# RFC / 标准向量测试
+add_test(NAME test_x448_rfc       COMMAND test_x448_rfc)
+add_test(NAME test_ed448_rfc      COMMAND test_ed448_rfc)
+add_test(NAME test_x25519_rfc     COMMAND test_x25519_rfc)
+add_test(NAME test_ed25519_rfc    COMMAND test_ed25519_rfc)
+add_test(NAME test_shake          COMMAND test_shake)
+add_test(NAME test_ghash          COMMAND test_ghash)
+
+# Ed25519 / Ed448 debug 与验证测试
+add_test(NAME test_ed25519_debug  COMMAND test_ed25519_debug)
+add_test(NAME test_verify_direct  COMMAND test_verify_direct)
+add_test(NAME test_debug_keygen   COMMAND test_debug_keygen)
+add_test(NAME test_trace_ed       COMMAND test_trace_ed)
+add_test(NAME test_get_limbs      COMMAND test_get_limbs)
+add_test(NAME test_ladder_debug   COMMAND test_ladder_debug)
+add_test(NAME test_ed448_trace    COMMAND test_ed448_trace)
+add_test(NAME test_ed448_batch    COMMAND test_ed448_batch)
+
+# OpenSSL 互通性测试
+add_test(NAME test_openssl_compare COMMAND test_openssl_compare)
+add_test(NAME test_x25519_ossl    COMMAND test_x25519_ossl)
+add_test(NAME test_ecdsa          COMMAND test_ecdsa)
+add_test(NAME test_sm             COMMAND test_sm)
+add_test(NAME test_ghash_debug    COMMAND test_ghash_debug)
+
+# Benchmark 测试
+add_test(NAME bench_cipher_suites   COMMAND bench_cipher_suites)
+add_test(NAME bench_hardware_accel  COMMAND bench_hardware_accel)
+add_test(NAME bench_sha512          COMMAND bench_sha512)

@@ -9,7 +9,7 @@
  *   5. 篡改 Finished 消息的握手失败检测
  *   6. 与 OpenSSL Ed448 签名互通性验证
  */
-#include "jptest/jptest/test_utils.hpp"
+#include "test_utils.hpp"
 #include "tls.hpp"
 #include "ed448.hpp"
 #include "ed25519.hpp"

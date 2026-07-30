@@ -15,7 +15,7 @@
  *   5. SHA-512:  CPU / SSE4.1 / GPU single / GPU batch / OpenSSL
  */
 
-#include "jptest/jptest/test_utils.hpp"
+#include "test_utils.hpp"
 #include "aes.hpp"
 #include "chacha20_poly1305.hpp"
 #include "sha256.hpp"

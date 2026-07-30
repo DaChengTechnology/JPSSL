@@ -9,7 +9,7 @@
  * 编译需要链接 OpenSSL (libssl + libcrypto)
  */
 
-#include "jptest/jptest/test_utils.hpp"
+#include "test_utils.hpp"
 #include "tls.hpp"
 #include "sha256.hpp"
 #include "sha512.hpp"

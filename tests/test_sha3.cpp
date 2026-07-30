@@ -1,4 +1,4 @@
-#include "jptest/jptest/test_utils.hpp"
+#include "test_utils.hpp"
 #include "sha3.hpp"
 #include <openssl/evp.h>
 #include <cstring>

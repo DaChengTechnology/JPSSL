@@ -1,6 +1,0 @@
-[submodule "jptest"]
-	path = jptest
-	url = https://git.jphc.cn/lvshicheng/jptest.git
-[submodule "tests/jptest"]
-	path = tests/jptest
-	url = https://git.jphc.cn/lvshicheng/jptest.git

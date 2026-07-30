@@ -3,7 +3,7 @@
  * 使用 JPTest 框架：完整握手往返测试 + Ed25519/ECDSA/RSA 证书测试 + SNI 测试
  */
 
-#include "jptest/jptest/test_utils.hpp"
+#include "test_utils.hpp"
 #include "tls.hpp"
 #include "ed25519.hpp"
 #include "ecdsa.hpp"
