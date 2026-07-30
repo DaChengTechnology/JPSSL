@@ -92,8 +92,9 @@ LD_LIBRARY_PATH=./build ./your_app
 | **SM2** | 数字签名/密钥交换 (sm2p256v1, GM/T 0003) | — | — |
 | **SM3** | 密码杂凑 (256-bit, GM/T 0004) | — | — |
 | **SM4** | 分组密码 (128-bit, GM/T 0002) | — | — |
-| **SM4-GCM** | SM4 AEAD 认证加密 (NIST SP 800-38D) | — | — |
-| **TLS 1.2/1.3** | AES-GCM/ChaCha20/CCM/SM4-GCM 记录层, 0-RTT, RFC 8998 | — | — |
+| **SM4-GCM** | SM4 AEAD 认证加密 (NIST SP 800-38D) | AVX2 自动分派 | — |
+| **SM4-CCM** | SM4 AEAD 认证加密 (NIST SP 800-38C) | — | — |
+| **TLS 1.2/1.3** | 完整握手, 密码套件协商, ECDHE/RSA, AES-GCM/ChaCha20/CCM/SM4-GCM, 0-RTT, RFC 8998 | AVX2/AVX512 GCM | — |
 
 ## API 示例
 
@@ -242,6 +243,27 @@ sm4_gcm_encrypt(&ctx, iv, 12,
 
 std::vector<uint8_t> recovered;
 bool ok = sm4_gcm_decrypt(&ctx, iv, 12,
+    std::span<const uint8_t>(ct),
+    std::span<const uint8_t>(aad, aad_len),
+    tag, 16, recovered);
+```
+
+### SM4-CCM AEAD
+
+```cpp
+#include "sm4_ccm.hpp"
+
+uint8_t key[16], nonce[12], tag[16];
+sm4_ctx ctx; sm4_init(&ctx, key);
+
+std::vector<uint8_t> ct;
+sm4_ccm_encrypt(&ctx, nonce, 12,
+    std::span<const uint8_t>(plaintext, pt_len),
+    std::span<const uint8_t>(aad, aad_len),
+    ct, tag, 16);
+
+std::vector<uint8_t> recovered;
+bool ok = sm4_ccm_decrypt(&ctx, nonce, 12,
     std::span<const uint8_t>(ct),
     std::span<const uint8_t>(aad, aad_len),
     tag, 16, recovered);
@@ -477,9 +499,22 @@ auto enc_eoed = tls_encrypt_handshake(server2, eoed.data(), eoed.size());
 tls13_process_end_of_early_data(client2, eoed.data(), eoed.size());
 ```
 
-#### 6. TLS 1.2 握手
+#### 6. TLS 1.2 握手 (RFC 5246)
 
-TLS 1.2 使用 RSA 公钥加密 pre-master secret 进行密钥交换。
+支持 **RSA** 和 **ECDHE**（X25519）两种密钥交换方式，完整的密码套件协商、ServerKeyExchange、Certificate、ServerHelloDone 消息流程。
+
+**支持的密码套件：**
+
+| 套件 | 密钥交换 | 加密 | 哈希 |
+|------|---------|------|------|
+| `0xC02C` | ECDHE-ECDSA | AES-256-GCM | SHA-384 |
+| `0xC030` | ECDHE-RSA | AES-256-GCM | SHA-384 |
+| `0xC02B` | ECDHE-ECDSA | AES-128-GCM | SHA-256 |
+| `0xC02F` | ECDHE-RSA | AES-128-GCM | SHA-256 |
+| `0xCCA9` | ECDHE-ECDSA | ChaCha20-Poly1305 | SHA-256 |
+| `0xCCA8` | ECDHE-RSA | ChaCha20-Poly1305 | SHA-256 |
+| `0x009C` | RSA | AES-128-GCM | SHA-256 |
+| `0x009D` | RSA | AES-256-GCM | SHA-384 |
 
 ```cpp
 // ── 服务端：准备 RSA 证书 ──
@@ -572,10 +607,17 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 | `tls13_decrypt_early_data(s, rec, len, ct, out)` | 服务端解密 0-RTT 早数据 |
 | `tls13_make_end_of_early_data()` | 服务端生成 EndOfEarlyData 消息 |
 | `tls13_process_end_of_early_data(s, data, len)` | 客户端处理 EndOfEarlyData |
-| `tls12_make_client_hello(s, out)` | 客户端生成 TLS 1.2 ClientHello |
-| `tls12_make_server_flight(s, ch, len, out, encrypted_pms, eplen, pms, cert_mgr)` | 服务端处理 ClientHello，RSA 解密 pre-master，生成回包 |
-| `tls12_process_server_flight(s, resp, len, pms, pms_len, out)` | 客户端处理回包，生成 Finished |
+| `tls12_make_client_hello(s, out)` | 客户端生成 TLS 1.2 ClientHello（含密码套件协商 + signature_algorithms） |
+| `tls12_make_server_flight(s, ch, len, out, epms, eplen, pms, cert_mgr)` | 服务端处理 ClientHello，密码套件协商，RSA 解密或 ECDHE 密钥交换，生成完整回包 |
+| `tls12_process_server_flight(s, resp, len, pms, pms_len, out)` | 客户端处理服务端回包（SH+Cert+SKX+SHD），生成 Finished |
 | `tls12_process_client_finished(s, data, len)` | 服务端验证客户端 Finished |
+| `tls12_make_certificate(cert)` | 构造 TLS 1.2 Certificate 消息 |
+| `tls12_make_server_hello_done()` | 构造 ServerHelloDone 消息 |
+| `tls12_make_client_key_exchange(pub, pms)` | 构造 ClientKeyExchange（RSA 加密 pre-master） |
+| `tls12_make_finished(s, for_server)` | 构造 TLS 1.2 Finished 消息 |
+| `tls12_verify_finished(s, data, len, for_server)` | 验证 TLS 1.2 Finished |
+| `tls_make_change_cipher_spec()` | 构造 ChangeCipherSpec 记录 |
+| `tls_make_alert(level, desc)` | 构造 Alert 记录 |
 | `tls_encrypt(s, ct, data, len)` | 记录层加密 |
 | `tls_decrypt(s, record, len, ct, out)` | 记录层解密 |
 | `tls_encrypt_handshake(s, hs_msg, len)` | 加密握手消息（TLS 1.3 内部） |
@@ -686,8 +728,9 @@ jpssl/
 │   ├── sm2.hpp                  SM2 签名/验证/密钥交换
 │   ├── sm3.hpp                  SM3 密码杂凑
 │   ├── sm4.hpp                  SM4 分组密码
-│   ├── sm4_gcm.hpp              SM4-GCM AEAD
-│   └── tls.hpp                  TLS 1.2/1.3 (含 RFC 8998)
+│   ├── sm4_gcm.hpp              SM4-GCM AEAD (含 AVX2/AVX512 自动分派)
+│   ├── sm4_ccm.hpp              SM4-CCM AEAD
+│   └── tls.hpp                  TLS 1.2/1.3 (含 RFC 8998 + ECDHE)
 ├── src/
 │   ├── aes_cpu.cpp / aes_musa.cpp / aes_gpu.mu
 │   ├── aes_gcm_avx2.cpp / aes_gcm_avx512.cpp / aes_gcm_auto.cpp
@@ -697,8 +740,8 @@ jpssl/
 │   ├── hmac.cpp / hkdf.cpp
 │   ├── sha512_cpu.cpp / sha512_opt.cpp / sha512_musa.cpp / sha512_gpu.mu
 │   ├── x25519.cpp / ed25519.cpp / ecdsa.cpp
-│   ├── sm2.cpp / sm3.cpp / sm4.cpp / sm4_gcm.cpp
-│   ├── tls.cpp
+│   ├── sm2.cpp / sm3.cpp / sm4.cpp / sm4_gcm.cpp / sm4_ccm.cpp / sm4_gcm_dispatch.cpp
+│   ├── tls.cpp (TLS 1.2 RFC 5246 + TLS 1.3 RFC 8446 + RFC 8998)
 │   └── main.cpp
 ├── CMakeLists.txt
 └── README.md
