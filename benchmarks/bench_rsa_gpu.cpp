@@ -168,7 +168,7 @@ static void bench_rsa4096() {
     std::printf("\n");
     std::printf("╔══════════════════════════════════════════════════════════════╗\n");
     std::printf("║       RSA-4096: CPU vs MUSA GPU Performance                ║\n");
-    std::printf("║       (MUSA GPU 4096 = CPU fallback)                        ║\n");
+    std::printf("║       (MUSA GPU 4096 kernel 已实现; S80 上慢于 CPU)        ║\n");
     std::printf("╚══════════════════════════════════════════════════════════════╝\n");
 
     std::mt19937_64 rng(99);
@@ -235,10 +235,14 @@ static void bench_rsa4096() {
                 RSA_4096_WORDS, 4096);
         }, bs[i].reps);
 
-        double gpu_ms = measure_ms([&]{
-            musa4096_rsa_batch_modpow(mod, exp, mctx,
-                bases.data(), results.data(), bs[i].n);
-        }, bs[i].reps);
+        // GPU 4096 kernel 每 launch ~20s (S80 寄存器压力), 仅测 16/64/256 各 1 次
+        double gpu_ms = 0;
+        if (bs[i].n == 16 || bs[i].n == 64 || bs[i].n == 256) {
+            gpu_ms = measure_ms([&]{
+                musa4096_rsa_batch_modpow(mod, exp, mctx,
+                    bases.data(), results.data(), bs[i].n);
+            }, 1);
+        }
 
         double cpu_ms_op = cpu_ms / bs[i].n;
         double gpu_ms_op = gpu_ms / bs[i].n;

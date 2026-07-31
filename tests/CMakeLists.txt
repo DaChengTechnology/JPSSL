@@ -7,8 +7,10 @@ set(INCLUDE_DIR ${CMAKE_SOURCE_DIR}/include)
 set(SRC_DIR     ${CMAKE_SOURCE_DIR}/src)
 
 # MUSA 库链接变量 (MUSA 关闭时为空)
+# jpssl_cpu 在 JP_ENABLE_MUSA 下会编译进 chacha20 等的 MUSA 主机封装,
+# 因此测试目标必须同时链接 jpssl_musa + MUSA 运行时
 if(JP_ENABLE_MUSA)
-    set(MUSA_LIBS ${MUSA_LIBS})
+    set(MUSA_LIBS jpssl_musa ${MUSA_LIBRARIES})
 else()
     set(MUSA_LIBS)
 endif()
@@ -74,7 +76,7 @@ add_executable(test_ghash_debug test_ghash_debug.cpp)
 target_include_directories(test_ghash PRIVATE ${INCLUDE_DIR})
 target_include_directories(test_ghash_debug PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_ghash PRIVATE jpssl_cpu OpenSSL::Crypto)
-target_link_libraries(test_ghash_debug PRIVATE jpssl_cpu)
+target_link_libraries(test_ghash_debug PRIVATE jpssl_cpu OpenSSL::Crypto)
 
 # ── Ed25519 测试 ─────────────────────────────────────────────────────────
 add_executable(test_ed25519_rfc test_ed25519_rfc.cpp)
@@ -123,7 +125,7 @@ target_link_libraries(test_x25519_ossl PRIVATE jpssl_cpu OpenSSL::Crypto)
 # ── OpenSSL 比较测试 ─────────────────────────────────────────────────────
 add_executable(test_openssl_compare test_openssl_compare.cpp)
 target_include_directories(test_openssl_compare PRIVATE ${INCLUDE_DIR})
-target_link_libraries(test_openssl_compare PRIVATE jpssl_cpu OpenSSL::Crypto)
+target_link_libraries(test_openssl_compare PRIVATE jpssl_cpu ${MUSA_LIBS} OpenSSL::Crypto OpenSSL::SSL)
 
 # ── 验证测试 ─────────────────────────────────────────────────────────────
 add_executable(test_verify_direct test_verify_direct.cpp)
@@ -158,25 +160,6 @@ target_include_directories(test_fe448 PRIVATE ${INCLUDE_DIR} ${SRC_DIR})
 target_link_libraries(test_fe448 PRIVATE jpssl_cpu)
 
 # ── Benchmark ────────────────────────────────────────────────────────────
-add_executable(bench_cipher_suites bench_cipher_suites.cpp)
-target_include_directories(bench_cipher_suites PRIVATE ${INCLUDE_DIR})
-target_link_libraries(bench_cipher_suites PRIVATE jpssl_cpu ${MUSA_LIBS})
-
-add_executable(bench_hardware_accel bench_hardware_accel.cpp)
-target_include_directories(bench_hardware_accel PRIVATE ${INCLUDE_DIR})
-target_link_libraries(bench_hardware_accel PRIVATE jpssl_cpu OpenSSL::Crypto)
-
-add_executable(bench_sha512 bench_sha512.cpp)
-target_include_directories(bench_sha512 PRIVATE ${INCLUDE_DIR})
-target_link_libraries(bench_sha512 PRIVATE jpssl_cpu OpenSSL::Crypto)
-
-add_executable(bench_rsa_gpu bench_rsa_gpu.cpp)
-target_include_directories(bench_rsa_gpu PRIVATE ${INCLUDE_DIR} ${SRC_DIR})
-if(JP_ENABLE_MUSA)
-    target_link_libraries(bench_rsa_gpu PRIVATE jpssl_cpu jpssl_musa)
-else()
-    target_link_libraries(bench_rsa_gpu PRIVATE jpssl_cpu)
-endif()
 
 # ═══════════════════════════════════════════════════════════════════════
 #  CTest 注册
@@ -202,7 +185,3 @@ add_test(NAME test_x25519_ossl   COMMAND test_x25519_ossl)
 add_test(NAME test_ecdsa         COMMAND test_ecdsa)
 add_test(NAME test_sm            COMMAND test_sm)
 add_test(NAME test_ghash_debug   COMMAND test_ghash_debug)
-add_test(NAME bench_cipher_suites  COMMAND bench_cipher_suites)
-add_test(NAME bench_hardware_accel COMMAND bench_hardware_accel)
-add_test(NAME bench_sha512         COMMAND bench_sha512)
-add_test(NAME bench_rsa_gpu        COMMAND bench_rsa_gpu)

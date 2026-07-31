@@ -4,6 +4,9 @@
 #include <cstring>
 #include <cstdlib>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace jpssl {
 
@@ -411,53 +414,73 @@ void rsa_batch_decrypt_dispatch(const uint64_t* mod, const uint64_t* exp,
         batch_size = 1;
     }
 
-    size_t pos = 0;
-    while (pos < count) {
-        size_t remaining = count - pos;
-        size_t cur_batch = (modpow_fn && remaining >= (size_t)batch_size)
-                           ? (size_t)batch_size : 1;
+    // 处理 [start, end) 范围内的消息（OpenMP 每线程一段）
+    auto process_range = [&](size_t start, size_t end) {
+        size_t pos = start;
+        while (pos < end) {
+            size_t remaining = end - pos;
+            size_t cur_batch = (modpow_fn && remaining >= (size_t)batch_size)
+                               ? (size_t)batch_size : 1;
 
-        uint64_t* bases = new uint64_t[cur_batch * K];
-        uint64_t* results = new uint64_t[cur_batch * K];
+            uint64_t* bases = new uint64_t[cur_batch * K];
+            uint64_t* results = new uint64_t[cur_batch * K];
 
-        for (size_t i = 0; i < cur_batch; ++i) {
-            const uint8_t* ct = cts + (pos + i) * K * 8;
-            uint64_t* base = bases + i * K;
-            for (int j = 0; j < K; ++j) {
-                uint64_t v = 0;
-                for (int k = 0; k < 8; ++k) {
-                    v = (v << 8) | ct[j * 8 + k];
-                }
-                base[K - 1 - j] = v;
-            }
-        }
-
-        if (cur_batch == 1) {
-            batch_modpow_scalar(results, bases, exp, mod, R2, R_mod_m,
-                                mp, K, exp_bits, 1);
-        } else if (cur_batch == 4) {
-            batch_modpow_avx2(results, bases, exp, mod, R2, R_mod_m,
-                              mp, K, exp_bits);
-        } else if (cur_batch == 8) {
-            batch_modpow_avx512(results, bases, exp, mod, R2, R_mod_m,
-                                mp, K, exp_bits);
-        }
-
-        for (size_t i = 0; i < cur_batch; ++i) {
-            uint8_t* pt = pts + (pos + i) * K * 8;
-            uint64_t* r_msg = results + i * K;
-            for (int j = 0; j < K; ++j) {
-                uint64_t v = r_msg[K - 1 - j];
-                for (int k = 0; k < 8; ++k) {
-                    pt[j * 8 + k] = (uint8_t)(v >> (56 - k * 8));
+            for (size_t i = 0; i < cur_batch; ++i) {
+                const uint8_t* ct = cts + (pos + i) * K * 8;
+                uint64_t* base = bases + i * K;
+                for (int j = 0; j < K; ++j) {
+                    uint64_t v = 0;
+                    for (int k = 0; k < 8; ++k) {
+                        v = (v << 8) | ct[j * 8 + k];
+                    }
+                    base[K - 1 - j] = v;
                 }
             }
-        }
 
-        delete[] bases;
-        delete[] results;
-        pos += cur_batch;
+            if (cur_batch == 1) {
+                batch_modpow_scalar(results, bases, exp, mod, R2, R_mod_m,
+                                    mp, K, exp_bits, 1);
+            } else if (cur_batch == 4) {
+                batch_modpow_avx2(results, bases, exp, mod, R2, R_mod_m,
+                                  mp, K, exp_bits);
+            } else if (cur_batch == 8) {
+                batch_modpow_avx512(results, bases, exp, mod, R2, R_mod_m,
+                                    mp, K, exp_bits);
+            }
+
+            for (size_t i = 0; i < cur_batch; ++i) {
+                uint8_t* pt = pts + (pos + i) * K * 8;
+                uint64_t* r_msg = results + i * K;
+                for (int j = 0; j < K; ++j) {
+                    uint64_t v = r_msg[K - 1 - j];
+                    for (int k = 0; k < 8; ++k) {
+                        pt[j * 8 + k] = (uint8_t)(v >> (56 - k * 8));
+                    }
+                }
+            }
+
+            delete[] bases;
+            delete[] results;
+            pos += cur_batch;
+        }
+    };
+
+    if (count == 0) return;
+
+#ifdef _OPENMP
+    // OpenMP 4 线程: 将 count 条消息均分
+    const int nthreads = 4;
+    #pragma omp parallel num_threads(nthreads)
+    {
+        const int tid = omp_get_thread_num();
+        const size_t per = (count + nthreads - 1) / nthreads;
+        const size_t start = (size_t)tid * per;
+        const size_t end = (start + per < count) ? start + per : count;
+        if (start < end) process_range(start, end);
     }
+#else
+    process_range(0, count);
+#endif
 }
 
 // ── Public API ──

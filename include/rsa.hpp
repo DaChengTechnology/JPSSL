@@ -9,8 +9,13 @@
 
 namespace jpssl {
 
+/// 加密安全随机字节填充 (CSPRNG: Linux getrandom/urandom, 即 TLS 同源熵)
+/// 用于密钥生成等安全敏感场景, 替代 mt19937
+void secure_rand_bytes(uint8_t* out, size_t len);
+
 inline constexpr size_t RSA_2048_BITS=2048, RSA_2048_WORDS=32, RSA_2048_BYTES=256;
 inline constexpr size_t RSA_4096_BITS=4096, RSA_4096_WORDS=64, RSA_4096_BYTES=512;
+inline constexpr size_t RSA_1024_WORDS=16, RSA_1024_LIMBS=32;  // CRT 用 (p/q ≈ 1024 bit)
 
 // ── 大整数（2048-bit） ────────────────────────────────────────────────
 struct alignas(64) rsa_bignum { uint64_t d[32];
@@ -46,6 +51,7 @@ void bn_modpow(rsa_bignum&,const rsa_bignum&,const rsa_bignum&,const rsa_bignum&
 void bn_rshift(rsa_bignum&,const rsa_bignum&,int);
 void bn_lshift(rsa_bignum&,const rsa_bignum&,int);
 bool bn_is_prime(const rsa_bignum&,int=5);
+bool bn_is_prime_sieved(const rsa_bignum&,int=5);  // 跳过内部筛 (调用方已增量筛)
 void bn_modinv(rsa_bignum&,const rsa_bignum&,const rsa_bignum&);
 
 // ── 运算（4096-bit 重载） ─────────────────────────────────────────────
@@ -58,6 +64,7 @@ void bn_modpow(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&,const
 void bn_rshift(rsa4096_bignum&,const rsa4096_bignum&,int);
 void bn_lshift(rsa4096_bignum&,const rsa4096_bignum&,int);
 bool bn_is_prime(const rsa4096_bignum&,int=5);
+bool bn_is_prime_sieved(const rsa4096_bignum&,int=5);
 void bn_modinv(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&);
 
 // ── RSA 密钥 ──────────────────────────────────────────────────────────
@@ -95,7 +102,10 @@ struct mont_ctx4096 { rsa4096_bignum R_mod_m, R2_mod_m; uint64_t m_prime; };
 mont_ctx rsa_mont_init(const rsa_bignum&);
 mont_ctx4096 rsa4096_mont_init(const rsa4096_bignum&);
 void rsa_mont_modpow(rsa_bignum&,const rsa_bignum&,const rsa_bignum&,const mont_ctx&,const rsa_bignum&);
+/// 4-bit 窗口化 Montgomery 模幂（CPU, 减少 ~16% mont_mul 次数）
+void rsa_mont_modpow_win(rsa_bignum&,const rsa_bignum&,const rsa_bignum&,const mont_ctx&,const rsa_bignum&);
 void rsa4096_mont_modpow(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&,const mont_ctx4096&,const rsa4096_bignum&);
+void rsa4096_mont_modpow_win(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&,const mont_ctx4096&,const rsa4096_bignum&);
 
 // ── 批量 CPU 解密（AVX2/AVX-512 加速）─────────────────────────────────
 /// 批量 RSA-2048 解密：使用同一私钥解密 count 个密文
@@ -155,6 +165,11 @@ void compute_crt_params4096(const rsa4096_bignum& p, const rsa4096_bignum& q,
                             rsa4096_bignum& dP, rsa4096_bignum& dQ,
                             rsa4096_bignum& qInv);
 bool rsa_crt_decrypt(const rsa_crt_key&, const uint8_t* ct, std::vector<uint8_t>& pt);
+bool rsa4096_crt_decrypt(const rsa4096_crt_key&, const uint8_t* ct, std::vector<uint8_t>& pt);
+/// GPU CRT 批量解密: c^dP mod p + c^dQ mod q → CPU Garner 合并（仅 MUSA）
+size_t musa_crt_batch_decrypt(const rsa_crt_key&, const uint8_t* cts, uint8_t* pts, size_t count);
+/// GPU 4096 CRT 批量解密: 复用 2048 kernel (p/dP + q/dQ → merge)
+size_t musa4096_crt_batch_decrypt(const rsa4096_crt_key&, const uint8_t* cts, uint8_t* pts, size_t count);
 bool rsa4096_crt_decrypt(const rsa4096_crt_key&, const uint8_t* ct, std::vector<uint8_t>& pt);
 
 /// §7.1  RSAES-OAEP (SHA-256)

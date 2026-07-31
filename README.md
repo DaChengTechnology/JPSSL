@@ -46,6 +46,24 @@
 └──────────────────────────────────────────────────┘
 ```
 
+## 性能基准 (benchmarks/)
+
+可选编译开关 `JP_ENABLE_BENCH`（默认 OFF）：
+
+```bash
+cmake -DJP_ENABLE_BENCH=ON .. && make bench_rsa_cpu_gpu
+```
+
+`benchmarks/` 目录：
+
+| 目标 | 内容 |
+|---|---|
+| `bench_rsa_cpu_gpu` | RSA CPU vs GPU vs OpenSSL 综合基准（2048/4096 私钥、2048 公钥） |
+| `bench_rsa_gpu` | RSA-2048/4096 CPU 批量 vs MUSA GPU 批量 |
+| `bench_sha512` | SHA-512 CPU vs SSE vs OpenSSL |
+| `bench_hardware_accel` | AES-NI/AVX2/AVX512 硬件加速对比 |
+| `bench_cipher_suites` | TLS 密码套件性能 |
+
 ## 快速开始
 
 ```bash

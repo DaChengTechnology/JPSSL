@@ -17,14 +17,21 @@ option(JP_ENABLE_AVX512 "Enable AVX512 acceleration" ON)
 
 # ── x86 硬件加速 ──────────────────────────────────────────────────────
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -maes -mavx2")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -maes -mavx2 -madx")
 endif()
 
 # ── OpenSSL (Ed25519, SHA-512, TLS interop) ───────────────────────────
 find_package(OpenSSL REQUIRED)
 
+# OpenMP (CPU 批量模幂并行化, 可用 -DJP_ENABLE_OPENMP=OFF 关闭)
+if(JP_ENABLE_OPENMP)
+    find_package(OpenMP)
+endif()
+
 # ── MUSA (实验性 GPU 加速, 默认关闭) ─────────────────────────────────
 option(JP_ENABLE_MUSA "Enable MUSA GPU acceleration (experimental)" OFF)
+option(JP_ENABLE_BENCH "Build benchmark executables (benchmarks/)" OFF)
+option(JP_ENABLE_OPENMP "Enable OpenMP parallelism for CPU batch RSA (default ON)" ON)
 
 if(JP_ENABLE_MUSA)
     list(APPEND CMAKE_MODULE_PATH /usr/local/musa/cmake)
@@ -111,9 +118,17 @@ set_target_properties(jpssl_cpu_shared PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 1
 )
+if(JP_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
+    target_link_libraries(jpssl_cpu PUBLIC OpenMP::OpenMP_CXX)
+    target_link_libraries(jpssl_cpu_shared PUBLIC OpenMP::OpenMP_CXX)
+    target_compile_definitions(jpssl_cpu PUBLIC JP_ENABLE_OPENMP)
+    message(STATUS "OpenMP: enabled")
+else()
+    message(STATUS "OpenMP: disabled")
+endif()
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
-    target_compile_options(jpssl_cpu PRIVATE -maes -mavx2)
-    target_compile_options(jpssl_cpu_shared PRIVATE -maes -mavx2)
+    target_compile_options(jpssl_cpu PRIVATE -maes -mavx2 -madx)
+    target_compile_options(jpssl_cpu_shared PRIVATE -maes -mavx2 -madx)
     # AES-CPU: 需要 PCLMULQDQ 指令（用于 GCM GHASH 加速）
     set_source_files_properties(src/aes_cpu.cpp PROPERTIES
         COMPILE_FLAGS "-mpclmul")
@@ -242,3 +257,7 @@ install(TARGETS jpssl-cert jpssl-crypt
 # ═══════════════════════════════════════════════════════════════════════
 #  单元测试 (CTest)
 add_subdirectory(tests)
+
+if(JP_ENABLE_BENCH)
+    add_subdirectory(benchmarks)
+endif()
