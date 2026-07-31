@@ -7,6 +7,7 @@
  */
 
 #include "chacha20_poly1305.hpp"
+#include "cpu_features.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -115,6 +116,15 @@ void chacha20_crypt(const uint8_t key[32], uint32_t counter,
                     const uint8_t nonce[12],
                     std::span<const uint8_t> input,
                     std::span<uint8_t> output) {
+    // 运行时扩展检测：优先 AVX512，其次 AVX2，回退标量
+    if (cpu_has_avx512()) {
+        chacha20_crypt_avx512(key, counter, nonce, input, output);
+        return;
+    }
+    if (cpu_has_avx2()) {
+        chacha20_crypt_avx2(key, counter, nonce, input, output);
+        return;
+    }
     uint8_t block[64];
     size_t pos = 0;
 

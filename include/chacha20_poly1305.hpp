@@ -107,6 +107,16 @@ bool chacha20_poly1305_decrypt(
 /// @param nonce   12 字节 nonce
 /// @param input   输入数据
 /// @param output  输出数据（等长）
+// SIMD 加速实现（chacha20_avx2.cpp / chacha20_avx512.cpp，运行时扩展检测后调用）
+void chacha20_crypt_avx2(const uint8_t key[32], uint32_t counter,
+                         const uint8_t nonce[12],
+                         std::span<const uint8_t> input,
+                         std::span<uint8_t> output);
+void chacha20_crypt_avx512(const uint8_t key[32], uint32_t counter,
+                           const uint8_t nonce[12],
+                           std::span<const uint8_t> input,
+                           std::span<uint8_t> output);
+
 inline void chacha20_stream_xor(const uint8_t key[32], const uint8_t nonce[12],
                                 std::span<const uint8_t> input,
                                 std::span<uint8_t> output) {

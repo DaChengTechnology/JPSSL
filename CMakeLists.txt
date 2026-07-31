@@ -64,6 +64,8 @@ set(CPU_SOURCES
     src/aes_gcm_avx512.cpp
     src/aes_gcm_auto.cpp
     src/chacha20_poly1305.cpp
+    src/chacha20_avx2.cpp
+    src/chacha20_avx512.cpp
     src/rsa.cpp
     src/sha256.cpp
     src/sha256_sha_ni.cpp
@@ -156,6 +158,13 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     set_source_files_properties(
         src/x25519.cpp src/ed25519_r51.cpp PROPERTIES
         COMPILE_FLAGS "-mno-adx")
+    # ChaCha20 SIMD: 独立编译单元分别启用 AVX2 / AVX512F
+    set_source_files_properties(
+        src/chacha20_avx2.cpp PROPERTIES
+        COMPILE_FLAGS "-mavx2")
+    set_source_files_properties(
+        src/chacha20_avx512.cpp PROPERTIES
+        COMPILE_FLAGS "-mavx512f")
     # X25519 AVX-512: auto-vectorized fe25519 field ops
     set_source_files_properties(
         src/x25519_avx512.cpp PROPERTIES
