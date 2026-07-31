@@ -368,7 +368,7 @@ void test_sni_multi_domain() {
     TEST("SNI b: ServerFlight generated", sf_ok_b);
 
     std::vector<uint8_t> cf_b;
-    bool cf_ok_b = tls13_process_server_flight(client_b, sf_b.data(), sf_a.size(), cf_b, &mgr);
+    bool cf_ok_b = tls13_process_server_flight(client_b, sf_b.data(), sf_b.size(), cf_b, &mgr);
     TEST("SNI b: Client processed server flight", cf_ok_b);
 
     bool fin_ok_b = tls13_process_client_finished(server_b, cf_b.data(), cf_b.size());

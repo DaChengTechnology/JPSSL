@@ -1,11 +1,13 @@
 # jpssl — C++20 高性能密码学库（CPU + MUSA GPU）
 
-跨平台密码学库，支持 **AES**、**ChaCha20-Poly1305**、**RSA**、**TLS 1.2/1.3**、**Ed25519**、**ECDSA**，以及 **SM2/SM3/SM4 国密算法**（GM/T 0002/3/4-2012，RFC 8998 TLS 1.3 国密套件）。提供 CPU 优化（AES-NI/AVX2/Montgomery）和 MUSA GPU 加速。同时提供静态库和动态库两种构建方式。
+跨平台密码学库，支持 **AES**、**ChaCha20-Poly1305**、**RSA**、**TLS 1.2/1.3**、**Ed25519**、**ECDSA**、**X.509 v3 证书**（RFC 5280），以及 **SM2/SM3/SM4 国密算法**（GM/T 0002/3/4-2012，RFC 8998 TLS 1.3 国密套件）。提供 CPU 优化（AES-NI/AVX2/Montgomery）和可选的 MUSA GPU 加速（实验性，默认关闭）。同时提供静态库和动态库两种构建方式。
 
 ## 架构
 
 ```
 ┌──────────────────────────────────────────────────┐
+│    jpssl-cert (证书工具)    jpssl-crypt (加解密)  │
+├──────────────────────────────────────────────────┤
 │              jpssl-test (测试)                    │
 ├──────────────────────────────────────────────────┤
 │  libjpssl_musa (MUSA GPU 加速)                    │
@@ -39,6 +41,7 @@
 │  ├─ sm4_gcm.cpp            SM4-GCM AEAD 模式       │
 │  ├─ hmac.cpp               HMAC-SHA256/SHA384/SM3   │
 │  ├─ hkdf.cpp               HKDF-SHA256/SHA384/SM3   │
+│  ├─ x509.cpp               X.509 v3 证书 DER 编解码  │
 │  └─ tls.cpp                TLS 1.2/1.3 记录层+握手│
 └──────────────────────────────────────────────────┘
 ```
@@ -50,10 +53,16 @@ mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 
-# 运行测试
+# 或启用 MUSA GPU 加速 (实验性，需要 MUSA SDK 4.3.0+)
+# cmake .. -DCMAKE_BUILD_TYPE=Release -DJP_ENABLE_MUSA=ON
+
+# 运行主测试程序
 LD_LIBRARY_PATH=/usr/local/musa/lib ./jpssl-test
 
-# 安装到系统（可选）
+# 运行全部单元测试（CTest, 目标定义在 tests/CMakeLists.txt）
+LD_LIBRARY_PATH=/usr/local/musa/lib ctest --output-on-failure
+
+# 安装到系统（可选，安装命令行工具 jpssl-cert / jpssl-crypt 到 bin/）
 sudo make install
 ```
 
@@ -74,21 +83,80 @@ g++ -std=c++20 your_app.cpp -I./include -L./build -ljpssl_cpu -o your_app
 LD_LIBRARY_PATH=./build ./your_app
 ```
 
+## 命令行工具
+
+构建后生成两个命令行工具，`make install` 后安装到 `bin/` 目录：
+
+| 工具 | 说明 | 源文件 |
+|------|------|--------|
+| `jpssl-cert` | X.509 v3 证书生成 / 查看 / 验证 | `src/cmd/jpssl_cert.cpp` |
+| `jpssl-crypt` | 加密 / 解密 / 哈希 / HMAC | `src/cmd/jpssl_crypt.cpp` |
+
+### jpssl-cert — 证书工具
+
+```bash
+# 生成自签名 X.509 v3 证书 + 私钥
+jpssl-cert gen --cn example.com --key-type ed25519 --out cert.der --key-out key.bin
+# 支持的密钥类型: ed25519 | ecdsa | sm2 | rsa2048 | ed448
+
+# 查看证书信息
+jpssl-cert info --cert cert.der
+
+# 验证证书链 (leaf → root)
+jpssl-cert verify --cert leaf.der --ca root.der
+# 多级链: --ca 可多次指定中间 CA
+jpssl-cert verify --cert leaf.der --ca intermediate.der --ca root.der
+
+# 通过 TLS API 生成证书 (等价于 tls_make_x509_self_signed)
+jpssl-cert tlsgen --cn example.com --key-type ecdsa --out cert.der --key-out key.bin
+```
+
+### jpssl-crypt — 加密/哈希工具
+
+```bash
+# AES-256-GCM 加密 (输出格式: IV || 密文 || Tag)
+jpssl-crypt encrypt --algo aes256gcm --key <hex-key> --in plain.txt --out cipher.bin
+
+# ChaCha20-Poly1305 加密
+jpssl-crypt encrypt --algo chacha20 --key <hex-key> --in plain.txt --out cipher.bin
+
+# 解密 (自动从文件提取 IV 和 Tag)
+jpssl-crypt decrypt --algo aes256gcm --key <hex-key> --in cipher.bin --out plain.txt
+
+# 哈希
+jpssl-crypt hash --algo sha256 --in file.txt
+jpssl-crypt hash --algo sm3   --in file.txt     # 国密 SM3
+
+# HMAC
+jpssl-crypt hmac --algo sha256 --key <hex-key> --in file.txt
+
+# 生成随机字节 (十六进制输出)
+jpssl-crypt rand 32
+```
+
+支持的算法：
+- **加密**: `aes256gcm`（AES-256-GCM AEAD）、`chacha20`（ChaCha20-Poly1305 AEAD）
+- **哈希**: `sha256`、`sha512`、`sha3-256`、`sha3-512`、`sm3`
+- **HMAC**: `sha256`、`sha384`、`sm3`
+
+密钥、IV、Tag 均以十六进制字符串传入，AAD 认证数据可用 `--aad <hex>` 指定。
+
 ## 算法总览
 
 | 算法 | 模式 | CPU 加速 | GPU 加速 |
 |------|------|----------|----------|
-| **AES-128/256** | ECB, CBC+PKCS7, GCM | AES-NI (~5 GB/s), AVX2/AVX512 GCM | ECB kernel |
-| **ChaCha20-Poly1305** | 流加密, AEAD | — | Keystream kernel |
-| **RSA 2048/4096** | PKCS#1 v1.5 | Montgomery CIOS | 批量模幂 |
+| **AES-128/256** | ECB, CBC+PKCS7, GCM | AES-NI (~5 GB/s), AVX2/AVX512 GCM | ECB kernel (实验性) |
+| **ChaCha20-Poly1305** | 流加密, AEAD | — | Keystream kernel (实验性) |
+| **RSA 2048/4096** | PKCS#1 v1.5 | Montgomery CIOS | 批量模幂 (实验性) |
 | **SHA-256** | 哈希 | — | — |
-| **SHA-384/512** | 哈希 (FIPS 180-4) | SSE4.1 消息调度 | GPU kernel |
+| **SHA-384/512** | 哈希 (FIPS 180-4) | SSE4.1 消息调度 | GPU kernel (实验性) |
 | **SHA3-256/384/512** | 哈希 (FIPS 202, Keccak) | — | — |
 | **HMAC-SHA256/SHA384/SM3** | MAC | — | — |
 | **HKDF-SHA256/SHA384/SM3** | TLS 1.3 密钥派生 | — | — |
 | **X25519** | ECDH 密钥交换 | — | — |
 | **Ed25519** | 数字签名 (EdDSA) | — | — |
 | **ECDSA P-256** | 数字签名 (secp256r1) | — | — |
+| **X.509 v3** | 证书 DER 编解码 (RFC 5280), 自签名/证书链, SAN/KeyUsage/BasicConstraints | — | — |
 | **SM2** | 数字签名/密钥交换 (sm2p256v1, GM/T 0003) | — | — |
 | **SM3** | 密码杂凑 (256-bit, GM/T 0004) | — | — |
 | **SM4** | 分组密码 (128-bit, GM/T 0002) | — | — |
@@ -293,36 +361,35 @@ using namespace jpssl::tls;
 
 #### 1. 创建证书
 
-证书是 TLS 握手的关键组件，包含公钥、私钥和签名算法。
+证书是 TLS 握手的关键组件，包含公钥、私钥和签名算法。jpssl 集成了 **X.509 v3**（RFC 5280）证书编码：当 `cert_data` 为空时，握手过程会自动调用 `tls_make_x509_self_signed()` 生成标准的 X.509 v3 DER 自签名证书（含 SAN、KeyUsage、EKU 扩展）。也可以手动调用 `tls_make_x509_self_signed()` 预生成并填入 `cert_data`。
 
 ```cpp
-// ── Ed25519 证书 ──
+// ── Ed25519 证书（握手时自动生成 X.509 DER） ──
 auto cert = std::make_unique<tls_certificate>();
 cert->subject_name = "example.com";
 cert->sig_alg = SignatureAlgorithm::ED25519;
 ed25519_keygen(cert->pub.ed25519, cert->priv.ed25519);
-cert->cert_data = { /* DER 编码的证书数据 */ };
+
+// 可选：预生成 X.509 v3 DER 证书并填入 cert_data
+cert->cert_data = tls_make_x509_self_signed(*cert);
 
 // ── ECDSA P-256 证书 ──
 auto ecdsa_cert = std::make_unique<tls_certificate>();
 ecdsa_cert->subject_name = "example.org";
 ecdsa_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
 ecdsa_p256_keygen(ecdsa_cert->pub.ecdsa_p256, ecdsa_cert->priv.ecdsa_p256);
-ecdsa_cert->cert_data = { /* DER 编码的证书数据 */ };
 
 // ── RSA-2048 证书 ──
 auto rsa_cert = std::make_unique<tls_certificate>();
 rsa_cert->subject_name = "example.net";
 rsa_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
 rsa_keygen(rsa_cert->pub.rsa, rsa_cert->priv.rsa);
-rsa_cert->cert_data = { /* DER 编码的证书数据 */ };
 
 // ── SM2 证书（RFC 8998 国密 TLS） ──
 auto sm2_cert = std::make_unique<tls_certificate>();
 sm2_cert->subject_name = "example.cn";
 sm2_cert->sig_alg = SignatureAlgorithm::SM2_SM3;
 sm2_keygen(sm2_cert->pub.sm2, sm2_cert->priv.sm2);
-sm2_cert->cert_data = { /* DER 编码的证书数据 */ };
 ```
 
 #### 2. 多域名证书管理（SNI）
@@ -611,7 +678,9 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 | `tls12_make_server_flight(s, ch, len, out, epms, eplen, pms, cert_mgr)` | 服务端处理 ClientHello，密码套件协商，RSA 解密或 ECDHE 密钥交换，生成完整回包 |
 | `tls12_process_server_flight(s, resp, len, pms, pms_len, out)` | 客户端处理服务端回包（SH+Cert+SKX+SHD），生成 Finished |
 | `tls12_process_client_finished(s, data, len)` | 服务端验证客户端 Finished |
-| `tls12_make_certificate(cert)` | 构造 TLS 1.2 Certificate 消息 |
+| `tls12_make_certificate(cert)` | 构造 TLS 1.2 Certificate 消息（自动生成 X.509 DER） |
+| `tls_make_x509_self_signed(cert, days)` | 从 tls_certificate 生成 X.509 v3 DER 自签名证书 |
+| `tls_sig_alg_to_key_type(sig_alg)` | 将 SignatureAlgorithm 映射为 X.509 KeyType |
 | `tls12_make_server_hello_done()` | 构造 ServerHelloDone 消息 |
 | `tls12_make_client_key_exchange(pub, pms)` | 构造 ClientKeyExchange（RSA 加密 pre-master） |
 | `tls12_make_finished(s, for_server)` | 构造 TLS 1.2 Finished 消息 |
@@ -683,6 +752,101 @@ ecdsa_p256_sign(priv, (const uint8_t*)"message", 7, sig);
 bool ok = ecdsa_p256_verify(pub, (const uint8_t*)"message", 7, sig);
 ```
 
+### X.509 v3 证书 (RFC 5280)
+
+`x509.hpp` 提供完整的 X.509 v3 证书 DER 编解码、自签名证书生成和证书链验证。支持 RSA-2048/4096、Ed25519、Ed448、ECDSA P-256、SM2 五种密钥类型。
+
+```cpp
+#include "x509.hpp"
+using namespace jpssl::x509;
+```
+
+#### 1. 生成自签名证书
+
+```cpp
+// 生成 Ed25519 密钥
+uint8_t pub[32], priv[64];
+ed25519_keygen(pub, priv);
+
+// 构建并签名自签名证书
+x509_builder builder;
+DistinguishedName dn;
+dn.push_back({std::vector<uint8_t>(OID_CN, OID_CN + 3), "example.com"});
+builder.set_subject(dn).set_issuer(dn);                    // 自签名: subject == issuer
+
+uint8_t serial[8] = {0x01, 0x02, 0x03, 0x04};
+builder.set_serial(serial, 8);
+
+uint64_t now = (uint64_t)time(nullptr);
+builder.set_validity(now, now + 365ULL * 86400);           // 有效期 365 天
+
+builder.set_key(KeyType::Ed25519, pub, 32);                // 公钥
+builder.set_ca(false);                                     // 叶子证书 (CA=false)
+builder.set_key_usage(KU_DIGITAL_SIGNATURE);               // KeyUsage 扩展
+builder.set_server_auth();                                 // EKU: serverAuth
+builder.add_san_dns("example.com");                        // SAN: DNS 名称
+builder.add_san_dns("www.example.com");
+
+auto cert = builder.build_and_sign(KeyType::Ed25519, priv, 64); // 私钥签名
+
+// 编码为 DER 字节
+std::vector<uint8_t> der = cert.to_der();
+```
+
+#### 2. 解析 DER 证书
+
+```cpp
+// 从 DER 字节解析
+auto parsed = x509_cert::from_der(der);
+if (parsed) {
+    std::string cn = parsed->common_name();        // 获取 subject CN
+    std::string issuer = parsed->issuer_name();    // 获取 issuer CN
+    bool is_ca = parsed->is_ca();                  // 是否 CA 证书
+    bool valid = parsed->is_valid_now();           // 是否在有效期内
+    auto dns = parsed->dns_names();                // SAN DNS 名称列表
+    KeyType kt = parsed->key_type;                 // 密钥类型
+}
+```
+
+#### 3. 证书链验证
+
+```cpp
+// 构建根 CA（自签名, CA=true, KeyCertSign）
+x509_builder root_builder;
+root_builder.set_ca(true, 0);                                // pathLen=0
+root_builder.set_key_usage(KU_KEY_CERT_SIGN);
+auto root = root_builder.build_and_sign(KeyType::Ed25519, root_priv, 64);
+
+// 叶子证书由根 CA 签发（issuer=root, 用根私钥签名）
+x509_builder leaf_builder;
+leaf_builder.set_issuer(root_dn);
+auto leaf = leaf_builder.build_and_sign(KeyType::Ed25519, root_priv, 64);
+
+// 验证证书链: leaf → root
+std::vector<x509_cert> chain = {leaf, root};
+auto result = x509_verify_chain(chain, now);
+if (result.success) {
+    // 链有效: 签名正确、有效期未过期、根证书是 CA
+} else {
+    std::string err = result.error;   // 失败原因
+}
+```
+
+#### 4. TLS 集成
+
+```cpp
+#include "tls.hpp"
+using namespace jpssl::tls;
+
+// 从 tls_certificate 生成 X.509 DER 自签名证书
+std::vector<uint8_t> der = tls_make_x509_self_signed(*tls_cert);
+
+// 密钥类型映射
+x509::KeyType kt = tls_sig_alg_to_key_type(cert->sig_alg);
+```
+
+TLS 握手时若 `tls_certificate::cert_data` 为空，会自动生成 X.509 v3 DER 证书并发送给对端（`tls13_make_certificate` / `tls12_make_certificate` 均支持）。
+
 ## GPU 持久化池
 
 ```cpp
@@ -730,6 +894,7 @@ jpssl/
 │   ├── sm4.hpp                  SM4 分组密码
 │   ├── sm4_gcm.hpp              SM4-GCM AEAD (含 AVX2/AVX512 自动分派)
 │   ├── sm4_ccm.hpp              SM4-CCM AEAD
+│   ├── x509.hpp                 X.509 v3 证书 (RFC 5280)
 │   └── tls.hpp                  TLS 1.2/1.3 (含 RFC 8998 + ECDHE)
 ├── src/
 │   ├── aes_cpu.cpp / aes_musa.cpp / aes_gpu.mu
@@ -741,8 +906,16 @@ jpssl/
 │   ├── sha512_cpu.cpp / sha512_opt.cpp / sha512_musa.cpp / sha512_gpu.mu
 │   ├── x25519.cpp / ed25519.cpp / ecdsa.cpp
 │   ├── sm2.cpp / sm3.cpp / sm4.cpp / sm4_gcm.cpp / sm4_ccm.cpp / sm4_gcm_dispatch.cpp
+│   ├── x509.cpp                 X.509 v3 DER 编解码/自签名/证书链验证
 │   ├── tls.cpp (TLS 1.2 RFC 5246 + TLS 1.3 RFC 8446 + RFC 8998)
+│   ├── cmd/
+│   │   ├── jpssl_cert.cpp       X.509 证书命令行工具
+│   │   └── jpssl_crypt.cpp      加解密/哈希命令行工具
 │   └── main.cpp
+├── tests/
+│   ├── CMakeLists.txt           独立测试构建 (add_subdirectory(tests))
+│   ├── test_x509.cpp            X.509 v3 证书单元测试
+│   └── ...                      其余单元测试与 benchmark
 ├── CMakeLists.txt
 └── README.md
 ```
@@ -753,10 +926,14 @@ jpssl/
 
 | 选项 | 默认 | 说明 |
 |------|------|------|
+| `JP_ENABLE_MUSA` | **OFF** | MUSA GPU 加速 (实验性) |
 | `JP_ENABLE_AVX2` | ON | AVX2 GCM (4 路并行) + SHA-512 SIMD 消息调度 |
 | `JP_ENABLE_AVX512` | ON | AVX512 VAES GCM (8 路并行) |
 
 ```bash
+# 启用 MUSA GPU 加速 (需要 MUSA SDK 4.3.0+)
+cmake -B build -DJP_ENABLE_MUSA=ON
+
 # 禁用所有 SIMD 加速（纯标量回退）
 cmake -B build -DJP_ENABLE_AVX2=OFF -DJP_ENABLE_AVX512=OFF
 ```
@@ -765,5 +942,6 @@ cmake -B build -DJP_ENABLE_AVX2=OFF -DJP_ENABLE_AVX512=OFF
 
 - **C++20** (GCC 13+ / Clang 16+)
 - **CMake** 3.20+
-- **MUSA SDK** 4.3.0+ (GPU, 可选)
+- **OpenSSL** (仅部分测试目标需要，用于与 OpenSSL 结果对比)
+- **MUSA SDK** 4.3.0+ (可选，实验性 GPU 加速，默认关闭，通过 `-DJP_ENABLE_MUSA=ON` 启用)
 - **x86_64** (AES-NI / AVX2 / AVX512, 可选)

@@ -50,6 +50,7 @@ bool rsa4096_decrypt(const rsa4096_private_key&prv,const uint8_t*ct,std::vector<
 #undef MONT_CTX
 
 // 4096 GPU batch modpow stub (calls CPU)
+#ifdef JP_MUSA
 void musa4096_rsa_batch_modpow(const rsa4096_bignum&mod,const rsa4096_bignum&exp,const mont_ctx4096&mctx,const uint8_t* bases,uint8_t* results,size_t count){
     for(size_t i=0;i<count;++i){
         rsa4096_bignum base=rsa4096_bignum::from_bytes(bases+i*512,512),r;
@@ -57,5 +58,6 @@ void musa4096_rsa_batch_modpow(const rsa4096_bignum&mod,const rsa4096_bignum&exp
         r.to_bytes(results+i*512);
     }
 }
+#endif
 
 } // namespace jpssl

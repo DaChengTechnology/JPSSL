@@ -17,6 +17,7 @@
 #include "sm4.hpp"
 #include "sm4_gcm.hpp"
 #include "sm4_ccm.hpp"
+#include "x509.hpp"
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -373,5 +374,6 @@ bool tls13_process_end_of_early_data(tls_session& s, const uint8_t* data, size_t
 // ═══════════════════════════════════════════════════════════════════════
 void tls_transcript_update(tls_session& s, const uint8_t* data, size_t len);
 void tls_transcript_finalize(tls_session& s);
-
+std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint32_t validity_days = 365);
+x509::KeyType tls_sig_alg_to_key_type(SignatureAlgorithm sig_alg);
 }

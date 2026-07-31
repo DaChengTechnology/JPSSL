@@ -10,7 +10,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#ifdef JP_MUSA
 #include <musa_runtime.h>
+#endif
 
 namespace jpssl {
 
@@ -391,6 +393,8 @@ bool chacha20_poly1305_decrypt(
         }                                                             \
     } while (0)
 
+#ifdef JP_MUSA
+
 // ── 外部函数（由 chacha20_gpu.mu 提供） ────────────────────────────
 
 extern "C" void musa_chacha20_gpu_init(const uint8_t* key, const uint8_t* nonce);
@@ -560,5 +564,7 @@ bool musa_chacha20_pool_aead_decrypt(
     }
     return true;
 }
+
+#endif // JP_MUSA
 
 } // namespace jpssl

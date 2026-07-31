@@ -408,17 +408,23 @@ static bool tls13_verify_finished(tls_session& s, const uint8_t* hs_msg, size_t 
 //  构建 Certificate + CertificateVerify 消息
 // ═══════════════════════════════════════════════════════════════════════
 static std::vector<uint8_t> tls13_make_certificate(const tls_certificate& cert){
+    // Auto-generate X.509 DER if cert_data is empty
+    std::vector<uint8_t> der_data = cert.cert_data;
+    if (der_data.empty()) {
+        der_data = tls_make_x509_self_signed(cert);
+    }
+
     std::vector<uint8_t> msg;
     msg.push_back((uint8_t)HandshakeType::CERTIFICATE);
     // TLS 1.3 Certificate: body = context_len(1) + context(0) + list_len(3) + [cert_len(3)+cert+ext_len(2)]
-    size_t cert_entry_len=3+cert.cert_data.size()+2;
+    size_t cert_entry_len=3+der_data.size()+2;
     size_t body_len=1+3+cert_entry_len;
     msg.push_back((uint8_t)(body_len>>16));msg.push_back((uint8_t)(body_len>>8));msg.push_back((uint8_t)body_len);
     msg.push_back(0); // certificate_request_context
     // certificate_list length
     msg.push_back((uint8_t)(cert_entry_len>>16));msg.push_back((uint8_t)(cert_entry_len>>8));msg.push_back((uint8_t)cert_entry_len);
-    msg.push_back((uint8_t)(cert.cert_data.size()>>16));msg.push_back((uint8_t)(cert.cert_data.size()>>8));msg.push_back((uint8_t)cert.cert_data.size());
-    msg.insert(msg.end(),cert.cert_data.begin(),cert.cert_data.end());
+    msg.push_back((uint8_t)(der_data.size()>>16));msg.push_back((uint8_t)(der_data.size()>>8));msg.push_back((uint8_t)der_data.size());
+    msg.insert(msg.end(),der_data.begin(),der_data.end());
     // extensions: 0 length
     msg.push_back(0);msg.push_back(0);
     return msg;
@@ -2111,5 +2117,56 @@ bool tls13_process_end_of_early_data(tls_session& s, const uint8_t* data, size_t
     return true;
 }
 
+// ═══ X.509 v3 Integration ═══
+using namespace jpssl::x509;
+
+x509::KeyType tls_sig_alg_to_key_type(SignatureAlgorithm sa) {
+    switch (sa) {
+        case SignatureAlgorithm::RSA_PKCS1_SHA256: return KeyType::RSA_2048;
+        case SignatureAlgorithm::ED25519: return KeyType::Ed25519;
+        case SignatureAlgorithm::ED448: return KeyType::Ed448;
+        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256: return KeyType::ECDSA_P256;
+        case SignatureAlgorithm::SM2_SM3: return KeyType::SM2;
+        default: return KeyType::Ed25519;
+    }
+}
+static x509::KeyType kt(SignatureAlgorithm sa) { return tls_sig_alg_to_key_type(sa); }
+
+std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint32_t days) {
+    x509_builder b; auto k = kt(cert.sig_alg);
+    DistinguishedName dn; dn.push_back({std::vector<uint8_t>(OID_CN, OID_CN + 3), cert.subject_name});
+    b.set_subject(dn).set_issuer(dn);
+    uint8_t ser[8]={}; for(size_t i=0;i<cert.subject_name.size()&&i<8;++i)ser[i]=(uint8_t)cert.subject_name[i];
+    ser[0]|=0x01; b.set_serial(ser,8);
+    uint64_t now=(uint64_t)time(nullptr); b.set_validity(now, now+(uint64_t)days*86400);
+    switch(k){
+        case KeyType::RSA_2048:{uint8_t p[259];cert.pub.rsa.n.to_bytes(p);p[256]=1;p[257]=0;p[258]=1;b.set_key(k,p,259);break;}
+        case KeyType::RSA_4096:{uint8_t p[515];cert.pub.rsa.n.to_bytes(p);p[512]=1;p[513]=0;p[514]=1;b.set_key(k,p,515);break;}
+        case KeyType::Ed25519:b.set_key(k,cert.pub.ed25519,32);break;
+        case KeyType::Ed448:b.set_key(k,cert.pub.ed448,57);break;
+        case KeyType::ECDSA_P256:b.set_key(k,cert.pub.ecdsa_p256,64);break;
+        case KeyType::SM2:b.set_key(k,cert.pub.sm2,64);break;
+    }
+    b.set_ca(false).set_key_usage(KU_DIGITAL_SIGNATURE).set_server_auth().add_san_dns(cert.subject_name);
+    x509_cert x;
+    switch(k){
+        case KeyType::RSA_2048:case KeyType::RSA_4096:{uint8_t d[512];cert.priv.rsa.d.to_bytes(d);x=b.build_and_sign(k,d,k==KeyType::RSA_4096?512:256);break;}
+        case KeyType::Ed25519:x=b.build_and_sign(k,cert.priv.ed25519,64);break;
+        case KeyType::Ed448:x=b.build_and_sign(k,cert.priv.ed448,57);break;
+        case KeyType::ECDSA_P256:x=b.build_and_sign(k,cert.priv.ecdsa_p256,32);break;
+        case KeyType::SM2:x=b.build_and_sign(k,cert.priv.sm2,32);break;
+    }
+    return x.to_der();
+}
+
+std::vector<uint8_t> tls12_make_certificate(const tls_certificate& cert) {
+    auto der=cert.cert_data.empty()?tls_make_x509_self_signed(cert):cert.cert_data;
+    std::vector<uint8_t> m;m.push_back(11);
+    size_t el=3+der.size(),bl=3+el;
+    m.push_back((uint8_t)(bl>>16));m.push_back((uint8_t)(bl>>8));m.push_back((uint8_t)bl);
+    m.push_back((uint8_t)(el>>16));m.push_back((uint8_t)(el>>8));m.push_back((uint8_t)el);
+    m.push_back((uint8_t)(der.size()>>16));m.push_back((uint8_t)(der.size()>>8));m.push_back((uint8_t)der.size());
+    m.insert(m.end(),der.begin(),der.end());return m;
+}
 
 }
