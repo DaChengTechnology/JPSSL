@@ -49,8 +49,7 @@ bool rsa4096_decrypt(const rsa4096_private_key&prv,const uint8_t*ct,std::vector<
 #undef PRIV_KEY
 #undef MONT_CTX
 
-// 4096 GPU batch modpow stub (calls CPU)
-#ifdef JP_MUSA
+// 4096 GPU batch modpow stub (calls CPU — GPU 仅支持 2048-bit)
 void musa4096_rsa_batch_modpow(const rsa4096_bignum&mod,const rsa4096_bignum&exp,const mont_ctx4096&mctx,const uint8_t* bases,uint8_t* results,size_t count){
     for(size_t i=0;i<count;++i){
         rsa4096_bignum base=rsa4096_bignum::from_bytes(bases+i*512,512),r;
@@ -58,6 +57,94 @@ void musa4096_rsa_batch_modpow(const rsa4096_bignum&mod,const rsa4096_bignum&exp
         r.to_bytes(results+i*512);
     }
 }
-#endif
+
+// ═══════════════ CRT keygen ═══════════════
+bool rsa_keygen_crt(rsa_public_key& pub, rsa_crt_key& crt) {
+    rsa_bignum p, q, n, phi, e(rsa_bignum::from_uint64(65537)), d, dP, dQ, qInv;
+    while (1) {
+        p = rsa_bignum::random_odd();
+        for (int i = 16; i < 32; ++i) p.d[i] = 0;
+        p.d[15] |= (uint64_t)1 << 63;
+        p.d[15] &= ~((uint64_t)1 << 62);
+        if (bn_is_prime(p, 5)) break;
+    }
+    while (1) {
+        q = rsa_bignum::random_odd();
+        for (int i = 16; i < 32; ++i) q.d[i] = 0;
+        q.d[15] |= (uint64_t)1 << 63;
+        q.d[15] &= ~((uint64_t)1 << 62);
+        if (bn_is_prime(q, 5) && !(p == q)) break;
+    }
+    bn_mul(n, p, q);
+    rsa_bignum p1, q1;
+    bn_sub(p1, p, rsa_bignum::from_uint64(1));
+    bn_sub(q1, q, rsa_bignum::from_uint64(1));
+    bn_mul(phi, p1, q1);
+    bn_modinv(d, e, phi);
+    while (n.bit_length() < 2048) { /* retry */
+        p = rsa_bignum::random_odd();
+        for (int i = 16; i < 32; ++i) p.d[i] = 0;
+        p.d[15] |= (uint64_t)1 << 63; p.d[15] &= ~((uint64_t)1 << 62);
+        if (!bn_is_prime(p, 5)) continue;
+        q = rsa_bignum::random_odd();
+        for (int i = 16; i < 32; ++i) q.d[i] = 0;
+        q.d[15] |= (uint64_t)1 << 63; q.d[15] &= ~((uint64_t)1 << 62);
+        if (!bn_is_prime(q, 5) || p == q) continue;
+        bn_mul(n, p, q);
+        bn_sub(p1, p, rsa_bignum::from_uint64(1));
+        bn_sub(q1, q, rsa_bignum::from_uint64(1));
+        bn_mul(phi, p1, q1);
+        bn_modinv(d, e, phi);
+    }
+    bn_mod(dP, d, p1); bn_mod(dQ, d, q1); bn_modinv(qInv, q, p);
+    pub.n = n; pub.e = e;
+    crt.n = n; crt.e = e; crt.d = d; crt.p = p; crt.q = q;
+    crt.dP = dP; crt.dQ = dQ; crt.qInv = qInv;
+    return true;
+}
+
+bool rsa4096_keygen_crt(rsa4096_public_key& pub, rsa4096_crt_key& crt) {
+    rsa4096_bignum p, q, n, phi, e(rsa4096_bignum::from_uint64(65537)), d, dP, dQ, qInv;
+    while (1) {
+        p = rsa4096_bignum::random_odd();
+        for (int i = 32; i < 64; ++i) p.d[i] = 0;
+        p.d[31] |= (uint64_t)1 << 63;
+        p.d[31] &= ~((uint64_t)1 << 62);
+        if (bn_is_prime(p, 5)) break;
+    }
+    while (1) {
+        q = rsa4096_bignum::random_odd();
+        for (int i = 32; i < 64; ++i) q.d[i] = 0;
+        q.d[31] |= (uint64_t)1 << 63;
+        q.d[31] &= ~((uint64_t)1 << 62);
+        if (bn_is_prime(q, 5) && !(p == q)) break;
+    }
+    bn_mul(n, p, q);
+    rsa4096_bignum p1, q1;
+    bn_sub(p1, p, rsa4096_bignum::from_uint64(1));
+    bn_sub(q1, q, rsa4096_bignum::from_uint64(1));
+    bn_mul(phi, p1, q1);
+    bn_modinv(d, e, phi);
+    while (n.bit_length() < 4096) {
+        p = rsa4096_bignum::random_odd();
+        for (int i = 32; i < 64; ++i) p.d[i] = 0;
+        p.d[31] |= (uint64_t)1 << 63; p.d[31] &= ~((uint64_t)1 << 62);
+        if (!bn_is_prime(p, 5)) continue;
+        q = rsa4096_bignum::random_odd();
+        for (int i = 32; i < 64; ++i) q.d[i] = 0;
+        q.d[31] |= (uint64_t)1 << 63; q.d[31] &= ~((uint64_t)1 << 62);
+        if (!bn_is_prime(q, 5) || p == q) continue;
+        bn_mul(n, p, q);
+        bn_sub(p1, p, rsa4096_bignum::from_uint64(1));
+        bn_sub(q1, q, rsa4096_bignum::from_uint64(1));
+        bn_mul(phi, p1, q1);
+        bn_modinv(d, e, phi);
+    }
+    bn_mod(dP, d, p1); bn_mod(dQ, d, q1); bn_modinv(qInv, q, p);
+    pub.n = n; pub.e = e;
+    crt.n = n; crt.e = e; crt.d = d; crt.p = p; crt.q = q;
+    crt.dP = dP; crt.dQ = dQ; crt.qInv = qInv;
+    return true;
+}
 
 } // namespace jpssl

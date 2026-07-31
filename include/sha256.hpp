@@ -12,4 +12,10 @@ void sha256_update(sha256_ctx*,const uint8_t*,size_t);
 void sha256_final(sha256_ctx*,uint8_t digest[32]);
 inline std::string sha256_hex(const uint8_t d[32]){char b[65];for(int i=0;i<32;++i)sprintf(b+i*2,"%02x",d[i]);return{b};}
 void sha256_sha_ni(uint8_t digest[32], const uint8_t* data, size_t len);
+// 便捷单次 SHA-256
+inline void sha256(const uint8_t* data, size_t len, uint8_t out[32]){
+    sha256_ctx ctx; sha256_init(&ctx);
+    if(len) sha256_update(&ctx, data, len);
+    sha256_final(&ctx, out);
+}
 }

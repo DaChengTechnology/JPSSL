@@ -92,6 +92,10 @@ set(CPU_SOURCES
     src/rsa_batch_avx2.cpp
     src/rsa_batch_avx512.cpp
     src/rsa_batch_dispatch.cpp
+    src/rsa_prim.cpp
+    src/rsa_oaep.cpp
+    src/rsa_pss.cpp
+    src/rsa_schemes.cpp
 )
 
 add_library(jpssl_cpu STATIC ${CPU_SOURCES})

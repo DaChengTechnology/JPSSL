@@ -30,7 +30,7 @@ static inline void mont_mul_step1(const uint64_t* a_ptr, const uint64_t* b_ptr,
 
 static inline void mont_mul_step2(uint64_t u, const uint64_t* m,
                                   uint64_t* t, uint64_t* carry, int K, int msg_idx) {
-    uint64_t* t_msg = t + msg_idx * (2*K + 1);
+    uint64_t* t_msg = t + msg_idx * (2*K + 2);
     for (int j = 0; j < K; ++j) {
         __uint128_t s = (__uint128_t)u * m[j] + t_msg[j] + *carry;
         t_msg[j] = (uint64_t)s;
@@ -40,9 +40,18 @@ static inline void mont_mul_step2(uint64_t u, const uint64_t* m,
 
 static inline void mont_mul_final_sub(uint64_t* r, const uint64_t* m,
                                        uint64_t* t, int K, int msg_idx) {
-    uint64_t* t_msg = t + msg_idx * (2*K + 1);
+    uint64_t* t_msg = t + msg_idx * (2*K + 2);
     uint64_t* r_msg = r + msg_idx * K;
     for (int i = 0; i < K; ++i) r_msg[i] = t_msg[i + K];
+
+    if (t_msg[2*K]) {
+        uint64_t bo = 0;
+        for (int i = 0; i < K; ++i) {
+            uint64_t df = r_msg[i] - m[i] - bo;
+            bo = (r_msg[i] < m[i] + bo) ? 1 : 0;
+            r_msg[i] = df;
+        }
+    }
 
     bool ge = false;
     for (int i = K - 1; i >= 0; --i) {
@@ -61,9 +70,9 @@ static inline void mont_mul_final_sub(uint64_t* r, const uint64_t* m,
 
 void batch_mont_mul_avx2(uint64_t* r, const uint64_t* a, const uint64_t* b,
                          const uint64_t* m, uint64_t mp, int K) {
-    uint64_t t[4 * (2*64 + 1)] = {};
+    uint64_t t[4 * (2*64 + 2)] = {};
     int maxK = (K > 64) ? 64 : K;
-    int t_len = 2 * maxK + 1;
+    int t_len = 2 * maxK + 2;
 
     for (int i = 0; i < K; ++i) {
         uint64_t carry[4] = {0, 0, 0, 0};
@@ -85,7 +94,17 @@ void batch_mont_mul_avx2(uint64_t* r, const uint64_t* a, const uint64_t* b,
             }
         }
         for (int msg = 0; msg < 4; ++msg) {
-            t[msg * t_len + i + K] = carry[msg];
+            uint64_t sc = t[msg * t_len + i + K] + carry[msg];
+            t[msg * t_len + i + K] = sc;
+            if (sc < carry[msg]) {
+                int idx = i + K + 1;
+                while (true) {
+                    uint64_t s2 = t[msg * t_len + idx] + 1;
+                    t[msg * t_len + idx] = s2;
+                    if (s2) break;
+                    ++idx;
+                }
+            }
         }
 
         uint64_t u_vals[4];
@@ -125,7 +144,7 @@ void batch_modpow_avx2(uint64_t* r, const uint64_t* bases,
                        const uint64_t* exp, const uint64_t* mod,
                        const uint64_t* R2, const uint64_t* R_mod_m,
                        uint64_t mp, int K, int exp_bits) {
-    int t_len = 2 * K + 1;
+    int t_len = 2 * K + 2;
     uint64_t bm[4 * K];
     uint64_t rm[4 * K];
 
@@ -135,7 +154,7 @@ void batch_modpow_avx2(uint64_t* r, const uint64_t* bases,
         (void)a_ptr;
     }
 
-    uint64_t* t = new uint64_t[4 * (2 * K + 1)]();
+    uint64_t* t = new uint64_t[4 * (2 * K + 2)]();
     uint64_t carry[4];
 
     for (int msg = 0; msg < 4; ++msg) {
@@ -146,19 +165,26 @@ void batch_modpow_avx2(uint64_t* r, const uint64_t* bases,
 
     for (int msg = 0; msg < 4; ++msg) {
         memset(t + msg * t_len, 0, t_len * 8);
-        carry[0] = carry[1] = carry[2] = carry[3] = 0;
-        uint64_t a_lane = bases[msg * K + 0];
-        (void)a_lane;
         for (int i = 0; i < K; ++i) {
-            carry[0] = carry[1] = carry[2] = carry[3] = 0;
-            uint64_t ai = bases[msg * K + i];
+            carry[0] = 0;
+            const uint64_t ai = bases[msg * K + i];
             for (int j = 0; j < K; ++j) {
                 uint64_t* t_msg = t + msg * t_len;
                 __uint128_t p = (__uint128_t)ai * R2[j] + t_msg[i + j] + carry[0];
                 t_msg[i + j] = (uint64_t)p;
                 carry[0] = (uint64_t)(p >> 64);
             }
-            t[msg * t_len + i + K] = carry[0];
+            uint64_t sc = t[msg * t_len + i + K] + carry[0];
+            t[msg * t_len + i + K] = sc;
+            if (sc < carry[0]) {
+                int idx = i + K + 1;
+                while (true) {
+                    uint64_t s2 = t[msg * t_len + idx] + 1;
+                    t[msg * t_len + idx] = s2;
+                    if (s2) break;
+                    ++idx;
+                }
+            }
 
             uint64_t u = t[msg * t_len + i] * mp;
             carry[0] = 0;
@@ -179,6 +205,15 @@ void batch_modpow_avx2(uint64_t* r, const uint64_t* bases,
         }
         uint64_t* bm_msg = bm + msg * K;
         for (int i = 0; i < K; ++i) bm_msg[i] = t[msg * t_len + i + K];
+
+        if (t[msg * t_len + 2*K]) {
+            uint64_t bo = 0;
+            for (int i = 0; i < K; ++i) {
+                uint64_t df = bm_msg[i] - mod[i] - bo;
+                bo = (bm_msg[i] < mod[i] + bo) ? 1 : 0;
+                bm_msg[i] = df;
+            }
+        }
         bool ge = false;
         for (int i = K - 1; i >= 0; --i) {
             if (bm_msg[i] > mod[i]) { ge = true; break; }
@@ -205,14 +240,25 @@ void batch_modpow_avx2(uint64_t* r, const uint64_t* bases,
             uint64_t* rm_msg = rm + msg * K;
             uint64_t* t_msg = t + msg * t_len;
             for (int i = 0; i < K; ++i) {
+                const uint64_t ai = rm_msg[i];
                 carry[msg] = 0;
                 for (int j = 0; j < K; ++j) {
-                    __uint128_t p = (__uint128_t)rm_msg[i] * rm_msg[j]
+                    __uint128_t p = (__uint128_t)ai * rm_msg[j]
                                   + t_msg[i + j] + carry[msg];
                     t_msg[i + j] = (uint64_t)p;
                     carry[msg] = (uint64_t)(p >> 64);
                 }
-                t_msg[i + K] = carry[msg];
+                uint64_t sc = t_msg[i + K] + carry[msg];
+                t_msg[i + K] = sc;
+                if (sc < carry[msg]) {
+                    int idx = i + K + 1;
+                    while (true) {
+                        uint64_t s2 = t_msg[idx] + 1;
+                        t_msg[idx] = s2;
+                        if (s2) break;
+                        ++idx;
+                    }
+                }
 
                 uint64_t u = t_msg[i] * mp;
                 carry[msg] = 0;
@@ -230,6 +276,15 @@ void batch_modpow_avx2(uint64_t* r, const uint64_t* bases,
                 }
             }
             for (int i = 0; i < K; ++i) rm_msg[i] = t_msg[i + K];
+
+            if (t_msg[2*K]) {
+                uint64_t bo = 0;
+                for (int i = 0; i < K; ++i) {
+                    uint64_t df = rm_msg[i] - mod[i] - bo;
+                    bo = (rm_msg[i] < mod[i] + bo) ? 1 : 0;
+                    rm_msg[i] = df;
+                }
+            }
             bool ge = false;
             for (int i = K - 1; i >= 0; --i) {
                 if (rm_msg[i] > mod[i]) { ge = true; break; }
@@ -253,14 +308,25 @@ void batch_modpow_avx2(uint64_t* r, const uint64_t* bases,
                 uint64_t* bm_msg = bm + msg * K;
                 uint64_t* t_msg = t + msg * t_len;
                 for (int i = 0; i < K; ++i) {
+                    const uint64_t ai = rm_msg[i];
                     carry[msg] = 0;
                     for (int j = 0; j < K; ++j) {
-                        __uint128_t p = (__uint128_t)rm_msg[i] * bm_msg[j]
+                        __uint128_t p = (__uint128_t)ai * bm_msg[j]
                                       + t_msg[i + j] + carry[msg];
                         t_msg[i + j] = (uint64_t)p;
                         carry[msg] = (uint64_t)(p >> 64);
                     }
-                    t_msg[i + K] = carry[msg];
+                uint64_t sc = t_msg[i + K] + carry[msg];
+                t_msg[i + K] = sc;
+                if (sc < carry[msg]) {
+                    int idx = i + K + 1;
+                    while (true) {
+                        uint64_t s2 = t_msg[idx] + 1;
+                        t_msg[idx] = s2;
+                        if (s2) break;
+                        ++idx;
+                    }
+                }
 
                     uint64_t u = t_msg[i] * mp;
                     carry[msg] = 0;
@@ -278,6 +344,15 @@ void batch_modpow_avx2(uint64_t* r, const uint64_t* bases,
                     }
                 }
                 for (int i = 0; i < K; ++i) rm_msg[i] = t_msg[i + K];
+
+                if (t_msg[2*K]) {
+                    uint64_t bo = 0;
+                    for (int i = 0; i < K; ++i) {
+                        uint64_t df = rm_msg[i] - mod[i] - bo;
+                        bo = (rm_msg[i] < mod[i] + bo) ? 1 : 0;
+                        rm_msg[i] = df;
+                    }
+                }
                 bool ge = false;
                 for (int i = K - 1; i >= 0; --i) {
                     if (rm_msg[i] > mod[i]) { ge = true; break; }
@@ -310,7 +385,17 @@ void batch_modpow_avx2(uint64_t* r, const uint64_t* bases,
                 t_msg[i + j] = (uint64_t)p;
                 carry[0] = (uint64_t)(p >> 64);
             }
-            t_msg[i + K] = carry[0];
+            uint64_t sc = t_msg[i + K] + carry[0];
+            t_msg[i + K] = sc;
+            if (sc < carry[0]) {
+                int idx = i + K + 1;
+                while (true) {
+                    uint64_t s2 = t_msg[idx] + 1;
+                    t_msg[idx] = s2;
+                    if (s2) break;
+                    ++idx;
+                }
+            }
 
             uint64_t u = t_msg[i] * mp;
             carry[0] = 0;
@@ -329,6 +414,15 @@ void batch_modpow_avx2(uint64_t* r, const uint64_t* bases,
         }
         uint64_t* r_msg = r + msg * K;
         for (int i = 0; i < K; ++i) r_msg[i] = t_msg[i + K];
+
+        if (t_msg[2*K]) {
+            uint64_t bo = 0;
+            for (int i = 0; i < K; ++i) {
+                uint64_t df = r_msg[i] - mod[i] - bo;
+                bo = (r_msg[i] < mod[i] + bo) ? 1 : 0;
+                r_msg[i] = df;
+            }
+        }
         bool ge = false;
         for (int i = K - 1; i >= 0; --i) {
             if (r_msg[i] > mod[i]) { ge = true; break; }

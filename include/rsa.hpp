@@ -66,6 +66,20 @@ struct rsa_private_key { rsa_bignum n,d,e; };
 struct rsa4096_public_key { rsa4096_bignum n,e; };
 struct rsa4096_private_key { rsa4096_bignum n,d,e; };
 
+/// @brief CRT 私钥 (RFC 8017 §3.2 RSAPrivateKey)
+struct rsa_crt_key {
+    rsa_bignum n, e, d;   // modulus, publicExponent, privateExponent
+    rsa_bignum p, q;      // prime1, prime2
+    rsa_bignum dP, dQ;    // exponent1 = d mod (p-1), exponent2 = d mod (q-1)
+    rsa_bignum qInv;      // coefficient = q^(-1) mod p
+};
+struct rsa4096_crt_key {
+    rsa4096_bignum n, e, d;
+    rsa4096_bignum p, q;
+    rsa4096_bignum dP, dQ;
+    rsa4096_bignum qInv;
+};
+
 bool rsa_keygen(rsa_public_key&,rsa_private_key&);
 void rsa_encrypt(const rsa_public_key&,std::span<const uint8_t>,uint8_t*);
 bool rsa_decrypt(const rsa_private_key&,const uint8_t*,std::vector<uint8_t>&);
@@ -104,4 +118,64 @@ void musa_rsa_pool_destroy(musa_rsa_pool*);
 void musa_rsa_batch_decrypt(musa_rsa_pool*,const uint8_t*,uint8_t*,size_t);
 void musa_rsa_batch_modpow(const rsa_bignum&,const rsa_bignum&,const mont_ctx&,const uint8_t*,uint8_t*,size_t);
 void musa4096_rsa_batch_modpow(const rsa4096_bignum&,const rsa4096_bignum&,const mont_ctx4096&,const uint8_t*,uint8_t*,size_t);
+
+// ───────────────────────────────────────────────────────────────────────
+//  RFC 8017 扩展: I2OSP/OS2IP, MGF1, 原语, CRT, OAEP, PSS
+// ───────────────────────────────────────────────────────────────────────
+
+/// §4.1/4.2  I2OSP / OS2IP
+bool I2OSP(uint64_t x, uint8_t* out, size_t xLen);
+bool I2OSP(const rsa_bignum& x, uint8_t* out, size_t xLen);
+bool I2OSP(const rsa4096_bignum& x, uint8_t* out, size_t xLen);
+rsa_bignum     OS2IP2048(const uint8_t*, size_t);
+rsa4096_bignum OS2IP4096(const uint8_t*, size_t);
+
+/// §B.2.1  MGF1
+void mgf1_sha256(const uint8_t* seed, size_t seedLen, uint8_t* mask, size_t maskLen);
+void mgf1_sha384(const uint8_t* seed, size_t seedLen, uint8_t* mask, size_t maskLen);
+void mgf1_sha512(const uint8_t* seed, size_t seedLen, uint8_t* mask, size_t maskLen);
+
+/// §5  RSA 原语
+void RSAEP(const rsa_public_key&, const rsa_bignum& m, rsa_bignum& c);
+void RSAEP4096(const rsa4096_public_key&, const rsa4096_bignum& m, rsa4096_bignum& c);
+void RSADP(const rsa_crt_key&, const rsa_bignum& c, rsa_bignum& m);
+void RSADP4096(const rsa4096_crt_key&, const rsa4096_bignum& c, rsa4096_bignum& m);
+void RSASP1(const rsa_crt_key&, const rsa_bignum& m, rsa_bignum& s);
+void RSASP14096(const rsa4096_crt_key&, const rsa4096_bignum& m, rsa4096_bignum& s);
+void RSAVP1(const rsa_public_key&, const rsa_bignum& s, rsa_bignum& m);
+void RSAVP14096(const rsa4096_public_key&, const rsa4096_bignum& s, rsa4096_bignum& m);
+
+/// §6  CRT 参数计算 + 升级版 keygen（强制 n 位宽 + CRT 输出）
+bool rsa_keygen_crt(rsa_public_key&, rsa_crt_key&);
+bool rsa4096_keygen_crt(rsa4096_public_key&, rsa4096_crt_key&);
+void compute_crt_params(const rsa_bignum& p, const rsa_bignum& q, const rsa_bignum& d,
+                        rsa_bignum& dP, rsa_bignum& dQ, rsa_bignum& qInv);
+void compute_crt_params4096(const rsa4096_bignum& p, const rsa4096_bignum& q,
+                            const rsa4096_bignum& d,
+                            rsa4096_bignum& dP, rsa4096_bignum& dQ,
+                            rsa4096_bignum& qInv);
+bool rsa_crt_decrypt(const rsa_crt_key&, const uint8_t* ct, std::vector<uint8_t>& pt);
+bool rsa4096_crt_decrypt(const rsa4096_crt_key&, const uint8_t* ct, std::vector<uint8_t>& pt);
+
+/// §7.1  RSAES-OAEP (SHA-256)
+bool rsaes_oaep_encrypt(const rsa_public_key&, std::span<const uint8_t> msg,
+                        const uint8_t* label, size_t labelLen, uint8_t ct[256]);
+bool rsaes_oaep_decrypt(const rsa_crt_key&, const uint8_t ct[256],
+                        const uint8_t* label, size_t labelLen,
+                        std::vector<uint8_t>& msg);
+
+/// §8.1  RSASSA-PSS (SHA-256, saltLen 默认 32)
+bool rsassa_pss_sign(const rsa_crt_key&, const uint8_t* msg, size_t msgLen,
+                     uint8_t sig[256], size_t saltLen=32);
+bool rsassa_pss_verify(const rsa_public_key&, const uint8_t* msg, size_t msgLen,
+                       const uint8_t sig[256], size_t saltLen=32);
+
+/// §8.2  RSASSA-PKCS1-v1_5 签名/验证
+/// digestPrefix: DER 编码的 DigestInfo 前缀 (如 SHA-256: 30 31 30 0d 06 09 60 86 48 01 65 03 04 02 01 05 00 04 20)
+bool rsassa_pkcs1v15_sign(const rsa_crt_key&, const uint8_t* msg, size_t msgLen,
+                          const uint8_t* digestPrefix, size_t prefixLen,
+                          uint8_t sig[256]);
+bool rsassa_pkcs1v15_verify(const rsa_public_key&, const uint8_t* msg, size_t msgLen,
+                            const uint8_t* digestPrefix, size_t prefixLen,
+                            const uint8_t sig[256]);
 }

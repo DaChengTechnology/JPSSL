@@ -170,6 +170,14 @@ add_executable(bench_sha512 bench_sha512.cpp)
 target_include_directories(bench_sha512 PRIVATE ${INCLUDE_DIR})
 target_link_libraries(bench_sha512 PRIVATE jpssl_cpu OpenSSL::Crypto)
 
+add_executable(bench_rsa_gpu bench_rsa_gpu.cpp)
+target_include_directories(bench_rsa_gpu PRIVATE ${INCLUDE_DIR} ${SRC_DIR})
+if(JP_ENABLE_MUSA)
+    target_link_libraries(bench_rsa_gpu PRIVATE jpssl_cpu jpssl_musa)
+else()
+    target_link_libraries(bench_rsa_gpu PRIVATE jpssl_cpu)
+endif()
+
 # ═══════════════════════════════════════════════════════════════════════
 #  CTest 注册
 # ═══════════════════════════════════════════════════════════════════════
@@ -197,3 +205,4 @@ add_test(NAME test_ghash_debug   COMMAND test_ghash_debug)
 add_test(NAME bench_cipher_suites  COMMAND bench_cipher_suites)
 add_test(NAME bench_hardware_accel COMMAND bench_hardware_accel)
 add_test(NAME bench_sha512         COMMAND bench_sha512)
+add_test(NAME bench_rsa_gpu        COMMAND bench_rsa_gpu)
