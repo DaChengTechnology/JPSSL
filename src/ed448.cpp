@@ -272,31 +272,12 @@ static bool point_decode(ed448_point& P, const uint8_t in[57]) {
     fe448 v_inv; fe448_invert(v_inv, v);
     fe448 x_sq; fe448_mul(x_sq, u, v_inv);
 
-    // 计算 x = sqrt(x_sq) mod p
-    // p ≡ 3 mod 4 (Goldilocks p = 7 mod 8)
-    // sqrt: x = a^((p+1)/4)
-    uint8_t xsq_le[56]; fe448_tobytes(xsq_le, x_sq);
-    rsa_bignum xsq = bytes_le_to_bn(xsq_le, 56);
-    const rsa_bignum& P_mod = get_P();
-
-    // e = (P+1)/4 = (2^448 - 2^224) / 4 = 2^446 - 2^222
-    rsa_bignum p_plus_1; bn_add(p_plus_1, P_mod, rsa_bignum::from_uint64(1));
-    rsa_bignum four = rsa_bignum::from_uint64(4);
-    rsa_bignum e_val, rem;
-    bn_divmod(e_val, rem, p_plus_1, four);
-
-    rsa_bignum x_bn;
-    bn_modpow(x_bn, xsq, e_val, P_mod);
-
-    // 验证 x_bn^2 == x_sq (mod p)
-    rsa_bignum x_sq_check; bn_mul(x_sq_check, x_bn, x_bn);
-    rsa_bignum x_sq_check_mod; bn_mod(x_sq_check_mod, x_sq_check, P_mod);
-    if (!(x_sq_check_mod == xsq)) {
-        return false;  // 不是二次剩余，无效点
-    }
-
-    uint8_t x_le[56]; bn_to_bytes_le(x_bn, x_le, 56);
-    fe448 x; fe448_frombytes(x, x_le);
+    // 计算 x = sqrt(x_sq) mod p（Goldilocks p ≡ 3 mod 4，域内开方替代 bn_modpow）
+    fe448 x;
+    fe448_sqrt(x, x_sq);
+    // 验证 x^2 * v == u（确保 x 是正确平方根）
+    fe448 x_check; fe448_sq(x_check, x); fe448_mul(x_check, x_check, v);
+    if (memcmp(x_check, u, sizeof(fe448)) != 0) return false;
     if (fe448_isnegative(x) != sign) {
         fe448_neg(x, x);
     }
@@ -308,6 +289,76 @@ static bool point_decode(ed448_point& P, const uint8_t in[57]) {
 }
 
 // ─── 标量乘法 ────────────────────────────────────────────────────────
+
+// ─── 窗口化标量乘 + basepoint 预计算表 + 双标量乘（移植自 ed448_body.inc） ───
+
+static const ed448_point& base_point();  // 前向声明（定义在 scalar_mult 之后）
+
+/// 构建 4-bit 窗口表：table[i] = i*P（i=0..15）
+static void point_table_build(ed448_point table[16], const ed448_point& P) {
+    point_zero(table[0]);
+    point_copy(table[1], P);
+    for (int i = 2; i < 16; ++i)
+        point_add(table[i], table[i - 1], P);
+}
+
+/// 静态 basepoint 4-bit 窗口表（一次性构建）
+static const ed448_point* basepoint_table() {
+    static ed448_point table[16];
+    static bool init = false;
+    if (!init) {
+        point_table_build(table, base_point());
+        init = true;
+    }
+    return table;
+}
+
+/// 提取标量第 bitpos 位起的 4-bit 窗口（小端位序）
+static inline int extract_window4(const uint8_t scalar[57], int bitpos) {
+    int w = 0;
+    for (int b = 0; b < 4; ++b) {
+        int i = bitpos + b;
+        w |= ((scalar[i >> 3] >> (i & 7)) & 1) << b;
+    }
+    return w;
+}
+
+/// 4-bit 窗口标量乘：R = scalar * P（P 用预计算表，448 位 = 112 窗口）
+static void scalar_mult_windows(ed448_point& R, const uint8_t scalar[57], const ed448_point table[16]) {
+    point_zero(R);
+    for (int wi = 111; wi >= 0; --wi) {
+        for (int j = 0; j < 4; ++j) {
+            ed448_point d;
+            point_double(d, R);
+            point_copy(R, d);
+        }
+        int w = extract_window4(scalar, 4 * wi);
+        ed448_point tmp;
+        point_add(tmp, R, table[w]);
+        point_copy(R, tmp);
+    }
+}
+
+/// 双标量乘（Strauss-Shamir 窗口化）：R = s1*P1 + s2*P2
+static void double_scalar_mult(ed448_point& R,
+                               const uint8_t s1[57], const ed448_point t1[16],
+                               const uint8_t s2[57], const ed448_point t2[16]) {
+    point_zero(R);
+    for (int wi = 111; wi >= 0; --wi) {
+        for (int j = 0; j < 4; ++j) {
+            ed448_point d;
+            point_double(d, R);
+            point_copy(R, d);
+        }
+        int w1 = extract_window4(s1, 4 * wi);
+        int w2 = extract_window4(s2, 4 * wi);
+        ed448_point tmp;
+        point_add(tmp, R, t1[w1]);
+        point_copy(R, tmp);
+        point_add(tmp, R, t2[w2]);
+        point_copy(R, tmp);
+    }
+}
 
 static void scalar_mult(ed448_point& R, const uint8_t scalar[57], const ed448_point& P) {
     ed448_point Q; point_zero(Q);
@@ -415,7 +466,7 @@ void ed448_keygen(uint8_t pub[57], uint8_t priv_seed[57]) {
     // RFC 8032 reference implementation does NOT reduce s mod L;
     // with correct group order L, [s]*B = [s mod L]*B holds anyway.
     ed448_point A;
-    scalar_mult(A, s, base_point());
+    scalar_mult_windows(A, s, basepoint_table());
     point_encode(A, pub);
 }
 
@@ -453,7 +504,7 @@ void ed448_sign(const uint8_t* priv, const uint8_t* msg, size_t msg_len, uint8_t
     uint8_t pub[57];
     {
         ed448_point A;
-        scalar_mult(A, s_scalar, base_point());
+        scalar_mult_windows(A, s_scalar, basepoint_table());
         point_encode(A, pub);
     }
 
@@ -469,7 +520,7 @@ void ed448_sign(const uint8_t* priv, const uint8_t* msg, size_t msg_len, uint8_t
 
     // step 3: R = B * r
     ed448_point R;
-    scalar_mult(R, r_scalar, base_point());
+    scalar_mult_windows(R, r_scalar, basepoint_table());
     uint8_t R_enc[57];
     point_encode(R, R_enc);
 
@@ -527,26 +578,36 @@ bool ed448_verify(const uint8_t pub[57], const uint8_t* msg, size_t msg_len, con
         scalar_mod_L(h, k_scalar);
     }
 
-    // 计算 B * S
+    // k_neg = (L - k) mod L（字节减法；k==0 时归零）
+    uint8_t k_neg[57];
+    {
+        uint64_t borrow = 0;
+        for (int i = 0; i < 57; ++i) {
+            uint64_t d = (uint64_t)L_BYTES[i] - (uint64_t)k_scalar[i] - borrow;
+            k_neg[i] = (uint8_t)d;
+            borrow = (L_BYTES[i] < k_scalar[i] + borrow) ? 1 : 0;
+        }
+        if (memcmp(k_neg, L_BYTES, 57) == 0) memset(k_neg, 0, 57);
+    }
+
+    // T = S*B + k_neg*A（双标量乘，共享倍点链）
     uint8_t S_scalar[57];
     bn_to_bytes_le(S_bn, S_scalar, 57);
-    ed448_point BS;
-    scalar_mult(BS, S_scalar, base_point());
+    ed448_point A_table[16];
+    point_table_build(A_table, A);
+    ed448_point T;
+    double_scalar_mult(T, S_scalar, basepoint_table(), k_neg, A_table);
 
-    // 计算 A * k
-    ed448_point Ak;
-    scalar_mult(Ak, k_scalar, A);
-
-    // 计算 R + A*k
-    ed448_point R_plus_Ak;
-    point_add(R_plus_Ak, R, Ak);
-
-    // 比较编码
-    uint8_t bs_enc[57], rak_enc[57];
-    point_encode(BS, bs_enc);
-    point_encode(R_plus_Ak, rak_enc);
-
-    return memcmp(bs_enc, rak_enc, 57) == 0;
+    // 投影坐标相等性检查：T == R ⇔ (T.X*R.Z==R.X*T.Z) && (T.Y*R.Z==R.Y*T.Z)
+    // 避免两次 point_encode（各含 1 次 fe448_invert）
+    fe448 lhs_x, rhs_x, lhs_y, rhs_y;
+    fe448_mul(lhs_x, T.X, R.Z);
+    fe448_mul(rhs_x, R.X, T.Z);
+    fe448_mul(lhs_y, T.Y, R.Z);
+    fe448_mul(rhs_y, R.Y, T.Z);
+    if (memcmp(lhs_x, rhs_x, sizeof(fe448)) != 0) return false;
+    if (memcmp(lhs_y, rhs_y, sizeof(fe448)) != 0) return false;
+    return true;
 }
 
 } // namespace jpssl

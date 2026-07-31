@@ -18,10 +18,10 @@ int main() {
     size_t msg_lens[N];
     
     for (int i = 0; i < N; i++) {
-        ed25519_keygen(pubs[i], privs[i]);
+        jpssl::ed25519_keygen(pubs[i], privs[i]);
         msgs[i] = "batch test message";
         msg_lens[i] = strlen(msgs[i]);
-        ed25519_sign(privs[i], (const uint8_t*)msgs[i], msg_lens[i], sigs[i]);
+        jpssl::ed25519_sign(privs[i], (const uint8_t*)msgs[i], msg_lens[i], sigs[i]);
     }
     
     // Setup pointer arrays
@@ -50,9 +50,9 @@ int main() {
     
     // Test 4: empty message
     uint8_t pub_e[32], priv_e[64];
-    ed25519_keygen(pub_e, priv_e);
+    jpssl::ed25519_keygen(pub_e, priv_e);
     uint8_t sig_e[64];
-    ed25519_sign(priv_e, nullptr, 0, sig_e);
+    jpssl::ed25519_sign(priv_e, nullptr, 0, sig_e);
     const uint8_t* e_pub = pub_e;
     const uint8_t* e_msg = nullptr;
     size_t e_len = 0;

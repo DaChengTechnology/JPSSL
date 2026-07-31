@@ -31,28 +31,28 @@ int main() {
     
     // Sign with empty message
     uint8_t sig[64];
-    ed25519_sign(priv, nullptr, 0, sig);
+    jpssl::ed25519_sign(priv, nullptr, 0, sig);
     
     printf("Sign with seed + empty msg:\n");
     printf("  R: "); for(int i=0;i<32;i++) printf("%02x", sig[i]); printf("\n");
     printf("  S: "); for(int i=32;i<64;i++) printf("%02x", sig[i]); printf("\n");
     
-    bool ok = ed25519_verify(pub, nullptr, 0, sig);
+    bool ok = jpssl::ed25519_verify(pub, nullptr, 0, sig);
     printf("Verify: %s\n", ok ? "PASS" : "FAIL");
     
     // Now test with keygen
     printf("\n=== Keygen + Sign + Verify ===\n");
     uint8_t pk[32], sk[64];
-    ed25519_keygen(pk, sk);
+    jpssl::ed25519_keygen(pk, sk);
     
     const char* msg = "test";
-    ed25519_sign(sk, (const uint8_t*)msg, strlen(msg), sig);
+    jpssl::ed25519_sign(sk, (const uint8_t*)msg, strlen(msg), sig);
     
     printf("  pub: "); for(int i=0;i<32;i++) printf("%02x", pk[i]); printf("\n");
     printf("  R:   "); for(int i=0;i<32;i++) printf("%02x", sig[i]); printf("\n");
     printf("  S:   "); for(int i=32;i<64;i++) printf("%02x", sig[i]); printf("\n");
     
-    bool ok2 = ed25519_verify(pk, (const uint8_t*)msg, strlen(msg), sig);
+    bool ok2 = jpssl::ed25519_verify(pk, (const uint8_t*)msg, strlen(msg), sig);
     printf("Round-trip: %s\n", ok2 ? "PASS" : "FAIL");
     
     return 0;

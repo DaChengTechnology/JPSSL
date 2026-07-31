@@ -53,7 +53,7 @@ int main() {
     hex("expected", pub, 32);
     
     uint8_t sig[64];
-    ed25519_sign(priv, nullptr, 0, sig);
+    jpssl::ed25519_sign(priv, nullptr, 0, sig);
     
     hex("R (sig)", sig, 32);
     hex("S (sig)", sig + 32, 32);
@@ -65,11 +65,11 @@ int main() {
     
     // Test 2: Verify RFC signature
     printf("\n=== Verify RFC signature ===\n");
-    bool v_ok = ed25519_verify(pub, nullptr, 0, expected_sig);
+    bool v_ok = jpssl::ed25519_verify(pub, nullptr, 0, expected_sig);
     printf("Verify: %s\n", v_ok ? "PASS" : "FAIL");
     
     // Test 3: Verify our own signature
-    bool v_ok2 = ed25519_verify(pub, nullptr, 0, sig);
+    bool v_ok2 = jpssl::ed25519_verify(pub, nullptr, 0, sig);
     printf("Verify (own sig): %s\n", v_ok2 ? "PASS" : "FAIL");
     
     return 0;

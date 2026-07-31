@@ -485,6 +485,168 @@ static void ge_double_scalarmult_vartime(ge_p3* r, const uint8_t a[32], const ge
 //  Public API
 // ═══════════════════════════════════════════════════════════════════
 
+
+// ═══════════════════════════════════════════════════════════════════
+//  4-bit 窗口标量乘 + basepoint 预计算表 + 双标量乘（仿 ed448 已验证骨架）
+// ═══════════════════════════════════════════════════════════════════
+
+/// 构建 4-bit 窗口表：table[i] = i*P（i=0..15）
+static void point_table_build(ge_p3 table[16], const ge_p3& P) {
+    ge_p3_0(&table[0]);
+    ge_p3_to_p3(&table[1], &P);
+    for (int i = 2; i < 16; ++i) {
+        ge_p1p1 t;
+        ge_add(&t, &table[i - 1], &P);
+        ge_p1p1_to_p3(&table[i], &t);
+    }
+}
+
+/// 静态 basepoint 4-bit 窗口表（一次性构建）
+static const ge_p3* basepoint_table() {
+    static ge_p3 table[16];
+    static bool init = false;
+    if (!init) {
+        point_table_build(table, *ge_get_basepoint());
+        init = true;
+    }
+    return table;
+}
+
+/// 提取标量第 bitpos 位起的 4-bit 窗口（小端位序）
+static inline int extract_window4(const uint8_t scalar[32], int bitpos) {
+    int w = 0;
+    for (int b = 0; b < 4; ++b) {
+        int i = bitpos + b;
+        w |= ((scalar[i >> 3] >> (i & 7)) & 1) << b;
+    }
+    return w;
+}
+
+/// 4-bit 窗口标量乘：R = scalar * P（P 用预计算表，256 位 = 64 窗口）
+static void scalar_mult_windows(ge_p3& R, const uint8_t scalar[32], const ge_p3 table[16]) {
+    ge_p3_0(&R);
+    for (int wi = 63; wi >= 0; --wi) {
+        for (int j = 0; j < 4; ++j) {
+            ge_p1p1 d;
+            ge_p3_dbl(&d, &R);
+            ge_p1p1_to_p3(&R, &d);
+        }
+        int w = extract_window4(scalar, 4 * wi);
+        ge_p1p1 tmp;
+        ge_add(&tmp, &R, &table[w]);
+        ge_p1p1_to_p3(&R, &tmp);
+    }
+}
+
+/// 提取标量第 bitpos 位起的 8-bit 窗口
+static inline int extract_window8(const uint8_t scalar[32], int bitpos) {
+    int w = 0;
+    for (int b = 0; b < 8; ++b) {
+        int i = bitpos + b;
+        if (i < 256) w |= ((scalar[i >> 3] >> (i & 7)) & 1) << b;
+    }
+    return w;
+}
+
+/// 8-bit 窗口标量乘（OpenSSL 同款 comb 表）：R = scalar * P，256 位 = 32 窗口
+/// 表 256 项（w*P），省一半查表加（32 vs 64）
+static void scalar_mult_windows8(ge_p3& R, const uint8_t scalar[32], const ge_p3 table[256]) {
+    // 初始化为最高窗口
+    ge_p3_to_p3(&R, &table[extract_window8(scalar, 248)]);
+    for (int wi = 30; wi >= 0; --wi) {
+        for (int j = 0; j < 8; ++j) {
+            ge_p1p1 d;
+            ge_p3_dbl(&d, &R);
+            ge_p1p1_to_p3(&R, &d);
+        }
+        int w = extract_window8(scalar, 8 * wi);
+        ge_p1p1 tmp;
+        ge_add(&tmp, &R, &table[w]);
+        ge_p1p1_to_p3(&R, &tmp);
+    }
+}
+
+/// 静态 basepoint 8-bit 窗口表（256 项，一次性构建）
+static const ge_p3* basepoint_table8() {
+    static ge_p3 table[256];
+    static bool init = false;
+    if (!init) {
+        ge_p3_0(&table[0]);
+        ge_p3_to_p3(&table[1], ge_get_basepoint());
+        for (int i = 2; i < 256; ++i) {
+            ge_p1p1 t;
+            ge_add(&t, &table[i - 1], ge_get_basepoint());
+            ge_p1p1_to_p3(&table[i], &t);
+        }
+        init = true;
+    }
+    return table;
+}
+
+/// ge_p3 → ge_precomp（y_plus_x, y_minus_x, xy2d）
+/// ge_madd 需要仿射坐标（Z=1），先归一化
+static void ge_p3_to_precomp(ge_precomp* r, const ge_p3* p) {
+    fe z_inv, x, y;
+    fe_invert(z_inv, p->Z);
+    fe_mul(x, p->X, z_inv);
+    fe_mul(y, p->Y, z_inv);
+    fe_add(r->y_plus_x, y, x);
+    fe_sub(r->y_minus_x, y, x);
+    fe_mul(r->xy2d, x, y);
+    fe_mul(r->xy2d, r->xy2d, d2_limbs());
+}
+
+/// ge_precomp 8-bit 表（256 项 = w*B，OpenSSL 同款 ge_madd 部分加）
+static const ge_precomp* basepoint_table8_precomp() {
+    static ge_precomp table[256];
+    static bool init = false;
+    if (!init) {
+        // 用现有 ge_p3 8-bit 表转换（basepoint_table8 已一次性构建）
+        const ge_p3* p3 = basepoint_table8();
+        for (int i = 0; i < 256; ++i)
+            ge_p3_to_precomp(&table[i], &p3[i]);
+        init = true;
+    }
+    return table;
+}
+
+/// 8-bit 窗口标量乘（ge_madd 部分加，省一半 fe_mul）
+static void scalar_mult_windows8_precomp(ge_p3& R, const uint8_t scalar[32], const ge_precomp table[256]) {
+    ge_p3_0(&R);
+    for (int wi = 31; wi >= 0; --wi) {
+        for (int j = 0; j < 8; ++j) {
+            ge_p1p1 d;
+            ge_p3_dbl(&d, &R);
+            ge_p1p1_to_p3(&R, &d);
+        }
+        int w = extract_window8(scalar, 8 * wi);
+        ge_p1p1 tmp;
+        ge_madd(&tmp, &R, &table[w]);
+        ge_p1p1_to_p3(&R, &tmp);
+    }
+}
+
+/// 双标量乘（Strauss-Shamir 窗口化）：R = s1*P1 + s2*P2
+/// 两标量同时扫描共享倍点链，64 窗口 × (4 倍点 + 2 查表加)
+static void double_scalar_mult(ge_p3& R,
+                               const uint8_t s1[32], const ge_p3 t1[16],
+                               const uint8_t s2[32], const ge_p3 t2[16]) {
+    ge_p3_0(&R);
+    for (int wi = 63; wi >= 0; --wi) {
+        for (int j = 0; j < 4; ++j) {
+            ge_p1p1 d;
+            ge_p3_dbl(&d, &R);
+            ge_p1p1_to_p3(&R, &d);
+        }
+        int w1 = extract_window4(s1, 4 * wi);
+        int w2 = extract_window4(s2, 4 * wi);
+        ge_p1p1 tmp;
+        ge_add(&tmp, &R, &t1[w1]);
+        ge_p1p1_to_p3(&R, &tmp);
+        ge_add(&tmp, &R, &t2[w2]);
+        ge_p1p1_to_p3(&R, &tmp);
+    }
+}
 void ed25519_keygen(uint8_t pub[32], uint8_t priv[64]) {
     static std::random_device rd;
     static std::mt19937_64 gen(rd());
@@ -503,7 +665,7 @@ void ed25519_keygen(uint8_t pub[32], uint8_t priv[64]) {
     h[31] &= 127;
     h[31] |= 64;
     ge_p3 A;
-    ge_scalarmult_base(&A, h);
+    scalar_mult_windows8_precomp(A, h, basepoint_table8_precomp());
     ge_tobytes(pub, &A);
     memcpy(priv + 32, pub, 32);
 }
@@ -529,7 +691,7 @@ void ed25519_sign(const uint8_t priv[64], const uint8_t* msg, size_t msg_len, ui
     uint8_t r_scalar[32];
     memcpy(r_scalar, r_hash, 32);
     ge_p3 R;
-    ge_scalarmult_base(&R, r_scalar);
+    scalar_mult_windows8_precomp(R, r_scalar, basepoint_table8_precomp());
     ge_tobytes(sig, &R);
     sha512_init(&ctx);
     sha512_update(&ctx, sig, 32);
@@ -562,17 +724,36 @@ bool ed25519_verify(const uint8_t pub[32], const uint8_t* msg, size_t msg_len, c
     sha512_update(&ctx, msg, msg_len);
     sha512_final(&ctx, hram);
     sc_reduce(hram);
-    const ge_p3* B = ge_get_basepoint();
-    // Compute expected_R = S*B - k*A
-    ge_p3 SB, kA, expected_R;
-    ge_scalarmult_base(&SB, sig + 32);
-    ge_scalarmult(&kA, hram, &A);
-    ge_p1p1 t;
-    ge_sub(&t, &SB, &kA);
-    ge_p1p1_to_p3(&expected_R, &t);
-    uint8_t expected_bytes[32], r_bytes[32];
-    ge_tobytes(expected_bytes, &expected_R);
-    ge_tobytes(r_bytes, &R);
-    return memcmp(expected_bytes, r_bytes, 32) == 0;
-}
 
+    // k_neg = (L - k) mod L（字节减法；k==0 时归零）
+    uint8_t k_neg[32];
+    {
+        static const uint8_t L_BYTES[32] = {
+            0xed,0xd3,0xf5,0x5c,0x1a,0x63,0x12,0x58,0xd6,0x9c,0xf7,0xa2,0xde,0xf9,0xde,0x14,
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x10
+        };
+        uint64_t borrow = 0;
+        for (int i = 0; i < 32; ++i) {
+            uint64_t d = (uint64_t)L_BYTES[i] - (uint64_t)hram[i] - borrow;
+            k_neg[i] = (uint8_t)d;
+            borrow = (L_BYTES[i] < hram[i] + borrow) ? 1 : 0;
+        }
+        if (memcmp(k_neg, L_BYTES, 32) == 0) memset(k_neg, 0, 32);
+    }
+
+    // T = S*B + k_neg*A（双标量乘，共享倍点链）
+    ge_p3 A_table[16];
+    point_table_build(A_table, A);
+    ge_p3 T;
+    double_scalar_mult(T, sig + 32, basepoint_table(), k_neg, A_table);
+
+    // 投影坐标相等性检查：T == R ⇔ (T.X*R.Z==R.X*T.Z) && (T.Y*R.Z==R.Y*T.Z)
+    fe lhs_x, rhs_x, lhs_y, rhs_y;
+    fe_mul(lhs_x, T.X, R.Z);
+    fe_mul(rhs_x, R.X, T.Z);
+    fe_mul(lhs_y, T.Y, R.Z);
+    fe_mul(rhs_y, R.Y, T.Z);
+    if (memcmp(lhs_x, rhs_x, sizeof(fe)) != 0) return false;
+    if (memcmp(lhs_y, rhs_y, sizeof(fe)) != 0) return false;
+    return true;
+}

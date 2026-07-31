@@ -70,24 +70,24 @@ int main() {
     int failed = 0;
     bool ok;
     
-    ok = ed25519_verify(ossl_pub, ossl_msg0, 0, ossl_sig0);
+    ok = jpssl::ed25519_verify(ossl_pub, ossl_msg0, 0, ossl_sig0);
     printf("OpenSSL sig 0 (empty):      %s\n", ok ? "PASS" : "FAIL");
     if (!ok) failed++;
     
-    ok = ed25519_verify(ossl_pub, ossl_msg1, 13, ossl_sig1);
+    ok = jpssl::ed25519_verify(ossl_pub, ossl_msg1, 13, ossl_sig1);
     printf("OpenSSL sig 1 (Hello...):   %s\n", ok ? "PASS" : "FAIL");
     if (!ok) failed++;
     
-    ok = ed25519_verify(ossl_pub, ossl_msg2, 43, ossl_sig2);
+    ok = jpssl::ed25519_verify(ossl_pub, ossl_msg2, 43, ossl_sig2);
     printf("OpenSSL sig 2 (lazy dog):   %s\n", ok ? "PASS" : "FAIL");
     if (!ok) failed++;
     
-    ok = ed25519_verify(ossl_pub, ossl_msg3, 256, ossl_sig3);
+    ok = jpssl::ed25519_verify(ossl_pub, ossl_msg3, 256, ossl_sig3);
     printf("OpenSSL sig 3 (256 x A):    %s\n", ok ? "PASS" : "FAIL");
     if (!ok) failed++;
     
     // Negative: tampered message
-    ok = ed25519_verify(ossl_pub, ossl_msg1, 13, ossl_sig0); // wrong sig for this msg
+    ok = jpssl::ed25519_verify(ossl_pub, ossl_msg1, 13, ossl_sig0); // wrong sig for this msg
     printf("Tampered (wrong sig):       %s (expect FAIL)\n", ok ? "FAIL" : "PASS");
     if (ok) failed++;
     
@@ -95,17 +95,17 @@ int main() {
     uint8_t bad_pub[32];
     memcpy(bad_pub, ossl_pub, 32);
     bad_pub[0] ^= 1;
-    ok = ed25519_verify(bad_pub, ossl_msg0, 0, ossl_sig0);
+    ok = jpssl::ed25519_verify(bad_pub, ossl_msg0, 0, ossl_sig0);
     printf("Tampered (wrong pub):       %s (expect FAIL)\n", ok ? "FAIL" : "PASS");
     if (ok) failed++;
     
     // Also test: jpssl-generated keypair cross-verify with OpenSSL
     uint8_t jp_pub[32], jp_priv[64];
-    ed25519_keygen(jp_pub, jp_priv);
+    jpssl::ed25519_keygen(jp_pub, jp_priv);
     const char* cross_msg = "cross-test";
     uint8_t jp_sig[64];
-    ed25519_sign(jp_priv, (const uint8_t*)cross_msg, strlen(cross_msg), jp_sig);
-    ok = ed25519_verify(jp_pub, (const uint8_t*)cross_msg, strlen(cross_msg), jp_sig);
+    jpssl::ed25519_sign(jp_priv, (const uint8_t*)cross_msg, strlen(cross_msg), jp_sig);
+    ok = jpssl::ed25519_verify(jp_pub, (const uint8_t*)cross_msg, strlen(cross_msg), jp_sig);
     printf("Round-trip (fresh key):     %s\n", ok ? "PASS" : "FAIL");
     if (!ok) failed++;
     
