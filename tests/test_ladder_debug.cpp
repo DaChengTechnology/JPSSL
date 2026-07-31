@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 using namespace jpssl;
+using namespace jpssl::ed25519_ref10_impl;
 using namespace fe_impl;
 
 static void hex(const char* label, const uint8_t* d, int n) {

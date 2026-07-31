@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 using namespace jpssl;
+using namespace jpssl::ed25519_ref10_impl;
 
 static void hexb(const char* l, const uint8_t* d, int n) {
     printf("  %s: ", l); for(int i=0;i<n;i++) printf("%02x",d[i]); printf("\n");

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 using namespace jpssl;
+using namespace jpssl::ed25519_ref10_impl;
 
 int main() {
     // Test with known seed from RFC

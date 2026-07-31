@@ -1,4 +1,7 @@
 
+#ifdef JPSSL_ED25519_R51
+// r51 后端：fe 类型与 fe_* 操作由包含方 (ed25519_r51.cpp) 提供转发
+#else
 using fe = fe_impl::fe;
 using fe_impl::fe_frombytes;
 using fe_impl::fe_tobytes;
@@ -18,6 +21,7 @@ using fe_impl::fe_equal;
 using fe_impl::fe_pow22523;
 using fe_impl::fe_sqrt_ratio;
 using fe_impl::fe_sq2;
+#endif
 
 // ═══════════════════════════════════════════════════════════════════
 //  Constants
@@ -26,7 +30,7 @@ using fe_impl::fe_sq2;
 // d = -(121665/121666) mod p
 // d2 = 2*d mod p
 // Basepoint B affine coordinates (RFC 8032 §5.1)
-static const int32_t* d_limbs() {
+static const auto d_limbs() {
     static fe d;
     static bool init = false;
     if (!init) {
@@ -36,7 +40,7 @@ static const int32_t* d_limbs() {
     }
     return d;
 }
-static const int32_t* d2_limbs() {
+static const auto d2_limbs() {
     static fe d;
     static bool init = false;
     if (!init) {
@@ -46,7 +50,7 @@ static const int32_t* d2_limbs() {
     }
     return d;
 }
-static const int32_t* Bx_limbs() {
+static const auto Bx_limbs() {
     static fe x;
     static bool init = false;
     if (!init) {
@@ -56,7 +60,7 @@ static const int32_t* Bx_limbs() {
     }
     return x;
 }
-static const int32_t* By_limbs() {
+static const auto By_limbs() {
     static fe y;
     static bool init = false;
     if (!init) {

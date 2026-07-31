@@ -57,6 +57,15 @@ inline bool cpu_has_vpclmulqdq_vaes() {
 #endif
 }
 
+/// 检查 ADX (ADCX/ADOX/MULX) 是否可用
+inline bool cpu_has_adx() {
+#ifdef __x86_64__
+    return __builtin_cpu_supports("adx");
+#else
+    return false;
+#endif
+}
+
 /// 检查 SHA-NI (Intel SHA Extensions) 是否可用
 inline bool cpu_has_sha_ni() {
 #ifdef __x86_64__

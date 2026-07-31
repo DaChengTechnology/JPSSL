@@ -5,6 +5,7 @@
 #include <cstring>
 #include <algorithm>
 using namespace jpssl;
+using namespace jpssl::ed25519_ref10_impl;
 using namespace fe_impl;
 
 int main() {

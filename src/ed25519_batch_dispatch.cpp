@@ -1,7 +1,7 @@
 /**
  * ed25519_batch_dispatch.cpp — Ed25519 批量验证自动分派
  *
- * 优先级：AVX512 > AVX2 > CPU 标量
+ * 优先级：AVX512 > CPU 标量
  */
 #include "ed25519_batch.hpp"
 #include "cpu_features.hpp"
@@ -15,8 +15,6 @@ int ed25519_batch_size() {
         auto feats = cpu_features::detect();
         if (feats.avx512) {
             g_batch_size = 8;
-        } else if (feats.avx2) {
-            g_batch_size = 4;
         } else {
             g_batch_size = 1;
         }
@@ -42,15 +40,6 @@ bool ed25519_batch_verify(
         auto feats = cpu_features::detect();
         if (feats.avx512) {
             if (!detail::ed25519_batch_verify_avx512(
-                    pubs + offset, msgs + offset, msg_lens + offset, sigs + offset, n))
-                return false;
-            continue;
-        }
-#endif
-
-#ifdef JP_AVX2
-        if (cpu_has_avx2()) {
-            if (!detail::ed25519_batch_verify_avx2(
                     pubs + offset, msgs + offset, msg_lens + offset, sigs + offset, n))
                 return false;
             continue;

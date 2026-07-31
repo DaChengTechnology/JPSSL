@@ -2,7 +2,7 @@
 /**
  * ed25519_batch.hpp — Ed25519 批量验证 + SIMD 后端分派
  *
- * 后端优先级：AVX512 (8路) > AVX2 (4路) > 标量 (1路)
+ * 后端优先级：AVX512 (8路) > 标量 (1路)
  */
 #include "ed25519.hpp"
 #include <cstddef>
@@ -12,7 +12,7 @@ namespace jpssl {
 
 // ──────────── 批量验证 ────────────
 
-/// 返回当前可用后端的批大小（AVX512=8, AVX2=4, CPU=1）
+/// 返回当前可用后端的批大小（AVX512=8, CPU=1）
 int ed25519_batch_size();
 
 /**
@@ -40,12 +40,6 @@ namespace detail {
 bool ed25519_batch_verify_cpu(
     const uint8_t* const* pubs, const uint8_t* const* msgs,
     const size_t* msg_lens, const uint8_t* const* sigs, int count);
-
-#ifdef JP_AVX2
-bool ed25519_batch_verify_avx2(
-    const uint8_t* const* pubs, const uint8_t* const* msgs,
-    const size_t* msg_lens, const uint8_t* const* sigs, int count);
-#endif
 
 #ifdef JP_AVX512
 bool ed25519_batch_verify_avx512(

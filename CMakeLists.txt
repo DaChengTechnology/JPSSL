@@ -73,6 +73,7 @@ set(CPU_SOURCES
     src/hmac.cpp
     src/hkdf.cpp
     src/x25519.cpp
+    src/x25519_avx512.cpp
     src/x448.cpp
     src/x448_avx2.cpp
     src/x448_avx512.cpp
@@ -84,7 +85,7 @@ set(CPU_SOURCES
     src/tls.cpp
     src/x509.cpp
     src/ed25519.cpp
-    src/ed25519_avx2.cpp
+    src/ed25519_r51.cpp
     src/ed25519_avx512.cpp
     src/ed25519_batch_cpu.cpp
     src/ed25519_batch_dispatch.cpp
@@ -150,6 +151,15 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     # RSA batch AVX-512: 8-wide Montgomery multiplication
     set_source_files_properties(src/rsa_batch_avx512.cpp PROPERTIES
         COMPILE_FLAGS "-mavx512f -mavx512vl")
+    # X25519: radix-2^51 域运算的 __uint128_t 乘法在 -madx 下
+    # 生成低效的 MULX/ADCX/ADOX 序列（实测慢 ~5%），覆盖为 -mno-adx
+    set_source_files_properties(
+        src/x25519.cpp src/ed25519_r51.cpp PROPERTIES
+        COMPILE_FLAGS "-mno-adx")
+    # X25519 AVX-512: auto-vectorized fe25519 field ops
+    set_source_files_properties(
+        src/x25519_avx512.cpp PROPERTIES
+        COMPILE_FLAGS "-mavx512f -mavx512dq -mno-adx")
     # Ed448/X448 AVX-512: auto-vectorized fe448 field ops
     set_source_files_properties(
         src/ed448_avx512.cpp src/x448_avx512.cpp PROPERTIES
