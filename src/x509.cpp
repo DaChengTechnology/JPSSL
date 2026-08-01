@@ -176,7 +176,7 @@ std::vector<uint8_t> encode_spki(KeyType kt, const uint8_t* raw_key, size_t raw_
         case KeyType::ECDSA_P256: case KeyType::SM2: {
             std::vector<uint8_t> point; point.push_back(0x04);
             point.insert(point.end(), raw_key, raw_key + raw_key_len);
-            pub_der = encode_octet_string(point.data(), point.size());
+            pub_der = encode_bit_string(point.data(), point.size(), 0);
             break;
         }
         case KeyType::Ed25519: case KeyType::Ed448:
@@ -315,8 +315,7 @@ std::vector<uint8_t> tlv_to_integer(const TLV& tlv) { return tlv.value; }
 std::vector<uint8_t> tlv_to_oid(const TLV& tlv) {
     if (tlv.value.empty()) return {};
     std::vector<uint8_t> oid;
-    oid.push_back(tlv.value[0] / 40);
-    oid.push_back(tlv.value[0] % 40);
+    oid.push_back(tlv.value[0]);  // keep DER merged first byte (40*a+b), matches OID_* constants
     size_t i = 1;
     while (i < tlv.value.size()) {
         uint64_t comp = 0;
@@ -326,7 +325,7 @@ std::vector<uint8_t> tlv_to_oid(const TLV& tlv) {
         else {
             uint8_t buf[8]; int n = 0;
             for (uint64_t v = comp; v > 0; v /= 128) buf[n++] = (uint8_t)(v % 128);
-            while (n--) oid.push_back(buf[n]);
+            for (int k = n - 1; k >= 0; --k) oid.push_back(k > 0 ? (uint8_t)(buf[k] | 0x80) : buf[k]);  // base128 + 延续位
         }
     }
     return oid;
@@ -651,15 +650,28 @@ std::vector<std::string> x509_cert::dns_names() const {
 //  verify_signature
 // ═══════════════════════════════════════════════════════════════════════
 bool x509_cert::verify_signature(const x509_cert& issuer) const {
-    auto der = to_der();
-    size_t off = 0;
-    auto cert_tlv = der::decode_tlv2(der.data(), der.size(), off);
-    if (!cert_tlv) return false;
-    size_t inner_off = 0;
-    auto tbs_tlv = der::decode_tlv2(cert_tlv->value.data(), cert_tlv->value.size(), inner_off);
-    if (!tbs_tlv) return false;
-    const uint8_t* tbs_data = cert_tlv->value.data();
-    size_t tbs_len = inner_off;
+    // Prefer raw TBS saved by from_der (byte-identical to signing time),
+    // avoids re-encoding differences from to_der(). Builder-native certs
+    // (tbs_raw empty) fall back to re-encoding via to_der().
+    std::vector<uint8_t> der;
+    std::vector<uint8_t> tbs_copy;  // function-scope copy: cert_tlv dies at block end
+    const uint8_t* tbs_data = nullptr;
+    size_t tbs_len = 0;
+    if (!tbs_raw.empty()) {
+        tbs_data = tbs_raw.data();
+        tbs_len = tbs_raw.size();
+    } else {
+        der = to_der();
+        size_t off = 0;
+        auto cert_tlv = der::decode_tlv2(der.data(), der.size(), off);
+        if (!cert_tlv) return false;
+        size_t inner_off = 0;
+        auto tbs_tlv = der::decode_tlv2(cert_tlv->value.data(), cert_tlv->value.size(), inner_off);
+        if (!tbs_tlv) return false;
+        tbs_copy.assign(cert_tlv->value.data(), cert_tlv->value.data() + inner_off);
+        tbs_data = tbs_copy.data();
+        tbs_len = tbs_copy.size();
+    }
 
     switch (sign_key_type) {
         case KeyType::RSA_2048: case KeyType::RSA_4096: {

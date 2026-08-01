@@ -21,6 +21,10 @@
 - **GCC 扩展 → 标准 C++**：`tls.cpp` 两处 VLA（`uint8_t buf[n+size()]`）改 `std::vector`；`tests/test_aes.cpp`、`test_ghash.cpp`、`test_ossl_verify.cpp` 零长度数组 `[0]` 改 `[1]`。
 - **`timegm` 平台化**：`x509.cpp` 在 Windows 用 `_mkgmtime`。
 - **MUSA GPU 测试守卫**：`src/main.cpp` 的 5 个 GPU 测试函数与 `tests/test_openssl_compare.cpp` 的 GPU 基准加 `#ifdef JP_MUSA`（MUSA 关闭时跳过，修复跨平台既有链接缺陷）；CMake MUSA 分支为 `jpssl-test` 补 `JP_MUSA` 宏定义。
+- **X.509 证书验证修复（跨平台既有 bug，`test_x509` 从 53/54 修复到 54/54 全过）**：
+  - `verify_signature` 改用 `from_der` 保存的原始 `tbs_raw`（与签名时字节一致），消除 `to_der()` 重编码导致的 TBS 差异（此前 DER 往返证书签名验证失败，影响 `test_x509` 的 TLS 自签名项与 `test_tls_sm` 握手）。
+  - `encode_spki` 的 ECDSA/SM2 公钥从错误的 `OCTET STRING` 改为标准的 `BIT STRING`（此前 `from_der` 因要求 BIT STRING 而解析失败）。
+  - `tlv_to_oid` 修复两处 OID 编码错误：多字节组件缺失 base128 延续位（0x80）、首字节被拆分为 `[a,b]` 而非保留 DER 合并格式 `40*a+b`——导致 SM2/多字节 OID 的 key_type 与签名算法解析失败。
 
 ### 验证
 - 本机 VS 2026 Build Tools（MSVC 19.51）+ CMake/Ninja 全量构建通过（166 目标，含静态/动态库、3 个命令行工具、38 个测试 exe）。
