@@ -118,16 +118,16 @@ static void sc_reduce(uint8_t h[64]) {
         for (int pos = 0; pos < 4; pos++) {
             if (hi[pos] == 0) continue;
             uint64_t p[5] = {0, 0, 0, 0, 0};
-            unsigned __int128 carry = 0;
+            __uint128_t carry = 0;
             for (int j = 0; j < 4; j++) {
-                carry += (unsigned __int128)hi[pos] * S64[j] + p[j];
+                carry += (__uint128_t)hi[pos] * S64[j] + p[j];
                 p[j] = (uint64_t)carry;
                 carry >>= 64;
             }
             p[4] = (uint64_t)carry;
             carry = 0;
             for (int j = 0; j < 5; j++) {
-                carry += (unsigned __int128)t[j + pos] + p[j];
+                carry += (__uint128_t)t[j + pos] + p[j];
                 t[j + pos] = (uint64_t)carry;
                 carry >>= 64;
             }
@@ -147,7 +147,7 @@ static void sc_reduce(uint8_t h[64]) {
         if (cmp <= 0) break;
         uint64_t borrow = 0;
         for (int j = 0; j < 4; j++) {
-            unsigned __int128 r = (unsigned __int128)t[j] - L64[j] - borrow;
+            __uint128_t r = (__uint128_t)t[j] - L64[j] - borrow;
             t[j] = (uint64_t)r;
             borrow = (uint64_t)(r >> 64) & 1;
         }
@@ -162,9 +162,9 @@ static void sc_mul_add(uint8_t* out, const uint8_t* a, const uint8_t* b, const u
     sc_load_64(c_l, c);
     uint64_t p[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     for (int i = 0; i < 4; i++) {
-        unsigned __int128 carry = 0;
+        __uint128_t carry = 0;
         for (int j = 0; j < 4; j++) {
-            carry += (unsigned __int128)a_l[i] * b_l[j] + p[i + j];
+            carry += (__uint128_t)a_l[i] * b_l[j] + p[i + j];
             p[i + j] = (uint64_t)carry;
             carry >>= 64;
         }
@@ -177,9 +177,9 @@ static void sc_mul_add(uint8_t* out, const uint8_t* a, const uint8_t* b, const u
             idx++;
         }
     }
-    unsigned __int128 carry = 0;
+    __uint128_t carry = 0;
     for (int i = 0; i < 8; i++) {
-        carry += (unsigned __int128)p[i] + (i < 4 ? (unsigned __int128)c_l[i] : (unsigned __int128)0);
+        carry += (__uint128_t)p[i] + (i < 4 ? (__uint128_t)c_l[i] : (__uint128_t)0);
         p[i] = (uint64_t)carry;
         carry >>= 64;
     }
@@ -193,9 +193,9 @@ static void sc_mul_add(uint8_t* out, const uint8_t* a, const uint8_t* b, const u
 static void sc_negate(uint8_t r[32], const uint8_t a[32]) {
     uint64_t a_l[4];
     sc_load_64(a_l, a);
-    unsigned __int128 borrow = 0;
+    __uint128_t borrow = 0;
     for (int i = 0; i < 4; i++) {
-        borrow = (unsigned __int128)L64[i] - a_l[i] - borrow;
+        borrow = (__uint128_t)L64[i] - a_l[i] - borrow;
         a_l[i] = (uint64_t)borrow;
         borrow >>= 64;
     }

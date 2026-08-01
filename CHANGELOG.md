@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.9.3] — 2026-08-01
+
+### Added
+
+#### Windows (MSVC) 平台支持
+- **128 位整数兼容层** `include/jpssl_platform.hpp`：MSVC x64 无 GCC 的 `__uint128_t`，通过 `/FI` 强制包含该头，以 `jp_uint128` 类 + `#define __uint128_t jp_uint128` 提供等价语义（基于 `_umul128`/`_addcarry_u64`/`_subborrow_u64`/`_udiv128`，全部内联）。业务代码零改动；GCC/Clang 继续使用原生类型。
+- **系统随机源** `include/rand_os.hpp` + `src/rand_os.cpp`：统一 `jpssl::os_rand_bytes`——Windows 用 `BCryptGenRandom`，Linux 用 `/dev/urandom`；`rsa.cpp`/`tls.cpp`/`ecdsa.cpp`/`sm2.cpp`/`jpssl_crypt` 全部接入（MSVC 的 `std::random_device` 是确定性的，不再用于密钥/签名 nonce）。
+- **CPU 特性检测 MSVC 实现**：`cpu_features.hpp` 改用 `__cpuidex`/`_xgetbv`（含 OSXSAVE/XCR0 检查），AES-NI/AVX2/AVX512/SHA-NI 运行时分派在 Windows 同样生效。
+- **CMake 平台分支**：MSVC 编译选项（`/utf-8`、`/bigobj`、`/EHsc`、`/FI`、`NOMINMAX`）、按源文件加 `/arch:AVX2|AVX512`、bcrypt 链接、`WINDOWS_EXPORT_ALL_SYMBOLS` DLL 导出、Windows 下静态库改名 `jpssl_cpu_static.lib`（避免与共享库导入库同名冲突）、MUSA 自动禁用、OpenSSL 改为可选（缺失时跳过对比测试）。
+- **测试/基准条件化**：OpenSSL 依赖的测试目标在无 OpenSSL 时整体跳过。
+- README 新增「Windows 构建（MSVC）」章节。
+
+### Fixed
+- **`jp_uint128::operator&=` 高位未清零**：64 位掩码与 128 位值按位与时 `hi` 残留，导致 radix-2^51 域运算（fe51_mul 进位链）在大输入下错误——表现为 X25519 密钥协商结果错误；已改为 `hi = 0`（与 GCC 原生 `__uint128_t` 语义一致）。
+- **`_umul128` 参数顺序错误**：低 64 位返回值被误作高 64 位，导致 128 位乘法 lo/hi 颠倒（RSA Miller-Rabin 误判、密钥生成死循环）；已修正。
+- **RSA 2048 密钥生成死循环（跨平台既有 bug）**：`keygen_fn_32` 找素数时清除 bit62，使 p/q 被限制在 `[2^1023, 1.25·2^1023)`，n = p·q 恒为 2047 位，`n.bit_length() < 2048` 重试循环永不退出；移除 bit62 清除（与 `find_prime` 一致）。
+- **`keygen_with_watchdog` 超时适配**：Windows 上 jp_uint128 模拟层慢约一个数量级，300ms/3s 的 Linux 超时必然触发 abort 重试并失败，超时放大 20 倍。
+- **GCC 扩展 → 标准 C++**：`tls.cpp` 两处 VLA（`uint8_t buf[n+size()]`）改 `std::vector`；`tests/test_aes.cpp`、`test_ghash.cpp`、`test_ossl_verify.cpp` 零长度数组 `[0]` 改 `[1]`。
+- **`timegm` 平台化**：`x509.cpp` 在 Windows 用 `_mkgmtime`。
+- **MUSA GPU 测试守卫**：`src/main.cpp` 的 5 个 GPU 测试函数与 `tests/test_openssl_compare.cpp` 的 GPU 基准加 `#ifdef JP_MUSA`（MUSA 关闭时跳过，修复跨平台既有链接缺陷）；CMake MUSA 分支为 `jpssl-test` 补 `JP_MUSA` 宏定义。
+
+### 验证
+- 本机 VS 2026 Build Tools（MSVC 19.51）+ CMake/Ninja 全量构建通过（166 目标，含静态/动态库、3 个命令行工具、38 个测试 exe）。
+- CTest 21 项中 19 项通过：AES/CCM/GCM、SHA-3/SHA-512、TLS 1.2/1.3 全握手与 0-RTT、X.509 DER/证书链、Ed25519/Ed448 RFC 向量、X25519/X448 RFC 向量、SM4-GCM、RSA 2048 keygen/sign/verify、OpenSSL 对比。
+- 已知遗留（Linux 同样存在，非 Windows 特有）：`x509_cert::verify_signature` 对 DER 重新编码证书的验证（`test_x509.cpp` 已有 TODO 注释），影响 `test_x509` 的 TLS 自签名项与 `test_tls_sm` 的握手项。
+
+---
+
 ## [0.9.2] — 2026-08-01
 
 ### Added

@@ -346,7 +346,11 @@ std::optional<uint64_t> tlv_to_utc_time(const TLV& tlv) {
     y += (y >= 50) ? 1900 : 2000;
     struct tm tm = {}; tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = d;
     tm.tm_hour = h; tm.tm_min = mi; tm.tm_sec = se; tm.tm_isdst = -1;
+#ifdef _WIN32
+    return (uint64_t)_mkgmtime(&tm);
+#else
     return (uint64_t)timegm(&tm);
+#endif
 }
 
 std::string tlv_to_string(const TLV& tlv) {

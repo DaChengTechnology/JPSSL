@@ -323,8 +323,8 @@ void test_nist_gcm_vectors() {
     {
         const uint8_t K[16] = {};
         const uint8_t IV[12] = {};
-        const uint8_t P[] = {};
-        const uint8_t A[] = {};
+        const uint8_t P[1] = {};
+        const uint8_t A[1] = {};
         // Expected tag from NIST SP 800-38D
         const uint8_t expected_tag[16] = {
             0x58,0xe2,0xfc,0xce,0xfa,0x7e,0x30,0x61,

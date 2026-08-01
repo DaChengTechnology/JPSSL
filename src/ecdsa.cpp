@@ -4,6 +4,7 @@
 #include "ecdsa.hpp"
 #include "sha256.hpp"
 #include "sha512.hpp"
+#include "rand_os.hpp"
 #include <cstring>
 #include <random>
 
@@ -373,6 +374,10 @@ static void hash_to_e(const uint8_t* msg, size_t msg_len, uint8_t e[32]) {
 }
 
 static void rand_bytes(uint8_t* buf, size_t len) {
+#ifdef _WIN32
+    // Windows: MSVC 的 std::random_device 是确定性的，必须用系统 CSPRNG
+    os_rand_bytes(buf, len);
+#else
     static std::random_device rd;
     static std::mt19937_64 gen(rd());
     for (size_t i = 0; i < len; i += 8) {
@@ -380,6 +385,7 @@ static void rand_bytes(uint8_t* buf, size_t len) {
         for (int j = 0; j < 8 && i + j < len; ++j)
             buf[i + j] = (uint8_t)(v >> (j * 8));
     }
+#endif
 }
 
 // 生成 [1, n-1] 随机标量

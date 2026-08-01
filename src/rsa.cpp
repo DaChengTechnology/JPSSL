@@ -1,4 +1,5 @@
 #include "rsa.hpp"
+#include "rand_os.hpp"
 #include "rsa_simd.hpp"  // AVX2 批量 modpow (MR 轮加速)
 #include <algorithm>
 #include <cstdio>
@@ -21,18 +22,9 @@
 namespace jpssl {
 
 void secure_rand_bytes(uint8_t* out, size_t len) {
-    // Linux: std::random_device (libstdc++) 基于 getrandom//dev/urandom (CSPRNG)
-    static thread_local std::random_device rd;
-    uint8_t* p = out;
-    while (len >= 4) {
-        uint32_t v = rd();
-        std::memcpy(p, &v, 4);
-        p += 4; len -= 4;
-    }
-    if (len) {
-        uint32_t v = rd();
-        std::memcpy(p, &v, len);
-    }
+    // Windows: BCryptGenRandom; Linux: /dev/urandom (CSPRNG)
+    if (!os_rand_bytes(out, len))
+        std::memset(out, 0, len);
 }
 
 // ═══════════════ K=32 (2048-bit) ═══════════════
@@ -112,6 +104,11 @@ static std::atomic<bool> g_kgen_abort{false};
 
 template<typename FN>
 static bool keygen_with_watchdog(int timeout_ms, FN&& work) {
+#ifdef _WIN32
+    // MSVC jp_uint128 模拟层比 GCC 原生 __uint128_t 慢约一个数量级，
+    // 300ms/3s 的 Linux 超时在 Windows 上必然触发 abort 重试并失败，故放大。
+    timeout_ms *= 20;
+#endif
     for (int attempt = 0; attempt < 3; ++attempt) {
         g_kgen_abort.store(false, std::memory_order_relaxed);
         std::mutex m;

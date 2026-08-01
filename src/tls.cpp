@@ -2,6 +2,7 @@
 #include "sha256.hpp"
 #include "sha512.hpp"
 #include "sm3.hpp"
+#include "rand_os.hpp"
 #include <cstring>
 #include <cstdio>
 namespace jpssl::tls {
@@ -12,13 +13,10 @@ static const uint8_t RSA_SHA256_DIGEST_INFO[] = {
     0x00, 0x04, 0x20
 };
 
-// 从 /dev/urandom 读取 32 字节密码学安全随机数
+// 从系统 CSPRNG 读取 32 字节密码学安全随机数（Windows BCrypt / Linux urandom）
 static void rand32(uint8_t* buf){
-    FILE* f = fopen("/dev/urandom", "rb");
-    if(!f) return;
-    size_t n = fread(buf, 1, 32, f);
-    fclose(f);
-    if(n < 32) memset(buf + n, 0, 32 - n);
+    if (!jpssl::os_rand_bytes(buf, 32))
+        std::memset(buf, 0, 32);
 }
 
 static CipherSuite select_cipher_suite(uint16_t id){
@@ -1051,8 +1049,8 @@ static void tls12_prf(const uint8_t* secret, size_t secret_len, const char* labe
     hmac_sha256(secret,secret_len,full_seed.data(),full_seed.size(),a);
     size_t generated=0;
     while(generated<out_len){
-        uint8_t buf[32+full_seed.size()];memcpy(buf,a,32);memcpy(buf+32,full_seed.data(),full_seed.size());
-        hmac_sha256(secret,secret_len,buf,32+full_seed.size(),tmp);
+        std::vector<uint8_t> buf(32+full_seed.size());memcpy(buf.data(),a,32);memcpy(buf.data()+32,full_seed.data(),full_seed.size());
+        hmac_sha256(secret,secret_len,buf.data(),32+full_seed.size(),tmp);
         size_t n=(out_len-generated<32)?out_len-generated:32;
         memcpy(out+generated,tmp,n);generated+=n;
         hmac_sha256(secret,secret_len,a,32,a);
@@ -1070,8 +1068,8 @@ static void tls12_prf_sha384(const uint8_t* secret, size_t secret_len, const cha
     hmac_sha384(secret,secret_len,full_seed.data(),full_seed.size(),a);
     size_t generated=0;
     while(generated<out_len){
-        uint8_t buf[48+full_seed.size()];memcpy(buf,a,48);memcpy(buf+48,full_seed.data(),full_seed.size());
-        hmac_sha384(secret,secret_len,buf,48+full_seed.size(),tmp);
+        std::vector<uint8_t> buf(48+full_seed.size());memcpy(buf.data(),a,48);memcpy(buf.data()+48,full_seed.data(),full_seed.size());
+        hmac_sha384(secret,secret_len,buf.data(),48+full_seed.size(),tmp);
         size_t n=(out_len-generated<48)?out_len-generated:48;
         memcpy(out+generated,tmp,n);generated+=n;
         hmac_sha384(secret,secret_len,a,48,a);

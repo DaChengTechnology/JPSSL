@@ -255,7 +255,7 @@ void test_pkcs7() {
 
     // Empty → 16 bytes of 0x10
     {
-        uint8_t empty[0];
+        uint8_t empty[1];
         auto padded = pkcs7_pad(std::span<const uint8_t>(empty, 0));
         CHECK("PKCS7 empty → 16 bytes 0x10", padded.size() == 16 &&
               std::all_of(padded.begin(), padded.end(), [](uint8_t b){ return b == 0x10; }));

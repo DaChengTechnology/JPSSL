@@ -15,6 +15,7 @@
 #include "sha3.hpp"
 #include "sm3.hpp"
 #include "hmac.hpp"
+#include "rand_os.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -107,9 +108,8 @@ static void hex_out(const std::vector<uint8_t>& data) {
 
 static std::vector<uint8_t> rand_bytes(size_t n) {
     std::vector<uint8_t> out(n);
-    FILE* f = std::fopen("/dev/urandom", "rb");
-    std::fread(out.data(), 1, n, f);
-    std::fclose(f);
+    // Windows BCrypt / Linux /dev/urandom
+    jpssl::os_rand_bytes(out.data(), n);
     return out;
 }
 

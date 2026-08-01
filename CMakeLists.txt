@@ -11,17 +11,35 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(MSVC)
+    # Windows (MSVC) 全局编译选项：
+    #   /utf-8  源文件为 UTF-8（中文注释），避免 C4819 警告与字符串字面量错乱
+    #   /bigobj 大翻译单元（tls.cpp 等）避免 C1128 对象文件段溢出
+    #   /EHsc   C++ 异常
+    #   /FI     强制包含 Windows 平台兼容层（jp_uint128 / __builtin_bswap32 等）
+    #           注意：文件名无空格，不加引号（Ninja 下 /FI"x" 会转义成字面 \"x\"）
+    add_compile_options(/utf-8 /bigobj /EHsc /FIjpssl_platform.hpp)
+    add_compile_definitions(NOMINMAX _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # ── 条件编译选项 ─────────────────────────────────────────────────────
 option(JP_ENABLE_AVX2   "Enable AVX2 acceleration"   ON)
 option(JP_ENABLE_AVX512 "Enable AVX512 acceleration" ON)
 
 # ── x86 硬件加速 ──────────────────────────────────────────────────────
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -maes -mavx2 -madx")
+    if(NOT MSVC)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -maes -mavx2 -madx")
+    endif()
 endif()
 
-# ── OpenSSL (Ed25519, SHA-512, TLS interop) ───────────────────────────
-find_package(OpenSSL REQUIRED)
+# ── OpenSSL (可选: 仅测试/基准的 OpenSSL 对比用) ───────────────────────
+find_package(OpenSSL QUIET)
+if(OpenSSL_FOUND)
+    message(STATUS "OpenSSL: 找到 (${OPENSSL_VERSION})")
+else()
+    message(STATUS "OpenSSL: 未找到 — 跳过 OpenSSL 对比测试/基准")
+endif()
 
 # OpenMP (CPU 批量模幂并行化, 可用 -DJP_ENABLE_OPENMP=OFF 关闭)
 if(JP_ENABLE_OPENMP)
@@ -33,7 +51,7 @@ option(JP_ENABLE_MUSA "Enable MUSA GPU acceleration (experimental)" OFF)
 option(JP_ENABLE_BENCH "Build benchmark executables (benchmarks/)" OFF)
 option(JP_ENABLE_OPENMP "Enable OpenMP parallelism for CPU batch RSA (default ON)" ON)
 
-if(JP_ENABLE_MUSA)
+if(JP_ENABLE_MUSA AND NOT WIN32)
     list(APPEND CMAKE_MODULE_PATH /usr/local/musa/cmake)
     find_package(MUSA REQUIRED)
     set(MUSA_VERBOSE_BUILD ON)
@@ -52,7 +70,11 @@ else()
     set(MUSA_FOUND FALSE)
     set(MUSA_LIBRARIES "")
     set(MUSA_INCLUDE_DIRS "")
-    message(STATUS "MUSA GPU 加速: 已禁用 (使用 -DJP_ENABLE_MUSA=ON 启用)")
+    if(WIN32 AND JP_ENABLE_MUSA)
+        message(WARNING "MUSA GPU 加速不支持 Windows，已自动禁用")
+    else()
+        message(STATUS "MUSA GPU 加速: 已禁用 (使用 -DJP_ENABLE_MUSA=ON 启用)")
+    endif()
 endif()
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -60,6 +82,7 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════
 set(CPU_SOURCES
     src/aes_cpu.cpp
+    src/rand_os.cpp
     src/aes_gcm_avx2.cpp
     src/aes_gcm_avx512.cpp
     src/aes_gcm_auto.cpp
@@ -110,6 +133,10 @@ set(CPU_SOURCES
 
 add_library(jpssl_cpu STATIC ${CPU_SOURCES})
 add_library(jpssl_cpu_shared SHARED ${CPU_SOURCES})
+if(WIN32)
+    # Windows: 共享库的导入库 (jpssl_cpu.lib) 与静态库同名冲突，静态库改名
+    set_target_properties(jpssl_cpu PROPERTIES OUTPUT_NAME jpssl_cpu_static)
+endif()
 target_include_directories(jpssl_cpu PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
@@ -121,6 +148,14 @@ set_target_properties(jpssl_cpu_shared PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 1
 )
+if(WIN32)
+    # BCrypt (rand_os.cpp 的 BCryptGenRandom)；DLL 导出所有公共符号
+    target_link_libraries(jpssl_cpu PUBLIC bcrypt)
+    target_link_libraries(jpssl_cpu_shared PUBLIC bcrypt)
+    set_target_properties(jpssl_cpu_shared PROPERTIES
+        WINDOWS_EXPORT_ALL_SYMBOLS ON
+    )
+endif()
 if(JP_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
     target_link_libraries(jpssl_cpu PUBLIC OpenMP::OpenMP_CXX)
     target_link_libraries(jpssl_cpu_shared PUBLIC OpenMP::OpenMP_CXX)
@@ -130,49 +165,86 @@ else()
     message(STATUS "OpenMP: disabled")
 endif()
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
-    target_compile_options(jpssl_cpu PRIVATE -maes -mavx2 -madx)
-    target_compile_options(jpssl_cpu_shared PRIVATE -maes -mavx2 -madx)
-    # AES-CPU: 需要 PCLMULQDQ 指令（用于 GCM GHASH 加速）
-    set_source_files_properties(src/aes_cpu.cpp PROPERTIES
-        COMPILE_FLAGS "-mpclmul")
-    # AVX2 GCM: 需要 PCLMULQDQ 指令
-    set_source_files_properties(src/aes_gcm_avx2.cpp PROPERTIES
-        COMPILE_FLAGS "-mpclmul")
-    # AVX512 GCM: 需要 AVX512F + AVX512VL + VAES + VPCLMULQDQ + PCLMUL
-    set_source_files_properties(src/aes_gcm_avx512.cpp PROPERTIES
-        COMPILE_FLAGS "-mavx512f -mavx512vl -mvaes -mvpclmulqdq -mpclmul")
-    # SHA-512 OPT: SHA-NI + SSE4.1 for message schedule acceleration
-    set_source_files_properties(src/sha512_opt.cpp PROPERTIES
-        COMPILE_FLAGS "-msse4.1 -msha")
-    # SHA-256 SHA-NI: Intel SHA Extensions accelerated implementation
-    set_source_files_properties(src/sha256_sha_ni.cpp PROPERTIES
-        COMPILE_FLAGS "-msha")
-    # RSA batch AVX2: 4-wide Montgomery multiplication
-    set_source_files_properties(src/rsa_batch_avx2.cpp PROPERTIES
-        COMPILE_FLAGS "-mavx2")
-    # RSA batch AVX-512: 8-wide Montgomery multiplication
-    set_source_files_properties(src/rsa_batch_avx512.cpp PROPERTIES
-        COMPILE_FLAGS "-mavx512f -mavx512vl")
-    # X25519: radix-2^51 域运算的 __uint128_t 乘法在 -madx 下
-    # 生成低效的 MULX/ADCX/ADOX 序列（实测慢 ~5%），覆盖为 -mno-adx
-    set_source_files_properties(
-        src/x25519.cpp src/ed25519_r51.cpp PROPERTIES
-        COMPILE_FLAGS "-mno-adx")
-    # ChaCha20 SIMD: 独立编译单元分别启用 AVX2 / AVX512F
-    set_source_files_properties(
-        src/chacha20_avx2.cpp PROPERTIES
-        COMPILE_FLAGS "-mavx2")
-    set_source_files_properties(
-        src/chacha20_avx512.cpp PROPERTIES
-        COMPILE_FLAGS "-mavx512f")
-    # X25519 AVX-512: auto-vectorized fe25519 field ops
-    set_source_files_properties(
-        src/x25519_avx512.cpp PROPERTIES
-        COMPILE_FLAGS "-mavx512f -mavx512dq -mno-adx")
-    # Ed448/X448 AVX-512: auto-vectorized fe448 field ops
-    set_source_files_properties(
-        src/ed448_avx512.cpp src/x448_avx512.cpp PROPERTIES
-        COMPILE_FLAGS "-mavx512f -mavx512dq")
+    if(MSVC)
+        # ── MSVC: intrinsics 头 (<wmmintrin.h>/<immintrin.h>) 自带声明，
+        #    按源文件单独启用所需指令集；AES-NI/PCLMULQDQ intrinsics 无需 /arch
+        # AES-CPU: AES-NI + PCLMULQDQ（默认 /arch 可用，无需额外标志）
+        # AVX2 GCM: 需要 PCLMULQDQ + AVX2
+        set_source_files_properties(src/aes_gcm_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
+        # AVX512 GCM: AVX512F + VAES + VPCLMULQDQ
+        set_source_files_properties(src/aes_gcm_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX512")
+        # SHA-NI (sha512_opt/sha256_sha_ni): SHA intrinsics 要求 /arch:AVX2
+        set_source_files_properties(src/sha512_opt.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
+        set_source_files_properties(src/sha256_sha_ni.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
+        # RSA batch AVX2/AVX512: 批量 Montgomery
+        set_source_files_properties(src/rsa_batch_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
+        set_source_files_properties(src/rsa_batch_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX512")
+        # ChaCha20 SIMD
+        set_source_files_properties(src/chacha20_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
+        set_source_files_properties(src/chacha20_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX512")
+        # X25519 / Ed25519 AVX-512
+        set_source_files_properties(src/x25519_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX512")
+        set_source_files_properties(src/ed25519_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX512")
+        # Ed448/X448 AVX2 与 AVX-512
+        set_source_files_properties(src/ed448_avx2.cpp src/x448_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
+        set_source_files_properties(src/ed448_avx512.cpp src/x448_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX512")
+    else()
+        target_compile_options(jpssl_cpu PRIVATE -maes -mavx2 -madx)
+        target_compile_options(jpssl_cpu_shared PRIVATE -maes -mavx2 -madx)
+        # AES-CPU: 需要 PCLMULQDQ 指令（用于 GCM GHASH 加速）
+        set_source_files_properties(src/aes_cpu.cpp PROPERTIES
+            COMPILE_FLAGS "-mpclmul")
+        # AVX2 GCM: 需要 PCLMULQDQ 指令
+        set_source_files_properties(src/aes_gcm_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "-mpclmul")
+        # AVX512 GCM: 需要 AVX512F + AVX512VL + VAES + VPCLMULQDQ + PCLMUL
+        set_source_files_properties(src/aes_gcm_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx512f -mavx512vl -mvaes -mvpclmulqdq -mpclmul")
+        # SHA-512 OPT: SHA-NI + SSE4.1 for message schedule acceleration
+        set_source_files_properties(src/sha512_opt.cpp PROPERTIES
+            COMPILE_FLAGS "-msse4.1 -msha")
+        # SHA-256 SHA-NI: Intel SHA Extensions accelerated implementation
+        set_source_files_properties(src/sha256_sha_ni.cpp PROPERTIES
+            COMPILE_FLAGS "-msha")
+        # RSA batch AVX2: 4-wide Montgomery multiplication
+        set_source_files_properties(src/rsa_batch_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx2")
+        # RSA batch AVX-512: 8-wide Montgomery multiplication
+        set_source_files_properties(src/rsa_batch_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx512f -mavx512vl")
+        # X25519: radix-2^51 域运算的 __uint128_t 乘法在 -madx 下
+        # 生成低效的 MULX/ADCX/ADOX 序列（实测慢 ~5%），覆盖为 -mno-adx
+        set_source_files_properties(
+            src/x25519.cpp src/ed25519_r51.cpp PROPERTIES
+            COMPILE_FLAGS "-mno-adx")
+        # ChaCha20 SIMD: 独立编译单元分别启用 AVX2 / AVX512F
+        set_source_files_properties(
+            src/chacha20_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx2")
+        set_source_files_properties(
+            src/chacha20_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx512f")
+        # X25519 AVX-512: auto-vectorized fe25519 field ops
+        set_source_files_properties(
+            src/x25519_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx512f -mavx512dq -mno-adx")
+        # Ed448/X448 AVX-512: auto-vectorized fe448 field ops
+        set_source_files_properties(
+            src/ed448_avx512.cpp src/x448_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx512f -mavx512dq")
+    endif()
 endif()
 
 if(JP_ENABLE_AVX2)
@@ -230,12 +302,14 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════
 #  jpssl-test — 测试 & Benchmark 可执行文件
 # ═══════════════════════════════════════════════════════════════════════
-if(JP_ENABLE_MUSA)
+if(JP_ENABLE_MUSA AND NOT WIN32)
     musa_add_executable(jpssl-test src/main.cpp)
     target_include_directories(jpssl-test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${MUSA_INCLUDE_DIRS}
     )
+    # GPU 测试函数由 #ifdef JP_MUSA 守卫，须对 main.cpp 可见
+    target_compile_definitions(jpssl-test PRIVATE JP_MUSA)
     target_link_libraries(jpssl-test jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
 else()
     add_executable(jpssl-test src/main.cpp)

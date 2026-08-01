@@ -316,6 +316,7 @@ void benchmark_aes_gcm_throughput() {
     double ossl_gbps = (total_bytes) / (ossl_ms / 1000.0) / 1e9;
 
         // ── MUSA GPU AES-GCM ──
+#ifdef JP_MUSA
     musa_aes_init(jp_ctx);
 
     std::vector<uint8_t> gpu_cipher(total_bytes);
@@ -334,6 +335,7 @@ void benchmark_aes_gcm_throughput() {
     if (gpu_ms > 0) {
         std::printf("  GPU Ratio: %.2fx vs OpenSSL\n", ossl_ms / gpu_ms);
     }
+#endif
     
     std::printf("  jpssl:   %8.2f ms  %.3f GB/s\n", jp_ms, jp_gbps);
     std::printf("  OpenSSL: %8.2f ms  %.3f GB/s\n", ossl_ms, ossl_gbps);

@@ -10,7 +10,7 @@ int main() {
     uint64_t r[4] = {0xc58f75ac58a07404, 0x2249107418afc2ed, 0xf244787db4af5368, 0xf38907308c893dea};
     
     // Step 1: manual addition
-    unsigned __int128 carry = 0;
+    __uint128_t carry = 0;
     for (int i = 0; i < 8; i++) {
         carry += ks[i] + (i < 4 ? r[i] : 0);
         ks[i] = (uint64_t)carry;

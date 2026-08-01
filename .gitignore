@@ -1,4 +1,5 @@
 build/
+build-win/
 .cache/
 .codewhale/
 build_test/

@@ -84,6 +84,31 @@ LD_LIBRARY_PATH=/usr/local/musa/lib ctest --output-on-failure
 sudo make install
 ```
 
+## Windows 构建（MSVC）
+
+支持 Windows x64 + MSVC（VS 2019 16.10+ / VS 2022+ / Build Tools），通过 CMake + Ninja 或 VS 解决方案构建：
+
+```powershell
+# 在 "x64 Native Tools Command Prompt" 或 Developer PowerShell 中：
+cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-win
+# 或直接生成 VS 工程
+# cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64
+
+# 运行测试
+ctest --test-dir build-win --output-on-failure
+```
+
+平台适配说明：
+
+- **128 位整数**：MSVC 不提供 GCC 的 `__uint128_t`，Windows 构建通过 `/FI` 强制包含 `include/jpssl_platform.hpp` 提供等价的 `jp_uint128` 兼容层（基于 `_umul128`/`_addcarry_u64`/`_udiv128`，全部内联）。**不要求**业务代码改动；GCC/Clang 仍使用原生类型。
+- **随机数**：统一走 `include/rand_os.hpp`（`jpssl::os_rand_bytes`）——Windows 用 `BCryptGenRandom`，Linux 用 `/dev/urandom`。MSVC 的 `std::random_device` 是确定性的，不用于密钥/签名 nonce。
+- **CPU 特性检测**：`include/cpu_features.hpp` 在 MSVC 下改用 `__cpuidex`/`_xgetbv` 运行时检测 AES-NI/AVX2/AVX512/SHA-NI，硬件加速分派在 Windows 上同样生效。
+- **MUSA GPU 加速**：仅支持 Linux，Windows 上 `-DJP_ENABLE_MUSA=ON` 会被自动禁用并提示。
+- **OpenSSL**：仅测试/基准的对比需要；未安装时相关对比测试自动跳过，库本身不依赖。
+- **产物命名**：Windows 下静态库为 `jpssl_cpu_static.lib`（共享库导入库占用 `jpssl_cpu.lib`），动态库为 `jpssl_cpu.dll`。
+- 动态库通过 `WINDOWS_EXPORT_ALL_SYMBOLS` 导出全部公共符号，无需手写 `__declspec(dllexport)`。
+
 ### 动态库 / 静态库
 
 构建时默认同时生成静态库和动态库：

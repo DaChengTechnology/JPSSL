@@ -173,9 +173,9 @@ inline void fe4_mul(fe4* r, const fe4* a, const fe4* b) {
             0x7FFFFFFFFFFULL, 0x7FFFFFFFFFFULL, 0x7FFFFFFFFFFULL
         };
         for (int i = 0; i < 5; i++) {
-            __int128 diff = (__int128)t[i] - P[i] - borrow;
+            __uint128_t diff = (__uint128_t)t[i] - P[i] - borrow;
             r_sub[i] = (uint64_t)diff;
-            borrow = (diff < 0) ? 1 : 0;
+            borrow = (uint64_t)(diff >> 64) & 1;
         }
         if (borrow) {
             // t < p: keep t

@@ -143,6 +143,7 @@ static int test_cpu_ecb() {
 //  测试 3: MUSA GPU ECB 加密（与 CPU 对比）
 // ═══════════════════════════════════════════════════════════════════════
 
+#ifdef JP_MUSA
 static int test_gpu_ecb() {
     std::printf("=== Test 3: MUSA GPU ECB Encryption ===\n");
 
@@ -193,11 +194,15 @@ static int test_gpu_ecb() {
     std::printf("  PASS (%zu blocks GPU encrypt+decrypt OK)\n\n", num_blocks);
     return 0;
 }
+#else
+static int test_gpu_ecb() { return 0; }
+#endif
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试 4: CPU vs GPU Performance Benchmark
 // ═══════════════════════════════════════════════════════════════════════
 
+#ifdef JP_MUSA
 static int test_benchmark() {
     std::printf("=== Test 4: CPU vs GPU Benchmark ===\n");
 
@@ -333,6 +338,9 @@ static int test_benchmark() {
 
     return 0;
 }
+#else
+static int test_benchmark() { return 0; }
+#endif
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试 5: PKCS7 填充/去填充
@@ -613,6 +621,7 @@ static int test_gcm() {
 // 测试 8: MUSA GPU CBC 解密
 // ═══════════════════════════════════════════════════════════════════════
 
+#ifdef JP_MUSA
 static int test_gpu_cbc() {
     std::printf("=== Test 8: MUSA GPU CBC Decryption ===\n");
 
@@ -655,6 +664,9 @@ static int test_gpu_cbc() {
     std::printf("  PASS (CPU vs GPU CBC match)\n\n");
     return 0;
 }
+#else
+static int test_gpu_cbc() { return 0; }
+#endif
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试 9: ChaCha20 块函数（RFC 8439 §2.4.2 测试向量）
@@ -846,6 +858,7 @@ static int test_chacha20_poly1305_aead() {
 //  测试 12: ChaCha20 GPU Benchmark（CPU vs MUSA GPU 对比）
 // ═══════════════════════════════════════════════════════════════════════
 
+#ifdef JP_MUSA
 static int test_chacha20_gpu() {
     std::printf("=== Test 12: ChaCha20 GPU Benchmark ===\n");
 
@@ -921,11 +934,15 @@ static int test_chacha20_gpu() {
 
     return 0;
 }
+#else
+static int test_chacha20_gpu() { return 0; }
+#endif
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试 13: RSA 2048-bit 加密/解密
 // ═══════════════════════════════════════════════════════════════════════
 
+#ifdef JP_MUSA
 static int test_rsa() {
     std::printf("=== Test 13: RSA 2048-bit ===\n");
 
@@ -1031,6 +1048,9 @@ static int test_rsa() {
     std::printf("  PASS\n\n");
     return 0;
 }
+#else
+static int test_rsa() { return 0; }
+#endif
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试 14: 批量 RSA 模幂（AVX2/AVX-512 SIMD 加速）

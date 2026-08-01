@@ -22,9 +22,9 @@ inline void fe448_frombytes(fe448 h, const uint8_t* s) {
 
 inline void fe448_tobytes(uint8_t* s, const fe448 h) {
     uint64_t v[8];
-    unsigned __int128 carry = 0;
+    __uint128_t carry = 0;
     for (int i = 0; i < 8; ++i) {
-        unsigned __int128 c = (unsigned __int128)h[i] + carry;
+        __uint128_t c = (__uint128_t)h[i] + carry;
         v[i] = (uint64_t)(c & MASK56); carry = c >> 56;
     }
     if (carry) {
@@ -40,7 +40,7 @@ inline void fe448_tobytes(uint8_t* s, const fe448 h) {
     {   uint64_t w[8]; memcpy(w, v, sizeof(w));
         uint64_t csub = 1;
         for (int i = 0; i < 8; ++i) {
-            unsigned __int128 c = (unsigned __int128)w[i] + csub;
+            __uint128_t c = (__uint128_t)w[i] + csub;
             if (i == 4) c += 1;  // 2^224 term
             w[i] = (uint64_t)(c & MASK56);
             csub = (uint64_t)(c >> 56);
@@ -96,7 +96,7 @@ inline void fe448_carry(fe448 h) {
     // 56-bit 进位链
     uint64_t carry = 0;
     for (int i = 0; i < 8; ++i) {
-        unsigned __int128 cv = (unsigned __int128)h[i] + carry;
+        __uint128_t cv = (__uint128_t)h[i] + carry;
         h[i] = (uint64_t)(cv & MASK56);
         carry = (uint64_t)(cv >> 56);
     }
@@ -124,7 +124,7 @@ inline void fe448_carry(fe448 h) {
     memcpy(w, h, sizeof(w));
     uint64_t csub = 1;
     for (int i = 0; i < 8; ++i) {
-        unsigned __int128 cv = (unsigned __int128)w[i] + csub;
+        __uint128_t cv = (__uint128_t)w[i] + csub;
         if (i == 4) cv += 1;
         w[i] = (uint64_t)(cv & MASK56);
         csub = (uint64_t)(cv >> 56);
@@ -141,10 +141,10 @@ inline void fe448_cswap(fe448 a, fe448 b, uint64_t mask) {
 inline int fe448_isnegative(const fe448 f) { uint8_t s[56]; fe448_tobytes(s, f); return s[0] & 1; }
 
 inline void fe448_mul_small(fe448 h, const fe448 f, uint64_t s) {
-    unsigned __int128 acc[8] = {0};
-    for (int i = 0; i < 8; ++i) acc[i] = (unsigned __int128)f[i] * s;
+    __uint128_t acc[8] = {0};
+    for (int i = 0; i < 8; ++i) acc[i] = (__uint128_t)f[i] * s;
     uint64_t carry = 0;
-    for (int i = 0; i < 8; ++i) { unsigned __int128 c = acc[i] + carry; h[i] = (uint64_t)(c & MASK56); carry = (uint64_t)(c >> 56); }
+    for (int i = 0; i < 8; ++i) { __uint128_t c = acc[i] + carry; h[i] = (uint64_t)(c & MASK56); carry = (uint64_t)(c >> 56); }
     if (carry) {
         h[0] += carry; h[4] += carry;
         uint64_t c = 0;
@@ -159,7 +159,7 @@ inline void fe448_mul_small(fe448 h, const fe448 f, uint64_t s) {
         uint64_t w[8]; memcpy(w, h, sizeof(w));
         uint64_t csub = 1;
         for (int i = 0; i < 8; ++i) {
-            unsigned __int128 c = (unsigned __int128)w[i] + csub;
+            __uint128_t c = (__uint128_t)w[i] + csub;
             if (i == 4) c += 1;
             w[i] = (uint64_t)(c & MASK56);
             csub = (uint64_t)(c >> 56);
@@ -172,12 +172,12 @@ inline void fe448_mul_small(fe448 h, const fe448 f, uint64_t s) {
 // fold: full[8+m] (weight 2^(448+56m)) ≡ 2^(224+56m) + 2^(56m)
 //   m<4: -> full[m] + full[m+4]
 //   m>=4: 2^(224+56m) = 2^(56*(m+4)) 再次折叠 -> 2*hi to full[m], hi to full[m-4]
-static inline void fe448_reduce(unsigned __int128 full[16], uint64_t out[8]) {
+static inline void fe448_reduce(__uint128_t full[16], uint64_t out[8]) {
     bool again;
     do {
         again = false;
         for (int m = 0; m < 8; ++m) {
-            unsigned __int128 hi = full[8 + m];
+            __uint128_t hi = full[8 + m];
             if (hi != 0) {
                 if (m < 4) { full[m] += hi; full[m + 4] += hi; }
                 else { full[m] += 2*hi; full[m - 4] += hi; }
@@ -188,7 +188,7 @@ static inline void fe448_reduce(unsigned __int128 full[16], uint64_t out[8]) {
     } while (again);
     uint64_t carry = 0;
     for (int i = 0; i < 8; ++i) {
-        unsigned __int128 c = full[i] + carry;
+        __uint128_t c = full[i] + carry;
         out[i] = (uint64_t)(c & MASK56);
         carry = (uint64_t)(c >> 56);
     }
@@ -206,17 +206,17 @@ static inline void fe448_reduce(unsigned __int128 full[16], uint64_t out[8]) {
 
 inline void fe448_mul(fe448 h, const fe448 f, const fe448 g) {
     // 输入已由调用方通过 fe448_carry 归一化（limb < 2^56），直接乘
-    unsigned __int128 full[16] = {0};
+    __uint128_t full[16] = {0};
     for (int i = 0; i < 8; ++i)
         for (int j = 0; j < 8; ++j)
-            full[i + j] += (unsigned __int128)f[i] * g[j];
+            full[i + j] += (__uint128_t)f[i] * g[j];
     uint64_t out[8];
     fe448_reduce(full, out);
     {
         uint64_t w[8]; memcpy(w, out, sizeof(w));
         uint64_t csub = 1;
         for (int i = 0; i < 8; ++i) {
-            unsigned __int128 c = (unsigned __int128)w[i] + csub;
+            __uint128_t c = (__uint128_t)w[i] + csub;
             if (i == 4) c += 1;
             w[i] = (uint64_t)(c & MASK56);
             csub = (uint64_t)(c >> 56);
