@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.9.2] — 2026-08-01
+
+### Added
+
+#### ChaCha20 AVX2/AVX512 硬件加速
+- 新增 `src/chacha20_avx2.cpp`（181 行）与 `src/chacha20_avx512.cpp`（134 行）：ChaCha20 keystream 的 AVX2/AVX512 并行路径
+- `src/chacha20_poly1305.cpp` 与 `include/chacha20_poly1305.hpp` 增加硬件加速分派入口，`CMakeLists.txt` 增加对应编译目标
+
+#### RSA 填充方案与原语
+- 新增 `src/rsa_oaep.cpp`（156 行）：RSA-OAEP 加密填充
+- 新增 `src/rsa_pss.cpp`（160 行）：RSA-PSS 签名填充
+- 新增 `src/rsa_schemes.cpp`（131 行）与 `src/rsa_prim.cpp`（327 行）：RSA 方案层与底层模幂/素数原语
+- `include/rsa.hpp`、`src/rsa_body.inc` 相应扩展公开 API
+
+#### RSA 基准测试
+- 新增 `benchmarks/bench_rsa_cpu_gpu.cpp`（320 行）：RSA 2048/4096 CPU vs GPU vs OpenSSL 综合基准
+- 新增 `benchmarks/bench_rsa_gpu.cpp`（280 行）：RSA GPU 批量基准
+- benchmark 目标从 `tests/` 迁移至独立 `benchmarks/` 目录，新增 `benchmarks/CMakeLists.txt`（60 行）
+
+### Changed
+
+#### Ed25519 / X25519 重构与优化
+- Ed25519 域运算重构为 radix-51 表示：新增 `src/fe_25519_r51.hpp`（368 行）、`src/ed25519_r51.cpp`（67 行），`src/ed25519.cpp` 精简约 580 行（删除旧 `ed25519_cpu.cpp`/`ed25519_avx2.cpp`）
+- 新增 `src/x25519_body.inc`（83 行），`src/x25519.cpp` 重写并新增 `src/x25519_avx512.cpp`：X25519 支持 AVX512 加速
+- 批量签名/验证分派与 `include/cpu_features.hpp` 同步更新
+
+#### Ed448 优化
+- `src/ed448.cpp`、`src/ed448_body.inc`、`src/fe_448.hpp` 域运算与实现优化（合计约 400 行变更）
+
+#### RSA GPU 优化
+- `src/rsa_gpu.mu` kernel 与 `src/rsa_musa.cpp` 主机封装重构优化（两轮共约 1300 行变更），并同步优化 `rsa_batch_avx2.cpp`/`rsa_batch_avx512.cpp`/`rsa_batch_dispatch.cpp` 批量分派
+
+#### 构建
+- `CMakeLists.txt`、`tests/CMakeLists.txt` 调整：benchmark 目标移出 tests，README 同步更新
+
+### Fixed
+- 修复 RSA 相关 bug（含密钥生成/批量模幂路径，经 `src/rsa.cpp`、`src/rsa_batch_dispatch.cpp` 等两轮修复）
+
+---
+
 ## [0.9.1] — 2026-07-31
 
 ### Added
