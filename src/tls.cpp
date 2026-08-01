@@ -796,8 +796,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     rand32(s.server_random);
     memcpy(s.client_random,client_hello+6,32);
 
-    // 记录 ClientHello
-    tls_transcript_update(s,client_hello,ch_len);
+    // ClientHello transcript 更新已移至 cipher_suite 选择之后
 
     { size_t cs_off = 4+2+32; uint8_t sid_len = client_hello[cs_off]; cs_off += 1+sid_len;
       uint16_t cs_list_len = (client_hello[cs_off]<<8)|client_hello[cs_off+1]; cs_off += 2;
@@ -806,6 +805,9 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         if(cs_id == 0x00C6){ s.cipher_suite = CipherSuite::TLS_SM4_GCM_SM3; break; }
       }
     }
+
+    // 记录 ClientHello (须在 cipher_suite 确定后, 保证 transcript 哈希算法与客户端一致)
+    tls_transcript_update(s,client_hello,ch_len);
 
     // 解析 SNI
     uint16_t ext_len_total=0;
