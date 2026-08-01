@@ -36,9 +36,10 @@ static void CAT(mont_mul_,K)(BN&r,const BN&a,const BN&b,const BN&m,uint64_t mp){
         uint64_t ca=0;
         for(int j=0;j<K;++j){
             uint64_t lo,hi;
-            hi=_umul128(a.d[i],b.d[j],&lo);
-            unsigned char cf=_addcarry_u64(0,lo,(unsigned long long)t[i+j],&lo);
-            cf=_addcarry_u64(cf,hi,ca,&hi);
+            lo=_umul128(a.d[i],b.d[j],&hi);
+            unsigned char cf1=_addcarry_u64(0,lo,(unsigned long long)t[i+j],&lo);
+            unsigned char cf2=_addcarry_u64(0,lo,ca,&lo);
+            hi+=(uint64_t)cf1+(uint64_t)cf2;
             t[i+j]=lo;ca=hi;
         }
         {
@@ -48,9 +49,10 @@ static void CAT(mont_mul_,K)(BN&r,const BN&a,const BN&b,const BN&m,uint64_t mp){
         uint64_t u=t[i]*mp;ca=0;
         for(int j=0;j<K;++j){
             uint64_t lo,hi;
-            hi=_umul128(u,m.d[j],&lo);
-            unsigned char cf=_addcarry_u64(0,lo,(unsigned long long)t[i+j],&lo);
-            cf=_addcarry_u64(cf,hi,ca,&hi);
+            lo=_umul128(u,m.d[j],&hi);
+            unsigned char cf1=_addcarry_u64(0,lo,(unsigned long long)t[i+j],&lo);
+            unsigned char cf2=_addcarry_u64(0,lo,ca,&lo);
+            hi+=(uint64_t)cf1+(uint64_t)cf2;
             t[i+j]=lo;ca=hi;
         }
         for(int j=i+K;ca;++j){
@@ -214,7 +216,24 @@ static bool CAT(bn_is_prime_impl_,K)(const BN&n,int rounds,bool sieve_done){
 bool bn_is_prime(const BN&n,int rounds){return CAT(bn_is_prime_impl_,K)(n,rounds,false);}
 // 快速路径: 调用方已用增量筛完成全部小素数试除, 跳过内部筛
 bool bn_is_prime_sieved(const BN&n,int rounds){return CAT(bn_is_prime_impl_,K)(n,rounds,true);}
-void bn_modinv(BN&r,const BN&a,const BN&m){BN or_=a,rc=m,os=BN::from_uint64(1),sc,q,p,t;while(!rc.is_zero()){BN rem;bn_divmod(q,rem,or_,rc);or_=rc;rc=rem;BN ns;CAT(bn_mulmod_,K)(p,q,sc,m);if(os<p){BN d;bn_sub(d,p,os);bn_mod(t,d,m);bn_sub(ns,m,t);}else bn_sub(ns,os,p);os=sc;sc=ns;}if(!(os<m))bn_mod(r,os,m);else r=os;}
+void bn_modinv(BN&r,const BN&a,const BN&m){
+    // 扩展欧几里得除法版: r0=m, r1=a, s0=0, s1=1
+    // 系数用 (s0 - q*s1) mod m 更新 (q*s1 经 bn_mulmod 取模, 避免超 BN 容器截断)
+    // 对任意 m (含偶数, 如 RSA 的 phi) 有效; 二进制版要求 m 奇数故弃用
+    BN r0=m,r1=a,s0,s1=BN::from_uint64(1),q,rem,p,t;
+    s0.zero();
+    while(!r1.is_zero()){
+        bn_divmod(q,rem,r0,r1);
+        CAT(bn_mulmod_,K)(p,q,s1,m);   // p = q*s1 mod m
+        BN s2;
+        if(s0<p){bn_sub(t,p,s0);bn_sub(s2,m,t);}
+        else bn_sub(s2,s0,p);
+        r0=r1;r1=rem;
+        s0=s1;s1=s2;
+    }
+    r=s0;
+    if(!(r<m))bn_sub(r,r,m);
+}
 
 bool CAT(keygen_fn_,K)(PUB_KEY&pub,PRIV_KEY&prv){BN p,q,n,phi,e,d;e=BN::from_uint64(65537);while(1){p=BN::random_odd();for(int i=K/2;i<K;++i)p.d[i]=0;p.d[K/2-1]|=(uint64_t)1<<63;if(bn_is_prime(p,5))break;}while(1){q=BN::random_odd();for(int i=K/2;i<K;++i)q.d[i]=0;q.d[K/2-1]|=(uint64_t)1<<63;if(bn_is_prime(q,5)&&!(p==q))break;}bn_mul(n,p,q);BN p1,q1;bn_sub(p1,p,BN::from_uint64(1));bn_sub(q1,q,BN::from_uint64(1));bn_mul(phi,p1,q1);bn_modinv(d,e,phi);while(n.bit_length()<K*64){/*retry*/p=BN::random_odd();for(int i=K/2;i<K;++i)p.d[i]=0;p.d[K/2-1]|=(uint64_t)1<<63;if(!bn_is_prime(p,5))continue;q=BN::random_odd();for(int i=K/2;i<K;++i)q.d[i]=0;q.d[K/2-1]|=(uint64_t)1<<63;if(!bn_is_prime(q,5)||p==q)continue;bn_mul(n,p,q);bn_sub(p1,p,BN::from_uint64(1));bn_sub(q1,q,BN::from_uint64(1));bn_mul(phi,p1,q1);bn_modinv(d,e,phi);}pub.n=n;pub.e=e;prv.n=n;prv.d=d;prv.e=e;return 1;}
 
