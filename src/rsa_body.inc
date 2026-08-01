@@ -28,7 +28,58 @@ void bn_rshift(BN&r,const BN&a,int bits){BN src=a;r.zero();int ws=bits/64,bs=bit
 void bn_lshift(BN&r,const BN&a,int bits){BN src=a;r.zero();int ws=bits/64,bs=bits%64;for(int i=K-1;i>=ws;--i){r.d[i]=src.d[i-ws]<<bs;if(bs&&i-ws>0)r.d[i]|=src.d[i-ws-1]>>(64-bs);}}
 
 static uint64_t CAT(mont_mp_,K)(const BN&m){uint64_t m0=m.d[0],x=1;for(int i=0;i<63;++i)x=x*(2-m0*x);return(uint64_t)(-(int64_t)x);}
-static void CAT(mont_mul_,K)(BN&r,const BN&a,const BN&b,const BN&m,uint64_t mp){uint64_t t[2*K+2]={};for(int i=0;i<K;++i){uint64_t ca=0;for(int j=0;j<K;++j){__uint128_t p=(__uint128_t)a.d[i]*b.d[j]+t[i+j]+ca;t[i+j]=(uint64_t)p;ca=(uint64_t)(p>>64);}uint64_t sc=t[i+K]+ca;t[i+K]=sc;if(sc<ca){for(int j=i+K+1;;++j){uint64_t s2=t[j]+1;t[j]=s2;if(s2)break;}}uint64_t u=t[i]*mp;ca=0;for(int j=0;j<K;++j){__uint128_t s=(__uint128_t)u*m.d[j]+t[i+j]+ca;t[i+j]=(uint64_t)s;ca=(uint64_t)(s>>64);}for(int j=i+K;ca;++j){__uint128_t s=(__uint128_t)t[j]+ca;t[j]=(uint64_t)s;ca=(uint64_t)(s>>64);}}for(int i=0;i<K;++i)r.d[i]=t[i+K];if(t[2*K]){bn_sub(r,r,m);if(!(r<m))bn_sub(r,r,m);}BN mc=m;while(!(r<mc))bn_sub(r,r,m);}
+static void CAT(mont_mul_,K)(BN&r,const BN&a,const BN&b,const BN&m,uint64_t mp){
+    uint64_t t[2*K+2]={};
+    for(int i=0;i<K;++i){
+#ifdef _MSC_VER
+        // MSVC: 用手写 _umul128/_addcarry_u64 消除 jp_uint128 临时对象开销
+        uint64_t ca=0;
+        for(int j=0;j<K;++j){
+            uint64_t lo,hi;
+            hi=_umul128(a.d[i],b.d[j],&lo);
+            unsigned char cf=_addcarry_u64(0,lo,(unsigned long long)t[i+j],&lo);
+            cf=_addcarry_u64(cf,hi,ca,&hi);
+            t[i+j]=lo;ca=hi;
+        }
+        {
+            unsigned char cf=_addcarry_u64(0,(unsigned long long)t[i+K],ca,&t[i+K]);
+            if(cf){for(int j=i+K+1;;++j){uint64_t s2=t[j]+1;t[j]=s2;if(s2)break;}}
+        }
+        uint64_t u=t[i]*mp;ca=0;
+        for(int j=0;j<K;++j){
+            uint64_t lo,hi;
+            hi=_umul128(u,m.d[j],&lo);
+            unsigned char cf=_addcarry_u64(0,lo,(unsigned long long)t[i+j],&lo);
+            cf=_addcarry_u64(cf,hi,ca,&hi);
+            t[i+j]=lo;ca=hi;
+        }
+        for(int j=i+K;ca;++j){
+            unsigned char cf=_addcarry_u64(0,(unsigned long long)t[j],ca,&t[j]);
+            ca=(uint64_t)cf;
+        }
+#else
+        uint64_t ca=0;
+        for(int j=0;j<K;++j){
+            __uint128_t p=(__uint128_t)a.d[i]*b.d[j]+t[i+j]+ca;
+            t[i+j]=(uint64_t)p;ca=(uint64_t)(p>>64);
+        }
+        uint64_t sc=t[i+K]+ca;t[i+K]=sc;
+        if(sc<ca){for(int j=i+K+1;;++j){uint64_t s2=t[j]+1;t[j]=s2;if(s2)break;}}
+        uint64_t u=t[i]*mp;ca=0;
+        for(int j=0;j<K;++j){
+            __uint128_t s=(__uint128_t)u*m.d[j]+t[i+j]+ca;
+            t[i+j]=(uint64_t)s;ca=(uint64_t)(s>>64);
+        }
+        for(int j=i+K;ca;++j){
+            __uint128_t s=(__uint128_t)t[j]+ca;
+            t[j]=(uint64_t)s;ca=(uint64_t)(s>>64);
+        }
+#endif
+    }
+    for(int i=0;i<K;++i)r.d[i]=t[i+K];
+    if(t[2*K]){bn_sub(r,r,m);if(!(r<m))bn_sub(r,r,m);}
+    BN mc=m;while(!(r<mc))bn_sub(r,r,m);
+}
 static void CAT(to_mont_,K)(BN&r,const BN&a,const BN&m,const BN&R2,uint64_t mp){CAT(mont_mul_,K)(r,a,R2,m,mp);}
 static void CAT(from_mont_,K)(BN&r,const BN&a,const BN&m,uint64_t mp){BN one=BN::from_uint64(1);CAT(mont_mul_,K)(r,a,one,m,mp);}
 
