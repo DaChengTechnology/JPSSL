@@ -17,6 +17,7 @@
 - **`_umul128` 参数顺序错误**：低 64 位返回值被误作高 64 位，导致 128 位乘法 lo/hi 颠倒（RSA Miller-Rabin 误判、密钥生成死循环）；已修正。
 - **RSA 2048 密钥生成死循环（跨平台既有 bug）**：`keygen_fn_32` 找素数时清除 bit62，使 p/q 被限制在 `[2^1023, 1.25·2^1023)`，n = p·q 恒为 2047 位，`n.bit_length() < 2048` 重试循环永不退出；移除 bit62 清除（与 `find_prime` 一致）。
 - **`keygen_with_watchdog` 超时适配**：Windows 上 jp_uint128 模拟层慢约一个数量级，300ms/3s 的 Linux 超时必然触发 abort 重试并失败，超时放大 20 倍。
+- **`keygen_with_watchdog` 偶发锁死（跨平台既有 bug）**：原实现用 `std::thread` + `condition_variable` + `join()` 看门狗，在 Windows 上偶发 CPU≈0% 阻塞（watchdog 线程与 `work()`/`join()` 时序竞争）；且 `rsa_keygen_crt`/`rsa4096_keygen_crt` 的 `while (n.bit_length() < ...)` 重试循环不检查 abort，`find_prime` 因超时提前返回后 p/q 不变、重试永不达标而**死循环**。已重构为 deadline 时间预算（`find_prime` 每步检查 `steady_clock` 超时，超时置 `g_kgen_abort` 并返回），彻底移除看门狗线程；并在重试循环条件中加入 abort 检查。验证：2048/4096 CRT keygen 各 10/3 次全部快速完成且加解密往返正确。
 - **GCC 扩展 → 标准 C++**：`tls.cpp` 两处 VLA（`uint8_t buf[n+size()]`）改 `std::vector`；`tests/test_aes.cpp`、`test_ghash.cpp`、`test_ossl_verify.cpp` 零长度数组 `[0]` 改 `[1]`。
 - **`timegm` 平台化**：`x509.cpp` 在 Windows 用 `_mkgmtime`。
 - **MUSA GPU 测试守卫**：`src/main.cpp` 的 5 个 GPU 测试函数与 `tests/test_openssl_compare.cpp` 的 GPU 基准加 `#ifdef JP_MUSA`（MUSA 关闭时跳过，修复跨平台既有链接缺陷）；CMake MUSA 分支为 `jpssl-test` 补 `JP_MUSA` 宏定义。

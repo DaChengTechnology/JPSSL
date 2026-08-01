@@ -7,9 +7,7 @@
 #include <cstring>
 #include <random>
 #include <atomic>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
+#include <chrono>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -98,8 +96,12 @@ static bool small_prime_divides(const uint64_t* xx) {
     return false;
 }
 
-// ── keygen 看门狗 (超时自动重启) ──
+// ── keygen 看门狗 (deadline 时间预算) ──
 // 2048 keygen 超 300ms / 4096 超 3s → 置中止标志, 重新 keygen (最多 3 次)
+// 实现说明: 不使用看门狗线程 (曾用 std::thread + condition_variable + join,
+// 在 Windows 上偶发锁死: watchdog 线程与 work()/join() 的时序竞争导致 CPU≈0% 阻塞)。
+// 改为 find_prime 每步检查 steady_clock deadline, 超时置 g_kgen_abort 并返回,
+// 彻底消除线程同步, 跨平台一致。
 static std::atomic<bool> g_kgen_abort{false};
 
 template<typename FN>
@@ -111,18 +113,8 @@ static bool keygen_with_watchdog(int timeout_ms, FN&& work) {
 #endif
     for (int attempt = 0; attempt < 3; ++attempt) {
         g_kgen_abort.store(false, std::memory_order_relaxed);
-        std::mutex m;
-        std::condition_variable cv;
-        bool done = false;
-        std::thread watchdog([&]{
-            std::unique_lock<std::mutex> lk(m);
-            if (!cv.wait_for(lk, std::chrono::milliseconds(timeout_ms), [&]{ return done; }))
-                g_kgen_abort.store(true, std::memory_order_relaxed);  // 超时 → 中止
-        });
-        bool ok = work();  // 主 keygen 逻辑 (find_prime 每步检查 abort)
-        { std::lock_guard<std::mutex> lk(m); done = true; }
-        cv.notify_one();
-        watchdog.join();
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        bool ok = work(deadline);  // find_prime 每步检查 deadline, 超时置 abort 并返回
         if (ok && !g_kgen_abort.load(std::memory_order_relaxed)) return true;
         // 超时或失败 → 重试 (新随机起点)
     }
@@ -135,7 +127,7 @@ static bool keygen_with_watchdog(int timeout_ms, FN&& work) {
 // 过筛后调用 bn_is_prime_sieved (跳过其内部重筛) → MR 只对真候选运行。
 // 找到素数期望步数: 2048-bit 素数密度 ~1/710, 4096-bit ~1/1420
 template<typename BN, int K>
-static void find_prime(BN& p) {
+static void find_prime(BN& p, std::chrono::steady_clock::time_point deadline) {
     // 小素数表: 3..3600 (与 bn_is_prime 内部筛一致), 静态生成一次
     static const uint64_t* sp = []() -> const uint64_t* {
         static uint64_t tbl[512];
@@ -175,6 +167,7 @@ static void find_prime(BN& p) {
         // 增量搜索: 步进 +2, 余数 O(1) 更新
         for (int steps = 0; steps < 300000; ++steps) {
             if (g_kgen_abort.load(std::memory_order_relaxed)) return;  // 看门狗超时中止
+            if (std::chrono::steady_clock::now() >= deadline) { g_kgen_abort.store(true, std::memory_order_relaxed); return; }  // deadline 超时
             // 过筛检查: 全部小素数余数非零
             bool pass = true;
             for (int pi = 0; pi < np; ++pi)
@@ -205,19 +198,19 @@ static void find_prime(BN& p) {
 
 bool rsa_keygen_crt(rsa_public_key& pub, rsa_crt_key& crt) {
     // 看门狗: 超 300ms 中止并重启 (最多 3 次)
-    return keygen_with_watchdog(300, [&]() -> bool {
+    return keygen_with_watchdog(300, [&](std::chrono::steady_clock::time_point deadline) -> bool {
     rsa_bignum p, q, n, phi, e(rsa_bignum::from_uint64(65537)), d, dP, dQ, qInv;
     // 素数搜索: p/q 并行 (2 线程, 完全独立); 无 OpenMP 时串行
 #ifdef _OPENMP
     #pragma omp parallel num_threads(2)
     {
-        if (omp_get_thread_num() == 0) find_prime<rsa_bignum,32>(p);
-        else find_prime<rsa_bignum,32>(q);
+        if (omp_get_thread_num() == 0) find_prime<rsa_bignum,32>(p, deadline);
+        else find_prime<rsa_bignum,32>(q, deadline);
     }
-    if (p == q) find_prime<rsa_bignum,32>(q);  // 罕见碰撞串行重试
+    if (p == q) find_prime<rsa_bignum,32>(q, deadline);  // 罕见碰撞串行重试
 #else
-    find_prime<rsa_bignum,32>(p);
-    do { find_prime<rsa_bignum,32>(q); } while (p == q);
+    find_prime<rsa_bignum,32>(p, deadline);
+    do { find_prime<rsa_bignum,32>(q, deadline); } while (p == q);
 #endif
     bn_mul(n, p, q);
     rsa_bignum p1, q1;
@@ -225,16 +218,16 @@ bool rsa_keygen_crt(rsa_public_key& pub, rsa_crt_key& crt) {
     bn_sub(q1, q, rsa_bignum::from_uint64(1));
     bn_mul(phi, p1, q1);
     bn_modinv(d, e, phi);
-    while (n.bit_length() < 2048) { /* retry */
+    while (n.bit_length() < 2048 && !g_kgen_abort.load(std::memory_order_relaxed)) { /* retry */
 #ifdef _OPENMP
         #pragma omp parallel num_threads(2)
         {
-            if (omp_get_thread_num() == 0) find_prime<rsa_bignum,32>(p);
-            else find_prime<rsa_bignum,32>(q);
+            if (omp_get_thread_num() == 0) find_prime<rsa_bignum,32>(p, deadline);
+            else find_prime<rsa_bignum,32>(q, deadline);
         }
 #else
-        find_prime<rsa_bignum,32>(p);
-        find_prime<rsa_bignum,32>(q);
+        find_prime<rsa_bignum,32>(p, deadline);
+        find_prime<rsa_bignum,32>(q, deadline);
 #endif
         bn_mul(n, p, q);
         bn_sub(p1, p, rsa_bignum::from_uint64(1));
@@ -252,19 +245,19 @@ bool rsa_keygen_crt(rsa_public_key& pub, rsa_crt_key& crt) {
 
 bool rsa4096_keygen_crt(rsa4096_public_key& pub, rsa4096_crt_key& crt) {
     // 看门狗: 超 3s 中止并重启 (最多 3 次)
-    return keygen_with_watchdog(3000, [&]() -> bool {
+    return keygen_with_watchdog(3000, [&](std::chrono::steady_clock::time_point deadline) -> bool {
     rsa4096_bignum p, q, n, phi, e(rsa4096_bignum::from_uint64(65537)), d, dP, dQ, qInv;
     // 素数搜索: p/q 并行 (2 线程); 无 OpenMP 时串行
 #ifdef _OPENMP
     #pragma omp parallel num_threads(2)
     {
-        if (omp_get_thread_num() == 0) find_prime<rsa4096_bignum,64>(p);
-        else find_prime<rsa4096_bignum,64>(q);
+        if (omp_get_thread_num() == 0) find_prime<rsa4096_bignum,64>(p, deadline);
+        else find_prime<rsa4096_bignum,64>(q, deadline);
     }
-    if (p == q) find_prime<rsa4096_bignum,64>(q);
+    if (p == q) find_prime<rsa4096_bignum,64>(q, deadline);
 #else
-    find_prime<rsa4096_bignum,64>(p);
-    do { find_prime<rsa4096_bignum,64>(q); } while (p == q);
+    find_prime<rsa4096_bignum,64>(p, deadline);
+    do { find_prime<rsa4096_bignum,64>(q, deadline); } while (p == q);
 #endif
     bn_mul(n, p, q);
     rsa4096_bignum p1, q1;
@@ -272,16 +265,16 @@ bool rsa4096_keygen_crt(rsa4096_public_key& pub, rsa4096_crt_key& crt) {
     bn_sub(q1, q, rsa4096_bignum::from_uint64(1));
     bn_mul(phi, p1, q1);
     bn_modinv(d, e, phi);
-    while (n.bit_length() < 4096) {
+    while (n.bit_length() < 4096 && !g_kgen_abort.load(std::memory_order_relaxed)) {
 #ifdef _OPENMP
         #pragma omp parallel num_threads(2)
         {
-            if (omp_get_thread_num() == 0) find_prime<rsa4096_bignum,64>(p);
-            else find_prime<rsa4096_bignum,64>(q);
+            if (omp_get_thread_num() == 0) find_prime<rsa4096_bignum,64>(p, deadline);
+            else find_prime<rsa4096_bignum,64>(q, deadline);
         }
 #else
-        find_prime<rsa4096_bignum,64>(p);
-        find_prime<rsa4096_bignum,64>(q);
+        find_prime<rsa4096_bignum,64>(p, deadline);
+        find_prime<rsa4096_bignum,64>(q, deadline);
 #endif
         bn_mul(n, p, q);
         bn_sub(p1, p, rsa4096_bignum::from_uint64(1));
