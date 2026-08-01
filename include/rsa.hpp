@@ -121,6 +121,7 @@ size_t rsa4096_batch_decrypt(const rsa4096_private_key&,const uint8_t* cts,uint8
 void rsa_batch_modpow(const rsa_bignum& base,const rsa_bignum& exp,const mont_ctx& mctx,const uint8_t* bases,uint8_t* results,size_t count);
 void rsa4096_batch_modpow(const rsa4096_bignum& mod,const rsa4096_bignum& exp,const mont_ctx4096& mctx,const uint8_t* bases,uint8_t* results,size_t count);
 
+#ifdef JP_MUSA
 // ── GPU ───────────────────────────────────────────────────────────────
 struct musa_rsa_pool;
 musa_rsa_pool* musa_rsa_pool_create(const rsa_private_key&,size_t=1024);
@@ -128,6 +129,7 @@ void musa_rsa_pool_destroy(musa_rsa_pool*);
 void musa_rsa_batch_decrypt(musa_rsa_pool*,const uint8_t*,uint8_t*,size_t);
 void musa_rsa_batch_modpow(const rsa_bignum&,const rsa_bignum&,const mont_ctx&,const uint8_t*,uint8_t*,size_t);
 void musa4096_rsa_batch_modpow(const rsa4096_bignum&,const rsa4096_bignum&,const mont_ctx4096&,const uint8_t*,uint8_t*,size_t);
+#endif
 
 // ───────────────────────────────────────────────────────────────────────
 //  RFC 8017 扩展: I2OSP/OS2IP, MGF1, 原语, CRT, OAEP, PSS
@@ -166,10 +168,12 @@ void compute_crt_params4096(const rsa4096_bignum& p, const rsa4096_bignum& q,
                             rsa4096_bignum& qInv);
 bool rsa_crt_decrypt(const rsa_crt_key&, const uint8_t* ct, std::vector<uint8_t>& pt);
 bool rsa4096_crt_decrypt(const rsa4096_crt_key&, const uint8_t* ct, std::vector<uint8_t>& pt);
+#ifdef JP_MUSA
 /// GPU CRT 批量解密: c^dP mod p + c^dQ mod q → CPU Garner 合并（仅 MUSA）
 size_t musa_crt_batch_decrypt(const rsa_crt_key&, const uint8_t* cts, uint8_t* pts, size_t count);
 /// GPU 4096 CRT 批量解密: 复用 2048 kernel (p/dP + q/dQ → merge)
 size_t musa4096_crt_batch_decrypt(const rsa4096_crt_key&, const uint8_t* cts, uint8_t* pts, size_t count);
+#endif
 bool rsa4096_crt_decrypt(const rsa4096_crt_key&, const uint8_t* ct, std::vector<uint8_t>& pt);
 
 /// §7.1  RSAES-OAEP (SHA-256)

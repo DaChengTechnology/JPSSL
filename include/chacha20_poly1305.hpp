@@ -123,6 +123,7 @@ inline void chacha20_stream_xor(const uint8_t key[32], const uint8_t nonce[12],
     chacha20_crypt(key, 0, nonce, input, output);
 }
 
+#ifdef JP_MUSA
 // ═══════════════════════════════════════════════════════════════════════
 //  MUSA GPU 加速
 // ═══════════════════════════════════════════════════════════════════════
@@ -143,5 +144,6 @@ void musa_chacha20_pool_aead_encrypt(musa_chacha20_pool* pool, const uint8_t non
 bool musa_chacha20_pool_aead_decrypt(musa_chacha20_pool* pool, const uint8_t nonce[12],
                                      std::span<const uint8_t> ct, std::span<const uint8_t> aad,
                                      const uint8_t tag[16], std::vector<uint8_t>& pt);
+#endif
 
 } // namespace jpssl
