@@ -50,26 +50,31 @@ mont_mul_k32_asm PROC
     mov     r9d, 32                   ; 循环上限
 
 outer32:
-    ; ========== Step 1: a[i] * b[0..31] ==========
+    ; ========== Step 1: a[i] * b[0..31] (dual carry chain, 2x unrolled) ==========
     mov     rdx, QWORD PTR [r13+rbx*8]  ; rdx = a[i]
-    xor     r11d, r11d                  ; r11 = carry
-    xor     ecx, ecx                    ; ecx = j
+    xor     r11d, r11d                  ; carry into even limb
+    xor     ecx, ecx                    ; j
     lea     r8, [rbp+rbx*8]             ; r8 = &t[i]
 
 s1_loop32:
-    mulx    r10, rax, QWORD PTR [r14+rcx*8]  ; r10:rax = a[i]*b[j]
-    add     rax, QWORD PTR [r8+rcx*8]        ; rax += t[i+j]
+    mulx    r10, rax, QWORD PTR [r14+rcx*8]    ; even: a[i]*b[j]
+    add     rax, QWORD PTR [r8+rcx*8]
     adc     r10, 0
-    add     rax, r11                         ; rax += carry
+    add     rax, r11
     adc     r10, 0
-    mov     QWORD PTR [r8+rcx*8], rax        ; t[i+j] = lo
-    mov     r11, r10                         ; carry = hi
-    inc     ecx
+    mov     QWORD PTR [r8+rcx*8], rax
+    mulx    rdi, r9, QWORD PTR [r14+rcx*8+8]   ; odd: a[i]*b[j+1]
+    add     r9, QWORD PTR [r8+rcx*8+8]
+    adc     rdi, 0
+    add     r9, r10                     ; odd cell += even carry
+    adc     rdi, 0
+    mov     QWORD PTR [r8+rcx*8+8], r9
+    mov     r11, rdi                    ; carry into next even limb
+    add     ecx, 2
     cmp     ecx, 32
     jl      s1_loop32
 
-    ; t[i+32] += carry (累加, 不能覆盖: 前一轮 step2 进位传播可能已写 t[i+32])
-    ; 溢出向高位传播 (独立循环, 结束后回到 Step 2)
+    ; t[i+32] += carry (overflow propagation, same as original)
     lea     rdi, [rbp+rbx*8+256]
     add     QWORD PTR [rdi], r11
     jnc     carry_skip32
@@ -80,34 +85,41 @@ s1_prop32:
     jc      s1_prop32
 carry_skip32:
 
-    ; ========== Step 2: u * m[0..31], u = t[i]*mp (低 64) ==========
-    mov     rax, QWORD PTR [rbp+rbx*8]       ; rax = t[i]
-    mul     rsi                              ; rdx:rax = t[i] * mp
-    mov     rdx, rax                         ; rdx = u
-    xor     r11d, r11d                       ; r11 = carry
-    xor     ecx, ecx                         ; ecx = j
-    lea     r8, [rbp+rbx*8]                  ; r8 = &t[i]
+    ; ========== Step 2: u * m[0..31], u = t[i]*mp (low 64) ==========
+    mov     rax, QWORD PTR [rbp+rbx*8]
+    mul     rsi
+    mov     rdx, rax
+    xor     r11d, r11d                  ; carry into even limb
+    xor     ecx, ecx                    ; j
+    lea     r8, [rbp+rbx*8]             ; r8 = &t[i]
 
 s2_loop32:
-    mulx    r10, rax, QWORD PTR [r15+rcx*8]  ; r10:rax = u*m[j]
-    add     rax, QWORD PTR [r8+rcx*8]        ; rax += t[i+j]
+    mulx    r10, rax, QWORD PTR [r15+rcx*8]    ; even: a[i]*b[j]
+    add     rax, QWORD PTR [r8+rcx*8]
     adc     r10, 0
-    add     rax, r11                         ; rax += carry
+    add     rax, r11
     adc     r10, 0
-    mov     QWORD PTR [r8+rcx*8], rax        ; t[i+j] = lo
-    mov     r11, r10                         ; carry = hi
-    inc     ecx
+    mov     QWORD PTR [r8+rcx*8], rax
+    mulx    rdi, r9, QWORD PTR [r15+rcx*8+8]   ; odd: a[i]*b[j+1]
+    add     r9, QWORD PTR [r8+rcx*8+8]
+    adc     rdi, 0
+    add     r9, r10                     ; odd cell += even carry
+    adc     rdi, 0
+    mov     QWORD PTR [r8+rcx*8+8], r9
+    mov     r11, rdi                    ; carry into next even limb
+    add     ecx, 2
     cmp     ecx, 32
     jl      s2_loop32
 
-    ; -- 进位传播 t[i+32..] --
-    lea     rdi, [rbp+rbx*8+256]             ; rdi = &t[i+32]
-carry_prop32:
+    ; t[i+32] += carry (overflow propagation, same as original)
+    lea     rdi, [rbp+rbx*8+256]
     add     QWORD PTR [rdi], r11
     jnc     carry_done32
     mov     r11d, 1
+s2_prop32:
     add     rdi, 8
-    jmp     carry_prop32
+    add     QWORD PTR [rdi], r11
+    jc      s2_prop32
 carry_done32:
 
     inc     ebx
@@ -215,25 +227,31 @@ mont_mul_k64_asm PROC
     mov     r9d, 64                   ; 循环上限
 
 outer64:
-    ; ========== Step 1: a[i] * b[0..63] ==========
-    mov     rdx, QWORD PTR [r13+rbx*8]
-    xor     r11d, r11d
-    xor     ecx, ecx
-    lea     r8, [rbp+rbx*8]
+    ; ========== Step 1: a[i] * b[0..63] (dual carry chain, 2x unrolled) ==========
+    mov     rdx, QWORD PTR [r13+rbx*8]  ; rdx = a[i]
+    xor     r11d, r11d                  ; carry into even limb
+    xor     ecx, ecx                    ; j
+    lea     r8, [rbp+rbx*8]             ; r8 = &t[i]
 
 s1_loop64:
-    mulx    r10, rax, QWORD PTR [r14+rcx*8]
+    mulx    r10, rax, QWORD PTR [r14+rcx*8]    ; even: a[i]*b[j]
     add     rax, QWORD PTR [r8+rcx*8]
     adc     r10, 0
     add     rax, r11
     adc     r10, 0
     mov     QWORD PTR [r8+rcx*8], rax
-    mov     r11, r10
-    inc     ecx
+    mulx    rdi, r9, QWORD PTR [r14+rcx*8+8]   ; odd: a[i]*b[j+1]
+    add     r9, QWORD PTR [r8+rcx*8+8]
+    adc     rdi, 0
+    add     r9, r10                     ; odd cell += even carry
+    adc     rdi, 0
+    mov     QWORD PTR [r8+rcx*8+8], r9
+    mov     r11, rdi                    ; carry into next even limb
+    add     ecx, 2
     cmp     ecx, 64
     jl      s1_loop64
 
-    ; t[i+64] += carry (累加, 不能覆盖), 溢出向高位传播 (独立循环)
+    ; t[i+64] += carry (overflow propagation, same as original)
     lea     rdi, [rbp+rbx*8+512]
     add     QWORD PTR [rdi], r11
     jnc     carry_skip64
@@ -244,34 +262,41 @@ s1_prop64:
     jc      s1_prop64
 carry_skip64:
 
-    ; ========== Step 2: u * m[0..63] ==========
+    ; ========== Step 2: u * m[0..63], u = t[i]*mp (low 64) ==========
     mov     rax, QWORD PTR [rbp+rbx*8]
     mul     rsi
     mov     rdx, rax
-    xor     r11d, r11d
-    xor     ecx, ecx
-    lea     r8, [rbp+rbx*8]
+    xor     r11d, r11d                  ; carry into even limb
+    xor     ecx, ecx                    ; j
+    lea     r8, [rbp+rbx*8]             ; r8 = &t[i]
 
 s2_loop64:
-    mulx    r10, rax, QWORD PTR [r15+rcx*8]
+    mulx    r10, rax, QWORD PTR [r15+rcx*8]    ; even: a[i]*b[j]
     add     rax, QWORD PTR [r8+rcx*8]
     adc     r10, 0
     add     rax, r11
     adc     r10, 0
     mov     QWORD PTR [r8+rcx*8], rax
-    mov     r11, r10
-    inc     ecx
+    mulx    rdi, r9, QWORD PTR [r15+rcx*8+8]   ; odd: a[i]*b[j+1]
+    add     r9, QWORD PTR [r8+rcx*8+8]
+    adc     rdi, 0
+    add     r9, r10                     ; odd cell += even carry
+    adc     rdi, 0
+    mov     QWORD PTR [r8+rcx*8+8], r9
+    mov     r11, rdi                    ; carry into next even limb
+    add     ecx, 2
     cmp     ecx, 64
     jl      s2_loop64
 
-    ; -- 进位传播 t[i+64..] --
+    ; t[i+64] += carry (overflow propagation, same as original)
     lea     rdi, [rbp+rbx*8+512]
-carry_prop64:
     add     QWORD PTR [rdi], r11
     jnc     carry_done64
     mov     r11d, 1
+s2_prop64:
     add     rdi, 8
-    jmp     carry_prop64
+    add     QWORD PTR [rdi], r11
+    jc      s2_prop64
 carry_done64:
 
     inc     ebx
@@ -537,5 +562,290 @@ ENDM
 
 MONT_MUL_HALF mont_mul_half_k16_asm, 16
 MONT_MUL_HALF mont_mul_half_k32_asm, 32
+
+; =====================================================================
+;  FIOS Montgomery multiplication (4-way unrolled, ADCX/ADOX)
+;  r = a*b*R^{-1} mod m,  R = 2^(K*64)
+;  Ported from OpenSSL x86_64-mont.pl bn_mulx4x_mont (CryptoGams).
+;  Register map: aptr=rsi bptr=rdi nptr=rcx tptr=rbx mi=r8 bi=r9 zero=rbp num=rax
+;  args: rcx=r, rdx=a, r8=b, r9=m, [rsp+40]=mp, [rsp+48]=K
+mont_mul_fios_asm PROC
+	mov	r10, QWORD PTR [rsp+40]		; mp
+	mov	eax, DWORD PTR [rsp+48]		; K (limbs) - 32-bit arg, zero-extend
+	push	rbx
+	push	rbp
+	push	r12
+	push	r13
+	push	r14
+	push	r15
+	push	rsi
+	push	rdi
+	mov	r11, rsp			; save original rsp (after pushes)
+	sub	rsp, 640
+	mov	QWORD PTR [rsp+40], r11		; frame slot = original rsp (r11 reused below)
+	; frame: +0 num_bytes, +8 saved &b[i], +16 end of b,
+	;        +24 mp, +32 rp, +40 saved rsp, +48 inner counter, +64 t[65]
+	mov	QWORD PTR [rsp+32], rcx		; rp = r
+	mov	rsi, rdx			; aptr = a
+	mov	rdx, r8				; bp = b (core uses rdx as original b)
+	mov	rcx, r9				; nptr = m
+	mov	QWORD PTR [rsp+24], r10		; mp
+	shl	rax, 3				; num_bytes = K*8
+	mov	QWORD PTR [rsp+0], rax
+	mov	r11, rdx
+	add	r11, rax
+	mov	QWORD PTR [rsp+16], r11		; end of b
+	shr	rax, 5				; K/4
+	sub	rax, 1
+	mov	QWORD PTR [rsp+48], rax		; inner counter
+	lea	rbx, [rsp+64]
+	xor	eax, eax
+	mov	ecx, 66
+	mov	rdi, rbx
+	rep stosq				; zero t[0..65]
+	mov	rdi, rdx			; bptr = b
+	mov	rcx, r9				; nptr = m (restore after stos)
+
+fios_body:
+lea rdi, [rdx+8]
+mov rdx, QWORD PTR [rdx]
+lea rbx, [rsp+96]
+mov r9, rdx
+mulx rax, r8, QWORD PTR [rsi]
+mulx r14, r11, QWORD PTR [rsi+8]
+add r11, rax
+mov QWORD PTR [rsp+8], rdi
+mulx r13, r12, QWORD PTR [rsi+16]
+adc r12, r14
+adc r13, 0
+mov rdi, r8
+imul r8, QWORD PTR [rsp+24]
+xor rbp, rbp
+mulx r14, rax, QWORD PTR [rsi+24]
+mov rdx, r8
+lea rsi, [rsi+32]
+adcx r13, rax
+adcx r14, rbp
+mulx r10, rax, QWORD PTR [rcx]
+adcx rdi, rax
+adox r10, r11
+mulx r11, rax, QWORD PTR [rcx+8]
+adcx r10, rax
+adox r11, r12
+DB 196, 98, 251, 246, 161, 16, 0, 0, 0
+mov rdi, QWORD PTR [rsp+48]
+mov QWORD PTR [rbx-32], r10
+adcx r11, rax
+adox r12, r13
+mulx r15, rax, QWORD PTR [rcx+24]
+mov rdx, r9
+mov QWORD PTR [rbx-24], r11
+adcx r12, rax
+adox r15, rbp
+lea rcx, [rcx+32]
+mov QWORD PTR [rbx-16], r12
+jmp fios_1st
+align 16
+fios_1st:
+adcx r15, rbp
+mulx rax, r10, QWORD PTR [rsi]
+adcx r10, r14
+mulx r14, r11, QWORD PTR [rsi+8]
+adcx r11, rax
+mulx rax, r12, QWORD PTR [rsi+16]
+adcx r12, r14
+mulx r14, r13, QWORD PTR [rsi+24]
+DB 103, 103
+mov rdx, r8
+adcx r13, rax
+adcx r14, rbp
+lea rsi, [rsi+32]
+lea rbx, [rbx+32]
+adox r10, r15
+mulx r15, rax, QWORD PTR [rcx]
+adcx r10, rax
+adox r11, r15
+mulx r15, rax, QWORD PTR [rcx+8]
+adcx r11, rax
+adox r12, r15
+mulx r15, rax, QWORD PTR [rcx+16]
+mov QWORD PTR [rbx-40], r10
+adcx r12, rax
+mov QWORD PTR [rbx-32], r11
+adox r13, r15
+mulx r15, rax, QWORD PTR [rcx+24]
+mov rdx, r9
+mov QWORD PTR [rbx-24], r12
+adcx r13, rax
+adox r15, rbp
+lea rcx, [rcx+32]
+mov QWORD PTR [rbx-16], r13
+dec rdi
+jnz fios_1st
+mov rax, QWORD PTR [rsp]
+mov rdi, QWORD PTR [rsp+8]
+adc r15, rbp
+add r14, r15
+sbb r15, r15
+mov QWORD PTR [rbx-8], r14
+jmp fios_outer
+align 16
+fios_outer:
+mov rdx, QWORD PTR [rdi]
+lea rdi, [rdi+8]
+sub rsi, rax
+mov QWORD PTR [rbx], r15
+lea rbx, [rsp+96]
+sub rcx, rax
+mulx r11, r8, QWORD PTR [rsi]
+xor ebp, ebp
+mov r9, rdx
+mulx r12, r14, QWORD PTR [rsi+8]
+adox r8, QWORD PTR [rbx-32]
+adcx r11, r14
+mulx r13, r15, QWORD PTR [rsi+16]
+adox r11, QWORD PTR [rbx-24]
+adcx r12, r15
+adox r12, QWORD PTR [rbx-16]
+adcx r13, rbp
+adox r13, rbp
+mov QWORD PTR [rsp+8], rdi
+mov r15, r8
+imul r8, QWORD PTR [rsp+24]
+xor ebp, ebp
+mulx r14, rax, QWORD PTR [rsi+24]
+mov rdx, r8
+adcx r13, rax
+adox r13, QWORD PTR [rbx-8]
+adcx r14, rbp
+lea rsi, [rsi+32]
+adox r14, rbp
+mulx r10, rax, QWORD PTR [rcx]
+adcx r15, rax
+adox r10, r11
+mulx r11, rax, QWORD PTR [rcx+8]
+adcx r10, rax
+adox r11, r12
+mulx r12, rax, QWORD PTR [rcx+16]
+mov QWORD PTR [rbx-32], r10
+adcx r11, rax
+adox r12, r13
+mulx r15, rax, QWORD PTR [rcx+24]
+mov rdx, r9
+mov QWORD PTR [rbx-24], r11
+lea rcx, [rcx+32]
+adcx r12, rax
+adox r15, rbp
+mov rdi, QWORD PTR [rsp+48]
+mov QWORD PTR [rbx-16], r12
+jmp fios_inner
+align 16
+fios_inner:
+mulx rax, r10, QWORD PTR [rsi]
+adcx r15, rbp
+adox r10, r14
+mulx r14, r11, QWORD PTR [rsi+8]
+adcx r10, QWORD PTR [rbx]
+adox r11, rax
+mulx rax, r12, QWORD PTR [rsi+16]
+adcx r11, QWORD PTR [rbx+8]
+adox r12, r14
+mulx r14, r13, QWORD PTR [rsi+24]
+mov rdx, r8
+adcx r12, QWORD PTR [rbx+16]
+adox r13, rax
+adcx r13, QWORD PTR [rbx+24]
+adox r14, rbp
+lea rsi, [rsi+32]
+lea rbx, [rbx+32]
+adcx r14, rbp
+adox r10, r15
+mulx r15, rax, QWORD PTR [rcx]
+adcx r10, rax
+adox r11, r15
+mulx r15, rax, QWORD PTR [rcx+8]
+adcx r11, rax
+adox r12, r15
+mulx r15, rax, QWORD PTR [rcx+16]
+mov QWORD PTR [rbx-40], r10
+adcx r12, rax
+adox r13, r15
+mulx r15, rax, QWORD PTR [rcx+24]
+mov rdx, r9
+mov QWORD PTR [rbx-32], r11
+mov QWORD PTR [rbx-24], r12
+adcx r13, rax
+adox r15, rbp
+lea rcx, [rcx+32]
+mov QWORD PTR [rbx-16], r13
+dec rdi
+jnz fios_inner
+mov rax, QWORD PTR [rsp]
+mov rdi, QWORD PTR [rsp+8]
+adc r15, rbp
+sub rbp, QWORD PTR [rbx]
+adc r14, r15
+sbb r15, r15
+mov QWORD PTR [rbx-8], r14
+cmp rdi, QWORD PTR [rsp+16]
+jne fios_outer
+lea rbx, [rsp+64]
+sub rcx, rax
+neg r15
+mov rdx, rax
+shr rax, 5
+mov rdi, QWORD PTR [rsp+32]
+jmp fios_sub
+align 16
+fios_sub:
+mov r11, QWORD PTR [rbx]
+mov r12, QWORD PTR [rbx+8]
+mov r13, QWORD PTR [rbx+16]
+mov r14, QWORD PTR [rbx+24]
+lea rbx, [rbx+32]
+sbb r11, QWORD PTR [rcx]
+sbb r12, QWORD PTR [rcx+8]
+sbb r13, QWORD PTR [rcx+16]
+sbb r14, QWORD PTR [rcx+24]
+lea rcx, [rcx+32]
+mov QWORD PTR [rdi], r11
+mov QWORD PTR [rdi+8], r12
+mov QWORD PTR [rdi+16], r13
+mov QWORD PTR [rdi+24], r14
+lea rdi, [rdi+32]
+dec rax
+jnz fios_sub
+sbb r15, 0
+
+	; r15 = top-carry - borrow  =>  -1 if t < m (keep t), 0 otherwise (keep t-m)
+	; (OpenSSL semantics: sbb $0,%r15 only; do NOT add a second sbb here)
+	lea	rbx, [rsp+64]
+	sub	rdi, rdx			; rewind rp to start of t-m result
+	; ===== scalar conditional copy: r = mask ? t : (t-m) =====
+	xor	r12, r12
+fios_ccopy:
+	mov	rax, QWORD PTR [rbx+r12]
+	mov	r10, QWORD PTR [rdi+r12]
+	mov	rcx, r15
+	not	rcx
+	and	rax, r15
+	and	r10, rcx
+	or	rax, r10
+	mov	QWORD PTR [rdi+r12], rax
+	add	r12, 8
+	cmp	r12, rdx
+	jb	fios_ccopy
+	; ===== epilogue =====
+	mov	rsp, QWORD PTR [rsp+40]
+	pop	rdi
+	pop	rsi
+	pop	r15
+	pop	r14
+	pop	r13
+	pop	r12
+	pop	rbp
+	pop	rbx
+	ret
+mont_mul_fios_asm ENDP
 
 END

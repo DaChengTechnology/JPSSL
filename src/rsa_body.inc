@@ -167,18 +167,15 @@ static void CAT(mont_mul_half_,K)(BN&r,const BN&a,const BN&b,const BN&m,uint64_t
 // 鈹€鈹€ 鍗婂昂瀵?8-bit 绐楀彛 Montgomery 妯″箓 (CRT 鐨?m1/m2: 妯℃暟涓?p/q) 鈹€鈹€
 // 8-bit 绐楀彛: bits 娆″钩鏂?+ bits/8 娆′箻娉?+ 254 娆￠璁＄畻
 static void CAT(compute_2exp_mod_,K)(BN&r,const BN&base,uint64_t exp,const BN&m);
-static void CAT(mont_modpow_half_win8_,K)(BN&r,const BN&base,const BN&exp,const MONT_CTX&mc,const BN&mod){
+// ??? 8-bit ?? Montgomery ?? (p/q ????): ????, R_half/R2_half ??????
+static void CAT(mont_modpow_half_win8_ex_,K)(BN&r,const BN&base,const BN&exp,const MONT_CTX&mc,const BN&mod,
+                                             const BN&R_half,const BN&R2_half){
     const int HK=K/2;
     if(mod.is_zero()){r.zero();return;}
     if(exp.is_zero()){r=BN::from_uint64(1);return;}
-    BN b0=base;if(!(b0<mod))bn_mod(b0,base,mod);   // 绾﹀噺 base < mod
-    // 鍗婂昂瀵歌挋鍝ラ┈鍒╁煙: R_half = 2^(HK*64) mod mod
-    // (涓嶈兘鐩存帴鐢ㄥ叏灏哄 mc.R2_mod_m/R_mod_m: 閭ｆ槸 R=2^(K*64) 鐨勫煙)
+    BN b0=base;if(!(b0<mod))bn_mod(b0,base,mod);   // reduce base < mod
     BN one=BN::from_uint64(1);
-    BN R_half,R2_half;
-    CAT(compute_2exp_mod_,K)(R_half,one,(uint64_t)(HK*64),mod);
-    CAT(compute_2exp_mod_,K)(R2_half,R_half,(uint64_t)(HK*64),mod);
-    BN bm;CAT(mont_mul_half_,K)(bm,b0,R2_half,mod,mc.m_prime);   // to_mont (鍗婂昂瀵稿煙)
+    BN bm;CAT(mont_mul_half_,K)(bm,b0,R2_half,mod,mc.m_prime);   // to_mont (half domain)
     BN win[256];
     win[0]=R_half;
     win[1]=bm;
@@ -203,7 +200,43 @@ static void CAT(mont_modpow_half_win8_,K)(BN&r,const BN&base,const BN&exp,const 
         for(int k=0;k<=i;++k)chunk=(chunk<<1)|(exp.bit(k)?1:0);
         if(chunk)CAT(mont_mul_half_,K)(rm,rm,win[chunk],mod,mc.m_prime);
     }
-    CAT(mont_mul_half_,K)(r,rm,one,mod,mc.m_prime);   // from_mont (鍗婂昂瀵?
+    CAT(mont_mul_half_,K)(r,rm,one,mod,mc.m_prime);   // from_mont (half domain)
+}
+// R_half/R2_half ?????: ???? (p/q) ????, ???????????;
+// ??????? (MR ??????, ?????); ????? + 8 ???
+struct CAT(half_rh_,K){BN R_half,R2_half;};
+static CAT(half_rh_,K) CAT(g_half_rh_,K)[8];
+static BN CAT(g_half_rh_mod_,K)[8];
+static int CAT(g_half_rh_next_,K)=0;
+static std::atomic_flag CAT(g_half_rh_lock_,K)=ATOMIC_FLAG_INIT;
+static void CAT(half_rh_get_,K)(const BN&mod,BN&R_half,BN&R2_half){
+    while(CAT(g_half_rh_lock_,K).test_and_set(std::memory_order_acquire)){}
+    for(int i=0;i<8;++i)
+        if(CAT(g_half_rh_mod_,K)[i]==mod){
+            std::memcpy(R_half.d,CAT(g_half_rh_,K)[i].R_half.d,sizeof(uint64_t)*K);
+            std::memcpy(R2_half.d,CAT(g_half_rh_,K)[i].R2_half.d,sizeof(uint64_t)*K);
+            CAT(g_half_rh_lock_,K).clear(std::memory_order_release);return;}
+    int slot=CAT(g_half_rh_next_,K)++;if(slot>=8)slot=0;
+    BN one=BN::from_uint64(1);
+    CAT(compute_2exp_mod_,K)(R_half,one,(uint64_t)((K/2)*64),mod);
+    CAT(compute_2exp_mod_,K)(R2_half,R_half,(uint64_t)((K/2)*64),mod);
+    std::memcpy(CAT(g_half_rh_mod_,K)[slot].d,mod.d,sizeof(uint64_t)*K);
+    std::memcpy(CAT(g_half_rh_,K)[slot].R_half.d,R_half.d,sizeof(uint64_t)*K);
+    std::memcpy(CAT(g_half_rh_,K)[slot].R2_half.d,R2_half.d,sizeof(uint64_t)*K);
+    CAT(g_half_rh_lock_,K).clear(std::memory_order_release);
+}
+// ????: ???? R_half/R2_half (MR/?????, ??????)
+static void CAT(mont_modpow_half_win8_,K)(BN&r,const BN&base,const BN&exp,const MONT_CTX&mc,const BN&mod){
+    BN one=BN::from_uint64(1),R_half,R2_half;
+    CAT(compute_2exp_mod_,K)(R_half,one,(uint64_t)((K/2)*64),mod);
+    CAT(compute_2exp_mod_,K)(R2_half,R_half,(uint64_t)((K/2)*64),mod);
+    CAT(mont_modpow_half_win8_ex_,K)(r,base,exp,mc,mod,R_half,R2_half);
+}
+// ????: R_half/R2_half ??????
+static void CAT(mont_modpow_half_win8_cached_,K)(BN&r,const BN&base,const BN&exp,const MONT_CTX&mc,const BN&mod){
+    BN R_half,R2_half;
+    CAT(half_rh_get_,K)(mod,R_half,R2_half);
+    CAT(mont_modpow_half_win8_ex_,K)(r,base,exp,mc,mod,R_half,R2_half);
 }
 static void CAT(to_mont_,K)(BN&r,const BN&a,const BN&m,const BN&R2,uint64_t mp){CAT(mont_mul_,K)(r,a,R2,m,mp);}
 static void CAT(from_mont_,K)(BN&r,const BN&a,const BN&m,uint64_t mp){BN one=BN::from_uint64(1);CAT(mont_mul_,K)(r,a,one,m,mp);}
@@ -300,6 +333,35 @@ MONT_CTX CAT(mont_init_fn_,K)(const BN&m){return CAT(mont_init_,K)(m);}
 // 半宽路径专用: 只需 m_prime, 跳过 R_mod_m/R2_mod_m 的 2*K*64 次移位取模预计算
 // (mont_modpow_half_win8_ 内部会自算 R_half/R2_half)
 static MONT_CTX CAT(mont_init_mp_,K)(const BN&m){MONT_CTX c;c.m_prime=CAT(mont_mp_,K)(m);return c;}
+// 全尺寸 R/R2 按模数缓存: 公钥加密/验签等固定模数重复使用只算一次,
+// 省掉 mont_init_ 里 2*K*64 次移位取模 (2048 加密的主要开销); 8 槽轮换 + 自旋锁
+struct CAT(full_rh_,K){BN R,R2;};
+static CAT(full_rh_,K) CAT(g_full_rh_,K)[8];
+static BN CAT(g_full_rh_mod_,K)[8];
+static int CAT(g_full_rh_next_,K)=0;
+static std::atomic_flag CAT(g_full_rh_lock_,K)=ATOMIC_FLAG_INIT;
+static void CAT(full_rh_get_,K)(const BN&mod,BN&R,BN&R2){
+    while(CAT(g_full_rh_lock_,K).test_and_set(std::memory_order_acquire)){}
+    for(int i=0;i<8;++i)
+        if(CAT(g_full_rh_mod_,K)[i]==mod){
+            std::memcpy(R.d,CAT(g_full_rh_,K)[i].R.d,sizeof(uint64_t)*K);
+            std::memcpy(R2.d,CAT(g_full_rh_,K)[i].R2.d,sizeof(uint64_t)*K);
+            CAT(g_full_rh_lock_,K).clear(std::memory_order_release);return;}
+    int slot=CAT(g_full_rh_next_,K)++;if(slot>=8)slot=0;
+    BN one=BN::from_uint64(1);
+    CAT(compute_2exp_mod_,K)(R,one,(uint64_t)(K*64),mod);
+    CAT(compute_2exp_mod_,K)(R2,R,(uint64_t)(K*64),mod);
+    std::memcpy(CAT(g_full_rh_mod_,K)[slot].d,mod.d,sizeof(uint64_t)*K);
+    std::memcpy(CAT(g_full_rh_,K)[slot].R.d,R.d,sizeof(uint64_t)*K);
+    std::memcpy(CAT(g_full_rh_,K)[slot].R2.d,R2.d,sizeof(uint64_t)*K);
+    CAT(g_full_rh_lock_,K).clear(std::memory_order_release);
+}
+// Montgomery 上下文初始化 (R/R2 走缓存; 固定公钥重复加密时仅首次计算)
+static MONT_CTX CAT(mont_init_cached_,K)(const BN&m){
+    MONT_CTX c;c.m_prime=CAT(mont_mp_,K)(m);
+    CAT(full_rh_get_,K)(m,c.R_mod_m,c.R2_mod_m);
+    return c;
+}
 void CAT(mont_modpow_fn_,K)(BN&r,const BN&base,const BN&exp,const MONT_CTX&mc,const BN&mod){if(mod.is_zero()){r.zero();return;}BN b0=base;if(!(b0<mod))bn_mod(b0,base,mod);BN bm;CAT(to_mont_,K)(bm,b0,mod,mc.R2_mod_m,mc.m_prime);BN rm=mc.R_mod_m;int bits=exp.bit_length();for(int i=bits-1;i>=0;--i){CAT(mont_mul_,K)(rm,rm,rm,mod,mc.m_prime);if(exp.bit(i))CAT(mont_mul_,K)(rm,rm,bm,mod,mc.m_prime);}CAT(from_mont_,K)(r,rm,mod,mc.m_prime);}
 
 // 澶ф暟瀵瑰皬绱犳暟鍙栨ā (p < 2^32), O(K) 閫?limb
@@ -521,19 +583,20 @@ bool CAT(keygen_fn_,K)(PUB_KEY&pub,PRIV_KEY&prv){
     prv.p=p;prv.q=q;return 1;
 }
 
-void CAT(enc_fn_,K)(const PUB_KEY&pub,std::span<const uint8_t> pt,uint8_t*ct){size_t pl=pt.size(),bl=K*8;uint8_t pad[512]={};pad[0]=0;pad[1]=2;size_t pdl=bl-pl-3;for(size_t i=0;i<pdl;++i)pad[2+i]=(uint8_t)(rand()%255+1);pad[2+pdl]=0;memcpy(pad+3+pdl,pt.data(),pl);BN m=BN::from_bytes(pad,bl),c;MONT_CTX mc=CAT(mont_init_,K)(pub.n);CAT(mont_modpow_win_fn_,K)(c,m,pub.e,mc,pub.n);c.to_bytes(ct);}
-bool CAT(dec_fn_,K)(const PRIV_KEY&prv,const uint8_t*ct,std::vector<uint8_t>&pt){size_t bl=K*8;BN c=BN::from_bytes(ct,bl),m;if(!prv.p.is_zero()&&!prv.q.is_zero()){/* CRT 蹇€熻В瀵?(鍗婂昂瀵?8-bit 绐楀彛): m1=c^dP mod p, m2=c^dQ mod q, Garner 鍚堝苟 */MONT_CTX mcp=CAT(mont_init_,K)(prv.p),mcq=CAT(mont_init_,K)(prv.q);BN m1,m2;
+void CAT(enc_fn_,K)(const PUB_KEY&pub,std::span<const uint8_t> pt,uint8_t*ct){size_t pl=pt.size(),bl=K*8;uint8_t pad[512]={};pad[0]=0;pad[1]=2;size_t pdl=bl-pl-3;if(pdl){secure_rand_bytes(pad+2,pdl);for(size_t i=0;i<pdl;++i)if(pad[2+i]==0)pad[2+i]=1;}pad[2+pdl]=0;memcpy(pad+3+pdl,pt.data(),pl);BN m=BN::from_bytes(pad,bl),c;MONT_CTX mc=CAT(mont_init_cached_,K)(pub.n);if(pub.e.bit_length()>=64)CAT(mont_modpow_win_fn_,K)(c,m,pub.e,mc,pub.n);else CAT(mont_modpow_fn_,K)(c,m,pub.e,mc,pub.n);c.to_bytes(ct);}
+bool CAT(dec_fn_,K)(const PRIV_KEY&prv,const uint8_t*ct,std::vector<uint8_t>&pt){size_t bl=K*8;BN c=BN::from_bytes(ct,bl),m;if(!prv.p.is_zero()&&!prv.q.is_zero()){/* CRT fast path (half-size 8-bit window): m1=c^dP mod p, m2=c^dQ mod q, Garner combine */MONT_CTX mcp=CAT(mont_init_mp_,K)(prv.p),mcq=CAT(mont_init_mp_,K)(prv.q);BN Rh_p,R2h_p,Rh_q,R2h_q;CAT(half_rh_get_,K)(prv.p,Rh_p,R2h_p);CAT(half_rh_get_,K)(prv.q,Rh_q,R2h_q);BN m1,m2;
 #ifdef _OPENMP
-/* CRT 涓よ矾妯″箓瀹屽叏鐙珛 鈫?OpenMP 鍙岃矾骞惰 (m1=c^dP mod p, m2=c^dQ mod q);
-   绾跨▼瀹夊叏: 鍏ㄩ儴鐘舵€佷负鏍堝眬閮?鍙鍏变韩, mont_mul_asm 鏃犲叏灞€鍙彉鐘舵€?*/
+/* CRT two modpows fully independent -> OpenMP dual-path parallel;
+   thread-safe: all state is stack-local, only read-shared, mont_mul_asm has no globals */
 #pragma omp parallel sections num_threads(2)
 {
 #pragma omp section
-{CAT(mont_modpow_half_win8_,K)(m1,c,prv.dP,mcp,prv.p);}
+{CAT(mont_modpow_half_win8_ex_,K)(m1,c,prv.dP,mcp,prv.p,Rh_p,R2h_p);}
 #pragma omp section
-{CAT(mont_modpow_half_win8_,K)(m2,c,prv.dQ,mcq,prv.q);}
+{CAT(mont_modpow_half_win8_ex_,K)(m2,c,prv.dQ,mcq,prv.q,Rh_q,R2h_q);}
 }
 #else
-CAT(mont_modpow_half_win8_,K)(m1,c,prv.dP,mcp,prv.p);CAT(mont_modpow_half_win8_,K)(m2,c,prv.dQ,mcq,prv.q);
+CAT(mont_modpow_half_win8_ex_,K)(m1,c,prv.dP,mcp,prv.p,Rh_p,R2h_p);CAT(mont_modpow_half_win8_ex_,K)(m2,c,prv.dQ,mcq,prv.q,Rh_q,R2h_q);
 #endif
-BN m2p;if(m2<prv.p)m2p=m2;else bn_mod(m2p,m2,prv.p);BN h;if(m1<m2p){BN tmp;bn_sub(tmp,prv.p,m2p);bn_add(h,m1,tmp);}else bn_sub(h,m1,m2p);BN h2;bn_mul(h2,h,prv.qInv);bn_mod(h,h2,prv.p);BN t;bn_mul(t,prv.q,h);bn_add(m,m2,t);if(!(m<prv.n))bn_sub(m,m,prv.n);}else{bn_modpow(m,c,prv.d,prv.n);}uint8_t pad[512];m.to_bytes(pad);if(pad[0]!=0||pad[1]!=2)return 0;size_t sep=2;while(sep<bl&&pad[sep]!=0)++sep;if(sep>=bl-1)return 0;pt.assign(pad+sep+1,pad+bl);return 1;}
+BN m2p;if(m2<prv.p)m2p=m2;else bn_mod(m2p,m2,prv.p);BN h;if(m1<m2p){BN tmp;bn_sub(tmp,prv.p,m2p);bn_add(h,m1,tmp);}else bn_sub(h,m1,m2p);BN qInv_m;CAT(mont_mul_half_,K)(qInv_m,prv.qInv,R2h_p,prv.p,mcp.m_prime);BN h2;CAT(mont_mul_half_,K)(h2,h,qInv_m,prv.p,mcp.m_prime);BN t;bn_mul(t,prv.q,h2);bn_add(m,m2,t);if(!(m<prv.n))bn_sub(m,m,prv.n);}
+uint8_t pad[512];m.to_bytes(pad);if(pad[0]!=0||pad[1]!=2)return 0;size_t sep=2;while(sep<bl&&pad[sep]!=0)++sep;if(sep>=bl-1)return 0;pt.assign(pad+sep+1,pad+bl);return 1;}

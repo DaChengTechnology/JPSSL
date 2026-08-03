@@ -145,8 +145,9 @@ void batch_modpow_avx2(uint64_t* r, const uint64_t* bases,
                        const uint64_t* R2, const uint64_t* R_mod_m,
                        uint64_t mp, int K, int exp_bits) {
     int t_len = 2 * K + 2;
-    uint64_t bm[4 * K];
-    uint64_t rm[4 * K];
+    // MSVC 不支持 VLA: K<=64, 固定 4*64 槽位
+    uint64_t bm[4 * 64];
+    uint64_t rm[4 * 64];
 
     for (int msg = 0; msg < 4; ++msg) {
         uint64_t t_buf[2 * (2*64 + 1)] = {};

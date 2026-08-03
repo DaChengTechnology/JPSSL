@@ -29,7 +29,7 @@ option(JP_ENABLE_AVX2   "Enable AVX2 acceleration"   ON)
 option(JP_ENABLE_AVX512 "Enable AVX512 acceleration" ON)
 
 # ── x86 硬件加速 ──────────────────────────────────────────────────────
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     if(NOT MSVC)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -maes -mavx2 -madx")
     endif()
@@ -177,7 +177,7 @@ if(JP_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
 else()
     message(STATUS "OpenMP: disabled")
 endif()
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     if(MSVC)
         # ── MSVC: intrinsics 头 (<wmmintrin.h>/<immintrin.h>) 自带声明，
         #    按源文件单独启用所需指令集；AES-NI/PCLMULQDQ intrinsics 无需 /arch

@@ -9,6 +9,9 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace jpssl {
 
@@ -162,13 +165,15 @@ void mgf1_sha512(const uint8_t* mgfSeed, size_t seedLen,
 
 void RSAEP(const rsa_public_key& pub, const rsa_bignum& m, rsa_bignum& c) {
     auto mctx = rsa_mont_init(pub.n);
-    rsa_mont_modpow(c, m, pub.e, mctx, pub.n);
+    if (pub.e.bit_length() >= 64) rsa_mont_modpow_win(c, m, pub.e, mctx, pub.n);
+    else                          rsa_mont_modpow(c, m, pub.e, mctx, pub.n);
 }
 
 void RSAEP4096(const rsa4096_public_key& pub, const rsa4096_bignum& m,
                rsa4096_bignum& c) {
     auto mctx = rsa4096_mont_init(pub.n);
-    rsa4096_mont_modpow(c, m, pub.e, mctx, pub.n);
+    if (pub.e.bit_length() >= 64) rsa4096_mont_modpow_win(c, m, pub.e, mctx, pub.n);
+    else                          rsa4096_mont_modpow(c, m, pub.e, mctx, pub.n);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -180,25 +185,33 @@ void RSAEP4096(const rsa4096_public_key& pub, const rsa4096_bignum& m,
 
 void RSADP(const rsa_crt_key& k, const rsa_bignum& c, rsa_bignum& m) {
     // m1 = c^(dP) mod p
-    auto mctx_p = rsa_mont_init(k.p);
+    auto mctx_p = rsa_mont_init_mp(k.p);
     rsa_bignum m1, m2;
     // m2 = c^(dQ) mod q
-    auto mctx_q = rsa_mont_init(k.q);
+    auto mctx_q = rsa_mont_init_mp(k.q);
 #ifdef _OPENMP
     // CRT 两路模幂完全独立 → OpenMP 双路并行
+    if (omp_in_parallel()) {
+        // 已在并行区 (批量解密等): 嵌套 sections 会退化成单线程只跑第一个 section, 改串行
+        rsa_mont_modpow_half(m1, c, k.dP, mctx_p, k.p);
+        rsa_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q);
+    } else {
 #pragma omp parallel sections num_threads(2)
-{
+    {
 #pragma omp section
-{ rsa_mont_modpow_half(m1, c, k.dP, mctx_p, k.p); }
+    { rsa_mont_modpow_half(m1, c, k.dP, mctx_p, k.p); }
 #pragma omp section
-{ rsa_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q); }
-}
+    { rsa_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q); }
+    }
+    }
 #else
     rsa_mont_modpow_half(m1, c, k.dP, mctx_p, k.p);
     rsa_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q);
 #endif
     // CRT 合并: m = m2 + q * ((m1 - m2) * qInv mod p)
     // 注意: m2 < q 但 q 可能 > p, 需先归约 m2 mod p 再参与 (m1 - m2) 运算
+    // qInv 部分用半宽 Montgomery 乘 (qInv*R 一次预转 + 一次乘), 替代 2048/1024 除法
+    auto hc_p = rsa_mont_half_ctx(k.p);
     rsa_bignum m2p;
     if (m2 < k.p) m2p = m2; else bn_mod(m2p, m2, k.p);
     rsa_bignum h;
@@ -209,34 +222,42 @@ void RSADP(const rsa_crt_key& k, const rsa_bignum& c, rsa_bignum& m) {
     } else {
         bn_sub(h, m1, m2p);
     }
+    rsa_bignum qInv_m;
+    rsa_mont_mul_half(qInv_m, k.qInv, hc_p.R2_half, k.p, hc_p.m_prime);
     rsa_bignum h2;
-    bn_mul(h2, h, k.qInv);
-    bn_mod(h, h2, k.p);
+    rsa_mont_mul_half(h2, h, qInv_m, k.p, hc_p.m_prime);
     rsa_bignum t;
-    bn_mul(t, k.q, h);
+    bn_mul(t, k.q, h2);
     bn_add(m, m2, t);
 }
 
 void RSADP4096(const rsa4096_crt_key& k, const rsa4096_bignum& c,
                rsa4096_bignum& m) {
-    auto mctx_p = rsa4096_mont_init(k.p);
+    auto mctx_p = rsa4096_mont_init_mp(k.p);
     rsa4096_bignum m1, m2;
-    auto mctx_q = rsa4096_mont_init(k.q);
+    auto mctx_q = rsa4096_mont_init_mp(k.q);
 #ifdef _OPENMP
     // CRT 两路模幂完全独立 → OpenMP 双路并行
+    if (omp_in_parallel()) {
+        rsa4096_mont_modpow_half(m1, c, k.dP, mctx_p, k.p);
+        rsa4096_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q);
+    } else {
 #pragma omp parallel sections num_threads(2)
-{
+    {
 #pragma omp section
-{ rsa4096_mont_modpow_half(m1, c, k.dP, mctx_p, k.p); }
+    { rsa4096_mont_modpow_half(m1, c, k.dP, mctx_p, k.p); }
 #pragma omp section
-{ rsa4096_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q); }
-}
+    { rsa4096_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q); }
+    }
+    }
 #else
     rsa4096_mont_modpow_half(m1, c, k.dP, mctx_p, k.p);
     rsa4096_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q);
 #endif
     // CRT 合并: m = m2 + q * ((m1 - m2) * qInv mod p)
     // 注意: m2 < q 但 q 可能 > p, 需先归约 m2 mod p 再参与 (m1 - m2) 运算
+    // qInv 部分用半宽 Montgomery 乘 (qInv*R 一次预转 + 一次乘), 替代 4096/2048 除法
+    auto hc_p = rsa4096_mont_half_ctx(k.p);
     rsa4096_bignum m2p;
     if (m2 < k.p) m2p = m2; else bn_mod(m2p, m2, k.p);
     rsa4096_bignum h;
@@ -247,11 +268,12 @@ void RSADP4096(const rsa4096_crt_key& k, const rsa4096_bignum& c,
     } else {
         bn_sub(h, m1, m2p);
     }
+    rsa4096_bignum qInv_m;
+    rsa4096_mont_mul_half(qInv_m, k.qInv, hc_p.R2_half, k.p, hc_p.m_prime);
     rsa4096_bignum h2;
-    bn_mul(h2, h, k.qInv);
-    bn_mod(h, h2, k.p);
+    rsa4096_mont_mul_half(h2, h, qInv_m, k.p, hc_p.m_prime);
     rsa4096_bignum t;
-    bn_mul(t, k.q, h);
+    bn_mul(t, k.q, h2);
     bn_add(m, m2, t);
 }
 
@@ -329,32 +351,20 @@ void rsa_fill_crt(const rsa_private_key& prv, rsa_crt_key& crt) {
 
 bool rsa_crt_decrypt(const rsa_crt_key& k, const uint8_t* ct,
                      std::vector<uint8_t>& pt) {
-    size_t bl = RSA_2048_BYTES;
-    rsa_bignum c = rsa_bignum::from_bytes(ct, bl), m;
-    RSADP(k, c, m);
-    uint8_t pad[256];
-    m.to_bytes(pad);
-    if (pad[0] != 0 || pad[1] != 2) return false;
-    size_t sep = 2;
-    while (sep < bl && pad[sep] != 0) ++sep;
-    if (sep >= bl - 1) return false;
-    pt.assign(pad + sep + 1, pad + bl);
-    return true;
+    // 统一走 dec_fn (rsa_decrypt): 缓存半宽模幂 + 快速 Garner 合并
+    rsa_private_key prv;
+    prv.n = k.n; prv.d = k.d; prv.e = k.e;
+    prv.p = k.p; prv.q = k.q; prv.dP = k.dP; prv.dQ = k.dQ; prv.qInv = k.qInv;
+    return rsa_decrypt(prv, ct, pt);
 }
 
 bool rsa4096_crt_decrypt(const rsa4096_crt_key& k, const uint8_t* ct,
                          std::vector<uint8_t>& pt) {
-    size_t bl = RSA_4096_BYTES;
-    rsa4096_bignum c = rsa4096_bignum::from_bytes(ct, bl), m;
-    RSADP4096(k, c, m);
-    uint8_t pad[512];
-    m.to_bytes(pad);
-    if (pad[0] != 0 || pad[1] != 2) return false;
-    size_t sep = 2;
-    while (sep < bl && pad[sep] != 0) ++sep;
-    if (sep >= bl - 1) return false;
-    pt.assign(pad + sep + 1, pad + bl);
-    return true;
+    // 统一走 dec_fn (rsa4096_decrypt)
+    rsa4096_private_key prv;
+    prv.n = k.n; prv.d = k.d; prv.e = k.e;
+    prv.p = k.p; prv.q = k.q; prv.dP = k.dP; prv.dQ = k.dQ; prv.qInv = k.qInv;
+    return rsa4096_decrypt(prv, ct, pt);
 }
 
 } // namespace jpssl

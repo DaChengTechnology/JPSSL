@@ -35,10 +35,20 @@ void secure_rand_bytes(uint8_t* out, size_t len) {
 #define MONT_CTX mont_ctx
 #include "rsa_body.inc"
 // 显式对接函数名
-mont_ctx rsa_mont_init(const rsa_bignum&m){return CAT(mont_init_fn_,K)(m);}
+mont_ctx rsa_mont_init(const rsa_bignum&m){return CAT(mont_init_cached_,K)(m);}
+mont_ctx rsa_mont_init_mp(const rsa_bignum&m){return CAT(mont_init_mp_,K)(m);}
+mont_half_ctx rsa_mont_half_ctx(const rsa_bignum&m){
+    mont_half_ctx hc;
+    CAT(half_rh_get_,K)(m,hc.R_half,hc.R2_half);
+    hc.m_prime=CAT(mont_mp_,K)(m);
+    return hc;
+}
+void rsa_mont_mul_half(rsa_bignum&r,const rsa_bignum&a,const rsa_bignum&b,const rsa_bignum&m,uint64_t mp){
+    CAT(mont_mul_half_,K)(r,a,b,m,mp);
+}
 void rsa_mont_modpow(rsa_bignum&r,const rsa_bignum&b,const rsa_bignum&e,const mont_ctx&c,const rsa_bignum&m){CAT(mont_modpow_fn_,K)(r,b,e,c,m);}
 void rsa_mont_modpow_win(rsa_bignum&r,const rsa_bignum&b,const rsa_bignum&e,const mont_ctx&c,const rsa_bignum&m){CAT(mont_modpow_win_fn_,K)(r,b,e,c,m);}
-void rsa_mont_modpow_half(rsa_bignum&r,const rsa_bignum&b,const rsa_bignum&e,const mont_ctx&c,const rsa_bignum&m){CAT(mont_modpow_half_win8_,K)(r,b,e,c,m);}
+void rsa_mont_modpow_half(rsa_bignum&r,const rsa_bignum&b,const rsa_bignum&e,const mont_ctx&c,const rsa_bignum&m){CAT(mont_modpow_half_win8_cached_,K)(r,b,e,c,m);}
 bool rsa_keygen(rsa_public_key&pub,rsa_private_key&prv){return CAT(keygen_fn_,K)(pub,prv);}
 void rsa_encrypt(const rsa_public_key&pub,std::span<const uint8_t> pt,uint8_t*ct){CAT(enc_fn_,K)(pub,pt,ct);}
 bool rsa_decrypt(const rsa_private_key&prv,const uint8_t*ct,std::vector<uint8_t>&pt){return CAT(dec_fn_,K)(prv,ct,pt);}
@@ -56,10 +66,20 @@ bool rsa_decrypt(const rsa_private_key&prv,const uint8_t*ct,std::vector<uint8_t>
 #define MONT_CTX mont_ctx4096
 #include "rsa_body.inc"
 // 显式对接函数名
-mont_ctx4096 rsa4096_mont_init(const rsa4096_bignum&m){return CAT(mont_init_fn_,K)(m);}
+mont_ctx4096 rsa4096_mont_init(const rsa4096_bignum&m){return CAT(mont_init_cached_,K)(m);}
+mont_ctx4096 rsa4096_mont_init_mp(const rsa4096_bignum&m){return CAT(mont_init_mp_,K)(m);}
+mont_half_ctx4096 rsa4096_mont_half_ctx(const rsa4096_bignum&m){
+    mont_half_ctx4096 hc;
+    CAT(half_rh_get_,K)(m,hc.R_half,hc.R2_half);
+    hc.m_prime=CAT(mont_mp_,K)(m);
+    return hc;
+}
+void rsa4096_mont_mul_half(rsa4096_bignum&r,const rsa4096_bignum&a,const rsa4096_bignum&b,const rsa4096_bignum&m,uint64_t mp){
+    CAT(mont_mul_half_,K)(r,a,b,m,mp);
+}
 void rsa4096_mont_modpow(rsa4096_bignum&r,const rsa4096_bignum&b,const rsa4096_bignum&e,const mont_ctx4096&c,const rsa4096_bignum&m){CAT(mont_modpow_fn_,K)(r,b,e,c,m);}
 void rsa4096_mont_modpow_win(rsa4096_bignum&r,const rsa4096_bignum&b,const rsa4096_bignum&e,const mont_ctx4096&c,const rsa4096_bignum&m){CAT(mont_modpow_win_fn_,K)(r,b,e,c,m);}
-void rsa4096_mont_modpow_half(rsa4096_bignum&r,const rsa4096_bignum&b,const rsa4096_bignum&e,const mont_ctx4096&c,const rsa4096_bignum&m){CAT(mont_modpow_half_win8_,K)(r,b,e,c,m);}
+void rsa4096_mont_modpow_half(rsa4096_bignum&r,const rsa4096_bignum&b,const rsa4096_bignum&e,const mont_ctx4096&c,const rsa4096_bignum&m){CAT(mont_modpow_half_win8_cached_,K)(r,b,e,c,m);}
 bool rsa4096_keygen(rsa4096_public_key&pub,rsa4096_private_key&prv){return CAT(keygen_fn_,K)(pub,prv);}
 void rsa4096_encrypt(const rsa4096_public_key&pub,std::span<const uint8_t> pt,uint8_t*ct){CAT(enc_fn_,K)(pub,pt,ct);}
 bool rsa4096_decrypt(const rsa4096_private_key&prv,const uint8_t*ct,std::vector<uint8_t>&pt){return CAT(dec_fn_,K)(prv,ct,pt);}

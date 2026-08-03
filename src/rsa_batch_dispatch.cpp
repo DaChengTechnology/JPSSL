@@ -404,15 +404,11 @@ void rsa_batch_decrypt_dispatch(const uint64_t* mod, const uint64_t* exp,
                       const uint64_t*, const uint64_t*, const uint64_t*,
                       uint64_t, int, int) = nullptr;
 
-    if (features.avx512 && count >= 8) {
-        batch_size = 8;
-        modpow_fn = batch_modpow_avx512;
-    } else if (features.avx2 && count >= 4) {
-        batch_size = 4;
-        modpow_fn = batch_modpow_avx2;
-    } else {
-        batch_size = 1;
-    }
+    // 注意: batch_modpow_avx2/avx512 内核存在越界写 bug (无界 carry 循环), 会污染内存,
+    // 导致结果间歇性错误; 修复前强制走标量路径。
+    (void)features;
+    batch_size = 1;
+    modpow_fn = nullptr;
 
     // 处理 [start, end) 范围内的消息（OpenMP 每线程一段）
     auto process_range = [&](size_t start, size_t end) {
@@ -487,20 +483,36 @@ void rsa_batch_decrypt_dispatch(const uint64_t* mod, const uint64_t* exp,
 
 size_t rsa_batch_decrypt(const rsa_private_key& key,
                          const uint8_t* cts, uint8_t* pts, size_t count) {
-    mont_ctx mc = rsa_mont_init(key.n);
-    int exp_bits = 0;
-    for (int i = 31; i >= 0; --i) {
-        if (key.d.d[i]) {
-            uint64_t t = key.d.d[i];
-            int b = 64;
-            while (t) { t >>= 1; --b; }
-            exp_bits = (i + 1) * 64 - b;
-            break;
+    // CRT 批量 (dec_fn 同款): 每条 m1=c^dP mod p, m2=c^dQ mod q, Garner 合并;
+    // 跨记录 OpenMP 并行 (记录间完全独立), 不再走全宽模幂的批量内核
+    if (key.p.is_zero() || key.q.is_zero()) {
+        mont_ctx mc = rsa_mont_init(key.n);
+        int exp_bits = 0;
+        for (int i = 31; i >= 0; --i) {
+            if (key.d.d[i]) {
+                uint64_t t = key.d.d[i];
+                int b = 64;
+                while (t) { t >>= 1; --b; }
+                exp_bits = (i + 1) * 64 - b;
+                break;
+            }
+        }
+        rsa_batch_decrypt_dispatch(key.n.d, key.d.d,
+                                   mc.R2_mod_m.d, mc.R_mod_m.d, mc.m_prime,
+                                   cts, pts, count, 32, exp_bits);
+    } else {
+        rsa_crt_key crt;
+        crt.n = key.n; crt.e = key.e; crt.d = key.d;
+        crt.p = key.p; crt.q = key.q; crt.dP = key.dP; crt.dQ = key.dQ; crt.qInv = key.qInv;
+#ifdef _OPENMP
+        #pragma omp parallel for num_threads(4) schedule(static)
+#endif
+        for (long long i = 0; i < (long long)count; ++i) {
+            rsa_bignum c = rsa_bignum::from_bytes(cts + i * 256, 256), m;
+            RSADP(crt, c, m);
+            m.to_bytes(pts + i * 256);
         }
     }
-    rsa_batch_decrypt_dispatch(key.n.d, key.d.d,
-                               mc.R2_mod_m.d, mc.R_mod_m.d, mc.m_prime,
-                               cts, pts, count, 32, exp_bits);
     size_t success = 0;
     for (size_t i = 0; i < count; ++i) {
         std::vector<uint8_t> pt;
@@ -514,20 +526,35 @@ size_t rsa_batch_decrypt(const rsa_private_key& key,
 
 size_t rsa4096_batch_decrypt(const rsa4096_private_key& key,
                              const uint8_t* cts, uint8_t* pts, size_t count) {
-    mont_ctx4096 mc = rsa4096_mont_init(key.n);
-    int exp_bits = 0;
-    for (int i = 63; i >= 0; --i) {
-        if (key.d.d[i]) {
-            uint64_t t = key.d.d[i];
-            int b = 64;
-            while (t) { t >>= 1; --b; }
-            exp_bits = (i + 1) * 64 - b;
-            break;
+    // CRT 批量 (dec_fn 同款), 跨记录 OpenMP 并行
+    if (key.p.is_zero() || key.q.is_zero()) {
+        mont_ctx4096 mc = rsa4096_mont_init(key.n);
+        int exp_bits = 0;
+        for (int i = 63; i >= 0; --i) {
+            if (key.d.d[i]) {
+                uint64_t t = key.d.d[i];
+                int b = 64;
+                while (t) { t >>= 1; --b; }
+                exp_bits = (i + 1) * 64 - b;
+                break;
+            }
+        }
+        rsa_batch_decrypt_dispatch(key.n.d, key.d.d,
+                                   mc.R2_mod_m.d, mc.R_mod_m.d, mc.m_prime,
+                                   cts, pts, count, 64, exp_bits);
+    } else {
+        rsa4096_crt_key crt;
+        crt.n = key.n; crt.e = key.e; crt.d = key.d;
+        crt.p = key.p; crt.q = key.q; crt.dP = key.dP; crt.dQ = key.dQ; crt.qInv = key.qInv;
+#ifdef _OPENMP
+        #pragma omp parallel for num_threads(4) schedule(static)
+#endif
+        for (long long i = 0; i < (long long)count; ++i) {
+            rsa4096_bignum c = rsa4096_bignum::from_bytes(cts + i * 512, 512), m;
+            RSADP4096(crt, c, m);
+            m.to_bytes(pts + i * 512);
         }
     }
-    rsa_batch_decrypt_dispatch(key.n.d, key.d.d,
-                               mc.R2_mod_m.d, mc.R_mod_m.d, mc.m_prime,
-                               cts, pts, count, 64, exp_bits);
     size_t success = 0;
     for (size_t i = 0; i < count; ++i) {
         std::vector<uint8_t> pt;

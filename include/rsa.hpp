@@ -109,6 +109,17 @@ struct mont_ctx4096 { rsa4096_bignum R_mod_m, R2_mod_m; uint64_t m_prime; };
 
 mont_ctx rsa_mont_init(const rsa_bignum&);
 mont_ctx4096 rsa4096_mont_init(const rsa4096_bignum&);
+/// 仅计算 m_prime 的轻量 Montgomery 上下文 (半尺寸模幂专用, 跳过 R/R2 预计算)
+mont_ctx rsa_mont_init_mp(const rsa_bignum&);
+mont_ctx4096 rsa4096_mont_init_mp(const rsa4096_bignum&);
+/// 半尺寸模幂的预计算上下文 (R_half/R2_half 按模数缓存, m_prime)
+struct mont_half_ctx { rsa_bignum R_half, R2_half; uint64_t m_prime; };
+struct mont_half_ctx4096 { rsa4096_bignum R_half, R2_half; uint64_t m_prime; };
+mont_half_ctx rsa_mont_half_ctx(const rsa_bignum&);
+mont_half_ctx4096 rsa4096_mont_half_ctx(const rsa4096_bignum&);
+/// 半尺寸 Montgomery 乘 (p/q 模幂专用, CRT 合并用)
+void rsa_mont_mul_half(rsa_bignum&,const rsa_bignum&,const rsa_bignum&,const rsa_bignum&,uint64_t);
+void rsa4096_mont_mul_half(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&,uint64_t);
 void rsa_mont_modpow(rsa_bignum&,const rsa_bignum&,const rsa_bignum&,const mont_ctx&,const rsa_bignum&);
 /// CRT 半尺寸 8-bit 窗口 Montgomery 模幂 (只处理前 K/2 limb, p/q 模幂专用)
 void rsa_mont_modpow_half(rsa_bignum&,const rsa_bignum&,const rsa_bignum&,const mont_ctx&,const rsa_bignum&);

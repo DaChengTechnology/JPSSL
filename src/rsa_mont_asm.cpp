@@ -652,6 +652,10 @@ static void mont_mul_half_asm_impl(uint64_t* r,
 extern "C" void mont_mul_k32_asm(uint64_t* r, const uint64_t* a,
                                  const uint64_t* b, const uint64_t* m,
                                  uint64_t mp);
+// FIOS 4-way unrolled Montgomery multiplication (ADCX/ADOX), rsa_mont_asm_win.asm
+extern "C" void mont_mul_fios_asm(uint64_t* r, const uint64_t* a,
+                                  const uint64_t* b, const uint64_t* m,
+                                  uint64_t mp, int K);
 extern "C" void mont_mul_k64_asm(uint64_t* r, const uint64_t* a,
                                  const uint64_t* b, const uint64_t* m,
                                  uint64_t mp);
@@ -680,16 +684,16 @@ void mont_mul_asm(uint64_t* r,
         return;
     }
     if (K == 64) {
-        mont_mul_k64_asm(r, a, b, m, mp);
+        mont_mul_fios_asm(r, a, b, m, mp, K);
         return;
     }
 #elif defined(_MSC_VER) && defined(_M_X64)
     if (K == 32) {
-        mont_mul_k32_asm(r, a, b, m, mp);
+        mont_mul_fios_asm(r, a, b, m, mp, K);
         return;
     }
     if (K == 64) {
-        mont_mul_k64_asm(r, a, b, m, mp);
+        mont_mul_fios_asm(r, a, b, m, mp, K);
         return;
     }
 #endif
