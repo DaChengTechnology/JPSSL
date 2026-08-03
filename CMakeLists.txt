@@ -20,6 +20,8 @@ if(MSVC)
     #           注意：文件名无空格，不加引号（Ninja 下 /FI"x" 会转义成字面 \"x\"）
     add_compile_options(/utf-8 /bigobj /EHsc /FIjpssl_platform.hpp)
     add_compile_definitions(NOMINMAX _CRT_SECURE_NO_WARNINGS)
+    # RSA Montgomery 手写汇编 (rsa_mont_asm_win.asm, MULX 快速路径)
+    enable_language(ASM_MASM)
 endif()
 
 # ── 条件编译选项 ─────────────────────────────────────────────────────
@@ -125,11 +127,22 @@ set(CPU_SOURCES
     src/rsa_batch_avx2.cpp
     src/rsa_batch_avx512.cpp
     src/rsa_batch_dispatch.cpp
+    src/rsa_mont_asm.cpp
     src/rsa_prim.cpp
     src/rsa_oaep.cpp
     src/rsa_pss.cpp
     src/rsa_schemes.cpp
 )
+# 被 rsa.cpp include 的 .inc (宏模板/预制素数表): 构建规则为 unscanned
+# (无 /showIncludes 自动依赖), 必须用 OBJECT_DEPENDS 显式声明,
+# 否则修改 .inc 不会触发 rsa.cpp 重编。
+set_property(SOURCE src/rsa.cpp APPEND PROPERTY OBJECT_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/rsa_body.inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/rsa_prebuilt_primes_data.inc)
+if(MSVC)
+    # Windows: MULX 手写汇编 Montgomery 乘法 (K=32/64)
+    list(APPEND CPU_SOURCES src/rsa_mont_asm_win.asm)
+endif()
 
 add_library(jpssl_cpu STATIC ${CPU_SOURCES})
 add_library(jpssl_cpu_shared SHARED ${CPU_SOURCES})
@@ -190,6 +203,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
             COMPILE_FLAGS "/arch:AVX2")
         set_source_files_properties(src/chacha20_avx512.cpp PROPERTIES
             COMPILE_FLAGS "/arch:AVX512")
+        # RSA Montgomery MULX/ADCX/ADOX intrinsics (K=32/64 快速路径)
+        set_source_files_properties(src/rsa_mont_asm.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
         # X25519 / Ed25519 AVX-512
         set_source_files_properties(src/x25519_avx512.cpp PROPERTIES
             COMPILE_FLAGS "/arch:AVX512")

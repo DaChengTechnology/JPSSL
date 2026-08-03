@@ -104,6 +104,10 @@ ctest --test-dir build-win --output-on-failure
 - **128 位整数**：MSVC 不提供 GCC 的 `__uint128_t`，Windows 构建通过 `/FI` 强制包含 `include/jpssl_platform.hpp` 提供等价的 `jp_uint128` 兼容层（基于 `_umul128`/`_addcarry_u64`/`_udiv128`，全部内联）。**不要求**业务代码改动；GCC/Clang 仍使用原生类型。
 - **随机数**：统一走 `include/rand_os.hpp`（`jpssl::os_rand_bytes`）——Windows 用 `BCryptGenRandom`，Linux 用 `/dev/urandom`。MSVC 的 `std::random_device` 是确定性的，不用于密钥/签名 nonce。
 - **CPU 特性检测**：`include/cpu_features.hpp` 在 MSVC 下改用 `__cpuidex`/`_xgetbv` 运行时检测 AES-NI/AVX2/AVX512/SHA-NI，硬件加速分派在 Windows 上同样生效。
+- **RSA Montgomery 汇编加速**：RSA-2048/4096 的 CIOS Montgomery 乘法在 Windows 走手写 MASM 汇编（`src/rsa_mont_asm_win.asm`，MULX 加速，K=32/64），Linux 走 GCC 内联汇编（`src/rsa_mont_asm.cpp`）。运行时不支持 BMI2/ADX 的 CPU 自动回退到标量 `_umul128` 实现；CPUID 检测结果进程内缓存。
+- **CRT 半尺寸汇编加速**：CRT 私钥解密的 p/q 模幂使用半尺寸 Montgomery 乘法 `mont_mul_half_`（只处理前 K/2 个 limb），同样接入汇编快速路径（`mont_mul_half_asm`，HK=16/32，MASM 宏生成双实例 + GCC 动态 HK 单实例），核心吞吐提升约 1.3–1.45×。
+- **CRT 解密默认双线程 OpenMP**：`rsa_decrypt`/`rsa_crt_decrypt`（dec_fn + RSADP/RSADP4096）的两路独立模幂 m1/m2 用 `#pragma omp parallel sections num_threads(2)` 并行（`-DJP_ENABLE_OPENMP=OFF` 或非 OpenMP 编译器自动回退串行），2048/4096 解密实测提速 1.5–1.7×；RSADP 与 dec_fn 统一走半尺寸路径。
+- **RSA keygen 素数预算兜底**：素数搜索预算 100ms（`rsa_keygen`/`rsa_keygen_crt` 及其 4096 版本统一），超时即从预制素数表（`src/rsa_prebuilt_primes_data.inc`，1024 位×50 对 + 2048 位×50 对，MR 已验证）随机取一组完成 keygen，保证 keygen 永不因素数搜索卡死。预制素数公开、仅作测试/兜底，不用于生产密钥。注：构建规则为 unscanned，`.inc` 通过 `OBJECT_DEPENDS` 显式跟踪，改动后自动触发 `rsa.cpp` 重编。
 - **MUSA GPU 加速**：仅支持 Linux，Windows 上 `-DJP_ENABLE_MUSA=ON` 会被自动禁用并提示。
 - **OpenSSL**：仅测试/基准的对比需要；未安装时相关对比测试自动跳过，库本身不依赖。
 - **产物命名**：Windows 下静态库为 `jpssl_cpu_static.lib`（共享库导入库占用 `jpssl_cpu.lib`），动态库为 `jpssl_cpu.dll`。

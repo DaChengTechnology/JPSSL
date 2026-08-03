@@ -69,9 +69,17 @@ void bn_modinv(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&);
 
 // ── RSA 密钥 ──────────────────────────────────────────────────────────
 struct rsa_public_key { rsa_bignum n,e; };
-struct rsa_private_key { rsa_bignum n,d,e; };
+// CRT 参数由 rsa_keygen 生成 (供 rsa_decrypt 的 CRT 快速路径);
+// 外部导入的密钥 (仅 n/d/e) 这些字段为 0, 解密自动回退到全模幂
+struct rsa_private_key {
+    rsa_bignum n, d, e;
+    rsa_bignum p, q, dP, dQ, qInv;
+};
 struct rsa4096_public_key { rsa4096_bignum n,e; };
-struct rsa4096_private_key { rsa4096_bignum n,d,e; };
+struct rsa4096_private_key {
+    rsa4096_bignum n, d, e;
+    rsa4096_bignum p, q, dP, dQ, qInv;
+};
 
 /// @brief CRT 私钥 (RFC 8017 §3.2 RSAPrivateKey)
 struct rsa_crt_key {
@@ -102,9 +110,12 @@ struct mont_ctx4096 { rsa4096_bignum R_mod_m, R2_mod_m; uint64_t m_prime; };
 mont_ctx rsa_mont_init(const rsa_bignum&);
 mont_ctx4096 rsa4096_mont_init(const rsa4096_bignum&);
 void rsa_mont_modpow(rsa_bignum&,const rsa_bignum&,const rsa_bignum&,const mont_ctx&,const rsa_bignum&);
+/// CRT 半尺寸 8-bit 窗口 Montgomery 模幂 (只处理前 K/2 limb, p/q 模幂专用)
+void rsa_mont_modpow_half(rsa_bignum&,const rsa_bignum&,const rsa_bignum&,const mont_ctx&,const rsa_bignum&);
 /// 4-bit 窗口化 Montgomery 模幂（CPU, 减少 ~16% mont_mul 次数）
 void rsa_mont_modpow_win(rsa_bignum&,const rsa_bignum&,const rsa_bignum&,const mont_ctx&,const rsa_bignum&);
 void rsa4096_mont_modpow(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&,const mont_ctx4096&,const rsa4096_bignum&);
+void rsa4096_mont_modpow_half(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&,const mont_ctx4096&,const rsa4096_bignum&);
 void rsa4096_mont_modpow_win(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&,const mont_ctx4096&,const rsa4096_bignum&);
 
 // ── 批量 CPU 解密（AVX2/AVX-512 加速）─────────────────────────────────

@@ -182,18 +182,32 @@ void RSADP(const rsa_crt_key& k, const rsa_bignum& c, rsa_bignum& m) {
     // m1 = c^(dP) mod p
     auto mctx_p = rsa_mont_init(k.p);
     rsa_bignum m1, m2;
-    rsa_mont_modpow(m1, c, k.dP, mctx_p, k.p);
     // m2 = c^(dQ) mod q
     auto mctx_q = rsa_mont_init(k.q);
-    rsa_mont_modpow(m2, c, k.dQ, mctx_q, k.q);
+#ifdef _OPENMP
+    // CRT 两路模幂完全独立 → OpenMP 双路并行
+#pragma omp parallel sections num_threads(2)
+{
+#pragma omp section
+{ rsa_mont_modpow_half(m1, c, k.dP, mctx_p, k.p); }
+#pragma omp section
+{ rsa_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q); }
+}
+#else
+    rsa_mont_modpow_half(m1, c, k.dP, mctx_p, k.p);
+    rsa_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q);
+#endif
     // CRT 合并: m = m2 + q * ((m1 - m2) * qInv mod p)
+    // 注意: m2 < q 但 q 可能 > p, 需先归约 m2 mod p 再参与 (m1 - m2) 运算
+    rsa_bignum m2p;
+    if (m2 < k.p) m2p = m2; else bn_mod(m2p, m2, k.p);
     rsa_bignum h;
-    if (m1 < m2) {
+    if (m1 < m2p) {
         rsa_bignum tmp;
-        bn_sub(tmp, k.p, m2);
+        bn_sub(tmp, k.p, m2p);
         bn_add(h, m1, tmp);
     } else {
-        bn_sub(h, m1, m2);
+        bn_sub(h, m1, m2p);
     }
     rsa_bignum h2;
     bn_mul(h2, h, k.qInv);
@@ -207,16 +221,31 @@ void RSADP4096(const rsa4096_crt_key& k, const rsa4096_bignum& c,
                rsa4096_bignum& m) {
     auto mctx_p = rsa4096_mont_init(k.p);
     rsa4096_bignum m1, m2;
-    rsa4096_mont_modpow(m1, c, k.dP, mctx_p, k.p);
     auto mctx_q = rsa4096_mont_init(k.q);
-    rsa4096_mont_modpow(m2, c, k.dQ, mctx_q, k.q);
+#ifdef _OPENMP
+    // CRT 两路模幂完全独立 → OpenMP 双路并行
+#pragma omp parallel sections num_threads(2)
+{
+#pragma omp section
+{ rsa4096_mont_modpow_half(m1, c, k.dP, mctx_p, k.p); }
+#pragma omp section
+{ rsa4096_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q); }
+}
+#else
+    rsa4096_mont_modpow_half(m1, c, k.dP, mctx_p, k.p);
+    rsa4096_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q);
+#endif
+    // CRT 合并: m = m2 + q * ((m1 - m2) * qInv mod p)
+    // 注意: m2 < q 但 q 可能 > p, 需先归约 m2 mod p 再参与 (m1 - m2) 运算
+    rsa4096_bignum m2p;
+    if (m2 < k.p) m2p = m2; else bn_mod(m2p, m2, k.p);
     rsa4096_bignum h;
-    if (m1 < m2) {
+    if (m1 < m2p) {
         rsa4096_bignum tmp;
-        bn_sub(tmp, k.p, m2);
+        bn_sub(tmp, k.p, m2p);
         bn_add(h, m1, tmp);
     } else {
-        bn_sub(h, m1, m2);
+        bn_sub(h, m1, m2p);
     }
     rsa4096_bignum h2;
     bn_mul(h2, h, k.qInv);
@@ -270,7 +299,9 @@ void compute_crt_params(const rsa_bignum& p, const rsa_bignum& q,
     bn_sub(q1, q, rsa_bignum::from_uint64(1));
     bn_mod(dP, d, p1);
     bn_mod(dQ, d, q1);
-    bn_modinv(qInv, q, p);
+    // qInv = q^{-1} mod p: 费马小定理 q^{p-2} mod p (半宽模幂, 比除法欧几里得快)
+    { rsa_bignum p2; bn_sub(p2, p, rsa_bignum::from_uint64(2));
+      mont_ctx mcp = rsa_mont_init(p); rsa_mont_modpow_half(qInv, q, p2, mcp, p); }
 }
 
 void compute_crt_params4096(const rsa4096_bignum& p,
@@ -284,7 +315,9 @@ void compute_crt_params4096(const rsa4096_bignum& p,
     bn_sub(q1, q, rsa4096_bignum::from_uint64(1));
     bn_mod(dP, d, p1);
     bn_mod(dQ, d, q1);
-    bn_modinv(qInv, q, p);
+    // qInv = q^{-1} mod p: 费马小定理 q^{p-2} mod p (半宽模幂, 比除法欧几里得快)
+    { rsa4096_bignum p2; bn_sub(p2, p, rsa4096_bignum::from_uint64(2));
+      mont_ctx4096 mcp = rsa4096_mont_init(p); rsa4096_mont_modpow_half(qInv, q, p2, mcp, p); }
 }
 
 void rsa_fill_crt(const rsa_private_key& prv, rsa_crt_key& crt) {
