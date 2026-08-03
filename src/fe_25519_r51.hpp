@@ -17,6 +17,13 @@
 #include <cstdint>
 #include <cstring>
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#if defined(JP_HAVE_ADX_ASM)
+extern "C" void fe51_mul_adx(uint64_t r[5], const uint64_t a[5], const uint64_t b[5]);
+#endif
+#endif
+
 namespace jpssl { namespace x25519_r51 {
 
 using fe51 = uint64_t[5];
@@ -165,7 +172,7 @@ inline void fe51_sub(fe51 r, const fe51 a, const fe51 b) {
  *
  * 输入 limb 允许 [0, 2^53)；输出每个 limb < 2^51。
  */
-inline void fe51_mul(fe51 r, const fe51 a, const fe51 b) {
+inline void fe51_mul_portable(fe51 r, const fe51 a, const fe51 b) {
     const uint64_t a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3], a4 = a[4];
     const uint64_t b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3], b4 = b[4];
 
@@ -201,7 +208,145 @@ inline void fe51_mul(fe51 r, const fe51 a, const fe51 b) {
     r[3] = (uint64_t)t3; r[4] = (uint64_t)t4;
 }
 
-inline void fe51_sq(fe51 r, const fe51 a) { fe51_mul(r, a, a); }
+#if defined(_MSC_VER) && !defined(__clang__)
+
+/// 128-bit 绱Н: (lo,hi) += a*b
+static inline void fe51_acc_mul(uint64_t& lo, uint64_t& hi, uint64_t a, uint64_t b) {
+    uint64_t h;
+    uint64_t l = _umul128(a, b, &h);
+    unsigned char c = _addcarry_u64(0, lo, l, &lo);
+    hi += h + c;
+}
+
+/// (lo,hi) += v
+static inline void fe51_acc_u64(uint64_t& lo, uint64_t& hi, uint64_t v) {
+    unsigned char c = _addcarry_u64(0, lo, v, &lo);
+    hi += c;
+}
+
+/// (lo,hi) += (alo,ahi)
+static inline void fe51_acc128(uint64_t& lo, uint64_t& hi, uint64_t alo, uint64_t ahi) {
+    unsigned char c = _addcarry_u64(0, lo, alo, &lo);
+    hi += ahi + c;
+}
+
+/// 2^255 鈮?19 鎶樺彔 + 51-bit 杩涗綅閾撅紙mul/sq 鍏变韩锛?
+static inline void fe51_fold_carry_msvc(fe51 r, uint64_t* lo, uint64_t* hi) {
+    uint64_t fl, fh;
+    fl = _umul128(lo[5], 19, &fh); fh += hi[5] * 19;
+    fe51_acc128(lo[0], hi[0], fl, fh);
+    fl = _umul128(lo[6], 19, &fh); fh += hi[6] * 19;
+    fe51_acc128(lo[1], hi[1], fl, fh);
+    fl = _umul128(lo[7], 19, &fh); fh += hi[7] * 19;
+    fe51_acc128(lo[2], hi[2], fl, fh);
+    fl = _umul128(lo[8], 19, &fh); fh += hi[8] * 19;
+    fe51_acc128(lo[3], hi[3], fl, fh);
+
+    uint64_t carry;
+    carry = (hi[0] << 13) | (lo[0] >> 51); lo[0] &= MASK51; hi[0] = 0;
+    fe51_acc_u64(lo[1], hi[1], carry);
+    carry = (hi[1] << 13) | (lo[1] >> 51); lo[1] &= MASK51; hi[1] = 0;
+    fe51_acc_u64(lo[2], hi[2], carry);
+    carry = (hi[2] << 13) | (lo[2] >> 51); lo[2] &= MASK51; hi[2] = 0;
+    fe51_acc_u64(lo[3], hi[3], carry);
+    carry = (hi[3] << 13) | (lo[3] >> 51); lo[3] &= MASK51; hi[3] = 0;
+    fe51_acc_u64(lo[4], hi[4], carry);
+    carry = (hi[4] << 13) | (lo[4] >> 51); lo[4] &= MASK51; hi[4] = 0;
+    fl = _umul128(carry, 19, &fh);
+    fe51_acc128(lo[0], hi[0], fl, fh);
+    carry = (hi[0] << 13) | (lo[0] >> 51); lo[0] &= MASK51; hi[0] = 0;
+    fe51_acc_u64(lo[1], hi[1], carry);
+
+    r[0] = lo[0]; r[1] = lo[1]; r[2] = lo[2]; r[3] = lo[3]; r[4] = lo[4];
+}
+
+/// r = a * b (mod p) (MSVC: 鎵嬪啓 _umul128 蹇€熻矾寰勶紝鏀寔杈撳叆 limb 鈮?2^53)
+inline void fe51_mul(fe51 r, const fe51 a, const fe51 b) {
+#if defined(JP_HAVE_ADX_ASM)
+    static const int adx_ok = [] {
+        int regs[4];
+        __cpuidex(regs, 7, 0);
+        return ((regs[1] >> 8) & 1) && ((regs[1] >> 19) & 1);  // BMI2 && ADX
+    }();
+    if (adx_ok) {
+        fe51_mul_adx(r, a, b);
+        return;
+    }
+#endif
+    const uint64_t a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3], a4 = a[4];
+    const uint64_t b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3], b4 = b[4];
+    uint64_t lo[9] = {}, hi[9] = {};
+
+    fe51_acc_mul(lo[0], hi[0], a0, b0);
+    fe51_acc_mul(lo[1], hi[1], a0, b1);
+    fe51_acc_mul(lo[1], hi[1], a1, b0);
+    fe51_acc_mul(lo[2], hi[2], a0, b2);
+    fe51_acc_mul(lo[2], hi[2], a1, b1);
+    fe51_acc_mul(lo[2], hi[2], a2, b0);
+    fe51_acc_mul(lo[3], hi[3], a0, b3);
+    fe51_acc_mul(lo[3], hi[3], a1, b2);
+    fe51_acc_mul(lo[3], hi[3], a2, b1);
+    fe51_acc_mul(lo[3], hi[3], a3, b0);
+    fe51_acc_mul(lo[4], hi[4], a0, b4);
+    fe51_acc_mul(lo[4], hi[4], a1, b3);
+    fe51_acc_mul(lo[4], hi[4], a2, b2);
+    fe51_acc_mul(lo[4], hi[4], a3, b1);
+    fe51_acc_mul(lo[4], hi[4], a4, b0);
+    fe51_acc_mul(lo[5], hi[5], a1, b4);
+    fe51_acc_mul(lo[5], hi[5], a2, b3);
+    fe51_acc_mul(lo[5], hi[5], a3, b2);
+    fe51_acc_mul(lo[5], hi[5], a4, b1);
+    fe51_acc_mul(lo[6], hi[6], a2, b4);
+    fe51_acc_mul(lo[6], hi[6], a3, b3);
+    fe51_acc_mul(lo[6], hi[6], a4, b2);
+    fe51_acc_mul(lo[7], hi[7], a3, b4);
+    fe51_acc_mul(lo[7], hi[7], a4, b3);
+    fe51_acc_mul(lo[8], hi[8], a4, b4);
+
+    fe51_fold_carry_msvc(r, lo, hi);
+}
+
+/// r = a^2 (mod p)锛堝绉版€у噺灏?25 涓?5 涓箻绉級
+inline void fe51_sq(fe51 r, const fe51 a) {
+    const uint64_t a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3], a4 = a[4];
+    uint64_t lo[9] = {}, hi[9] = {};
+
+    fe51_acc_mul(lo[0], hi[0], a0, a0);
+    fe51_acc_mul(lo[1], hi[1], a0, a1);
+    fe51_acc_mul(lo[1], hi[1], a0, a1);
+    fe51_acc_mul(lo[2], hi[2], a0, a2);
+    fe51_acc_mul(lo[2], hi[2], a0, a2);
+    fe51_acc_mul(lo[2], hi[2], a1, a1);
+    fe51_acc_mul(lo[3], hi[3], a0, a3);
+    fe51_acc_mul(lo[3], hi[3], a0, a3);
+    fe51_acc_mul(lo[3], hi[3], a1, a2);
+    fe51_acc_mul(lo[3], hi[3], a1, a2);
+    fe51_acc_mul(lo[4], hi[4], a0, a4);
+    fe51_acc_mul(lo[4], hi[4], a0, a4);
+    fe51_acc_mul(lo[4], hi[4], a1, a3);
+    fe51_acc_mul(lo[4], hi[4], a1, a3);
+    fe51_acc_mul(lo[4], hi[4], a2, a2);
+    fe51_acc_mul(lo[5], hi[5], a1, a4);
+    fe51_acc_mul(lo[5], hi[5], a1, a4);
+    fe51_acc_mul(lo[5], hi[5], a2, a3);
+    fe51_acc_mul(lo[5], hi[5], a2, a3);
+    fe51_acc_mul(lo[6], hi[6], a2, a4);
+    fe51_acc_mul(lo[6], hi[6], a2, a4);
+    fe51_acc_mul(lo[6], hi[6], a3, a3);
+    fe51_acc_mul(lo[7], hi[7], a3, a4);
+    fe51_acc_mul(lo[7], hi[7], a3, a4);
+    fe51_acc_mul(lo[8], hi[8], a4, a4);
+
+    fe51_fold_carry_msvc(r, lo, hi);
+}
+
+#else
+
+inline void fe51_mul(fe51 r, const fe51 a, const fe51 b) { fe51_mul_portable(r, a, b); }
+inline void fe51_sq(fe51 r, const fe51 a) { fe51_mul_portable(r, a, a); }
+
+#endif
+
 
 // ────────────  条件交换 ────────────
 
@@ -273,7 +418,7 @@ inline void fe51_neg(fe51 h, const fe51 f) {
 
 /// h = 2 * f^2
 inline void fe51_sq2(fe51 h, const fe51 f) {
-    fe51_mul(h, f, f);
+    fe51_sq(h, f);
     fe51_add(h, h, h);
 }
 

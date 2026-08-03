@@ -107,7 +107,7 @@ static void sc_store_64(uint8_t* b, const uint64_t r[4]) {
     }
 }
 
-static void sc_reduce(uint8_t h[64]) {
+static void sc_reduce_portable(uint8_t h[64]) {
     uint64_t t[8];
     sc_load_64(t, h);
     sc_load_64(t + 4, h + 32);
@@ -155,7 +155,69 @@ static void sc_reduce(uint8_t h[64]) {
     sc_store_64(h, t);
 }
 
-static void sc_mul_add(uint8_t* out, const uint8_t* a, const uint8_t* b, const uint8_t* c) {
+#if defined(_MSC_VER) && !defined(__clang__)
+// MSVC: jp_uint128 的 128x128 operator* 比 64x64 手写乘法慢约 8 倍,
+// sc_reduce / sc_mul_add 用 _umul128 + _addcarry_u64 实现。
+static void sc_fold_hi_msvc(uint64_t t[8], int pos, uint64_t hi) {
+    uint64_t p[5];
+    uint64_t carry = 0;
+    for (int j = 0; j < 4; ++j) {
+        uint64_t h;
+        uint64_t lo = _umul128(hi, S64[j], &h);
+        unsigned char c = _addcarry_u64(0, lo, carry, &lo);
+        p[j] = lo;
+        carry = h + c;
+    }
+    p[4] = carry;
+    carry = 0;
+    for (int j = 0; j < 5; ++j) {
+        uint64_t s;
+        unsigned char c1 = _addcarry_u64(0, t[j + pos], p[j], &s);
+        unsigned char c2 = _addcarry_u64(0, s, carry, &s);
+        t[j + pos] = s;
+        carry = (uint64_t)c1 + c2;
+    }
+    for (int j = pos + 5; carry && j < 8; ++j) {
+        uint64_t s = t[j] + 1;
+        t[j] = s;
+        carry = (s == 0);
+    }
+}
+
+static void sc_reduce(uint8_t h[64]) {
+    uint64_t t[8];
+    sc_load_64(t, h);
+    sc_load_64(t + 4, h + 32);
+    for (int pass = 0; pass < 200; pass++) {
+        if ((t[4] | t[5] | t[6] | t[7]) == 0) break;
+        uint64_t hi[4] = {t[4], t[5], t[6], t[7]};
+        t[4] = t[5] = t[6] = t[7] = 0;
+        for (int pos = 0; pos < 4; pos++) {
+            if (hi[pos] != 0) sc_fold_hi_msvc(t, pos, hi[pos]);
+        }
+    }
+    for (int i = 0; i < 20; i++) {
+        int cmp = 0;
+        for (int j = 3; j >= 0; j--) {
+            if (t[j] > L64[j]) { cmp = 1; break; }
+            if (t[j] < L64[j]) { cmp = -1; break; }
+        }
+        if (cmp <= 0) break;
+        uint64_t borrow = 0;
+        for (int j = 0; j < 4; j++) {
+            uint64_t r = t[j] - L64[j] - borrow;
+            uint64_t nb = (t[j] < L64[j] + borrow) ? 1 : 0;
+            t[j] = r;
+            borrow = nb;
+        }
+    }
+    sc_store_64(h, t);
+}
+#else
+static void sc_reduce(uint8_t h[64]) { sc_reduce_portable(h); }
+#endif
+
+static void sc_mul_add_portable(uint8_t* out, const uint8_t* a, const uint8_t* b, const uint8_t* c) {
     uint64_t a_l[4], b_l[4], c_l[4];
     sc_load_64(a_l, a);
     sc_load_64(b_l, b);
@@ -189,6 +251,52 @@ static void sc_mul_add(uint8_t* out, const uint8_t* a, const uint8_t* b, const u
     sc_reduce(buf);
     memcpy(out, buf, 32);
 }
+
+#if defined(_MSC_VER) && !defined(__clang__)
+static void sc_mul_add(uint8_t* out, const uint8_t* a, const uint8_t* b, const uint8_t* c) {
+    uint64_t a_l[4], b_l[4], c_l[4];
+    sc_load_64(a_l, a);
+    sc_load_64(b_l, b);
+    sc_load_64(c_l, c);
+    uint64_t p[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 4; i++) {
+        uint64_t carry = 0;
+        for (int j = 0; j < 4; j++) {
+            uint64_t h;
+            uint64_t lo = _umul128(a_l[i], b_l[j], &h);
+            unsigned char c1 = _addcarry_u64(0, lo, carry, &lo);
+            unsigned char c2 = _addcarry_u64(0, lo, p[i + j], &lo);
+            p[i + j] = lo;
+            carry = h + (uint64_t)c1 + c2;
+        }
+        int idx = i + 4;
+        while (carry && idx < 8) {
+            uint64_t s = p[idx] + carry;
+            p[idx] = s;
+            carry = (s < p[idx]);
+            idx++;
+        }
+    }
+    uint64_t carry = 0;
+    for (int i = 0; i < 8; i++) {
+        uint64_t add = (i < 4) ? c_l[i] : 0;
+        uint64_t s;
+        unsigned char c1 = _addcarry_u64(0, p[i], add, &s);
+        unsigned char c2 = _addcarry_u64(0, s, carry, &s);
+        p[i] = s;
+        carry = (uint64_t)c1 + c2;
+    }
+    uint8_t buf[64];
+    sc_store_64(buf, p);
+    sc_store_64(buf + 32, p + 4);
+    sc_reduce(buf);
+    memcpy(out, buf, 32);
+}
+#else
+static void sc_mul_add(uint8_t* out, const uint8_t* a, const uint8_t* b, const uint8_t* c) {
+    sc_mul_add_portable(out, a, b, c);
+}
+#endif
 
 static void sc_negate(uint8_t r[32], const uint8_t a[32]) {
     uint64_t a_l[4];
@@ -626,6 +734,181 @@ static void scalar_mult_windows8_precomp(ge_p3& R, const uint8_t scalar[32], con
     }
 }
 
+/// 16x16 comb 表: table[i0*16+i1] = i0*B + i1*2^128*B (仿射 precomp, 一次性构建)
+static const ge_precomp* basepoint_table_comb() {
+    static ge_precomp table[256];
+    static bool init = false;
+    if (!init) {
+        init = true;
+        ge_p3 B0, B1;
+        ge_p3_to_p3(&B0, ge_get_basepoint());
+        ge_p3_to_p3(&B1, ge_get_basepoint());
+        for (int i = 0; i < 128; ++i) {
+            ge_p1p1 t;
+            ge_p3_dbl(&t, &B1);
+            ge_p1p1_to_p3(&B1, &t);
+        }
+        ge_p3 row, p;
+        ge_p3_0(&row);
+        for (int i1 = 0; i1 < 16; ++i1) {
+            if (i1 > 0) {
+                ge_p1p1 t;
+                ge_add(&t, &row, &B1);
+                ge_p1p1_to_p3(&row, &t);
+            }
+            ge_p3_0(&p);
+            for (int i0 = 0; i0 < 16; ++i0) {
+                if (i0 > 0) {
+                    ge_p1p1 t;
+                    ge_add(&t, &p, &B0);
+                    ge_p1p1_to_p3(&p, &t);
+                }
+                ge_p3 sum;
+                if (i0 == 0 && i1 == 0) {
+                    ge_p3_0(&sum);
+                } else {
+                    ge_p1p1 t;
+                    ge_add(&t, &p, &row);
+                    ge_p1p1_to_p3(&sum, &t);
+                }
+                ge_p3_to_precomp(&table[i0 * 16 + i1], &sum);
+            }
+        }
+    }
+    return table;
+}
+
+/// 4-bit comb 标量乘: R = scalar * B
+/// 32 窗口 x (4 次倍增 + 1 次 madd) = 128 次倍增 (8-bit 窗口方案的一半)
+static void scalar_mult_comb16(ge_p3& R, const uint8_t scalar[32], const ge_precomp table[256]) {
+    ge_p3_0(&R);
+    for (int wi = 31; wi >= 0; --wi) {
+        for (int j = 0; j < 4; ++j) {
+            ge_p1p1 d;
+            ge_p3_dbl(&d, &R);
+            ge_p1p1_to_p3(&R, &d);
+        }
+        int w0 = extract_window4(scalar, 4 * wi);        // 标量低 128 位
+        int w1 = extract_window4(scalar + 16, 4 * wi);   // 标量高 128 位 (2^128 权重)
+        ge_p1p1 tmp;
+        ge_madd(&tmp, &R, &table[w0 * 16 + w1]);
+        ge_p1p1_to_p3(&R, &tmp);
+    }
+}
+
+/// 安全提取 bitpos 起的 4-bit 窗口 (超出 255 位视为 0)
+static inline int extract_window4_top(const uint8_t scalar[32], int bitpos) {
+    if (bitpos + 4 > 256) return 0;
+    int w = 0;
+    for (int b = 0; b < 4; ++b) {
+        int i = bitpos + b;
+        w |= ((scalar[i >> 3] >> (i & 7)) & 1) << b;
+    }
+    return w;
+}
+
+/// 批量求逆 + 仿射 precomp 转换 (n <= 4096, 一次求逆 + 每点 4 次乘法)
+static void precomp_batch_from_p3(ge_precomp* out, const ge_p3* pts, int n) {
+    static fe pre[4096];
+    fe acc;
+    fe_1(acc);
+    for (int i = 0; i < n; ++i) {
+        fe_copy(pre[i], acc);
+        fe_mul(acc, acc, pts[i].Z);
+    }
+    fe_invert(acc, acc);
+    for (int i = n - 1; i >= 0; --i) {
+        fe zi, x, y;
+        fe_mul(zi, acc, pre[i]);
+        fe_mul(acc, acc, pts[i].Z);
+        fe_mul(x, pts[i].X, zi);
+        fe_mul(y, pts[i].Y, zi);
+        fe_add(out[i].y_plus_x, y, x);
+        fe_sub(out[i].y_minus_x, y, x);
+        fe_mul(out[i].xy2d, x, y);
+        fe_mul(out[i].xy2d, out[i].xy2d, d2_limbs());
+    }
+}
+
+/// 3-way comb 表: table[w0*256 + w1*16 + w2] = w0*B + w1*2^88*B + w2*2^176*B
+static const ge_precomp* basepoint_table_comb3() {
+    static ge_precomp table[4096];
+    static bool init = false;
+    if (!init) {
+        init = true;
+        ge_p3 B0, B1, B2;
+        ge_p3_to_p3(&B0, ge_get_basepoint());
+        ge_p3_to_p3(&B1, ge_get_basepoint());
+        ge_p3_to_p3(&B2, ge_get_basepoint());
+        for (int i = 0; i < 88; ++i) {
+            ge_p1p1 t;
+            ge_p3_dbl(&t, &B1);
+            ge_p1p1_to_p3(&B1, &t);
+        }
+        ge_p3_to_p3(&B2, &B1);  // B2 = 2^88 * B1 = 2^176 * B
+        for (int i = 0; i < 88; ++i) {
+            ge_p1p1 t;
+            ge_p3_dbl(&t, &B2);
+            ge_p1p1_to_p3(&B2, &t);
+        }
+        static ge_p3 pts[4096];
+        ge_p3 rowbase, row, p;
+        ge_p3_0(&rowbase);
+        for (int w2 = 0; w2 < 16; ++w2) {
+            if (w2 > 0) {
+                ge_p1p1 t;
+                ge_add(&t, &rowbase, &B2);
+                ge_p1p1_to_p3(&rowbase, &t);
+            }
+            ge_p3_to_p3(&row, &rowbase);
+            for (int w1 = 0; w1 < 16; ++w1) {
+                if (w1 > 0) {
+                    ge_p1p1 t;
+                    ge_add(&t, &row, &B1);
+                    ge_p1p1_to_p3(&row, &t);
+                }
+                ge_p3_0(&p);
+                for (int w0 = 0; w0 < 16; ++w0) {
+                    if (w0 > 0) {
+                        ge_p1p1 t;
+                        ge_add(&t, &p, &B0);
+                        ge_p1p1_to_p3(&p, &t);
+                    }
+                    int idx = w0 * 256 + w1 * 16 + w2;
+                    if (idx == 0) {
+                        ge_p3_0(&pts[0]);
+                    } else {
+                        ge_p1p1 t;
+                        ge_add(&t, &row, &p);
+                        ge_p1p1_to_p3(&pts[idx], &t);
+                    }
+                }
+            }
+        }
+        precomp_batch_from_p3(table, pts, 4096);
+    }
+    return table;
+}
+
+/// 3-way comb 标量乘: R = scalar * B
+/// 22 窗口 x (4 次倍增 + 1 次 madd) = 88 次倍增
+static void scalar_mult_comb3(ge_p3& R, const uint8_t scalar[32], const ge_precomp table[4096]) {
+    ge_p3_0(&R);
+    for (int wi = 21; wi >= 0; --wi) {
+        for (int j = 0; j < 4; ++j) {
+            ge_p1p1 d;
+            ge_p3_dbl(&d, &R);
+            ge_p1p1_to_p3(&R, &d);
+        }
+        int w0 = extract_window4(scalar, 4 * wi);            // bits 0..87
+        int w1 = extract_window4(scalar + 11, 4 * wi);       // bits 88..175
+        int w2 = extract_window4_top(scalar, 176 + 4 * wi);  // bits 176..255
+        ge_p1p1 tmp;
+        ge_madd(&tmp, &R, &table[w0 * 256 + w1 * 16 + w2]);
+        ge_p1p1_to_p3(&R, &tmp);
+    }
+}
+
 /// 双标量乘（Strauss-Shamir 窗口化）：R = s1*P1 + s2*P2
 /// 两标量同时扫描共享倍点链，64 窗口 × (4 倍点 + 2 查表加)
 static void double_scalar_mult(ge_p3& R,
@@ -642,6 +925,42 @@ static void double_scalar_mult(ge_p3& R,
         int w2 = extract_window4(s2, 4 * wi);
         ge_p1p1 tmp;
         ge_add(&tmp, &R, &t1[w1]);
+        ge_p1p1_to_p3(&R, &tmp);
+        ge_add(&tmp, &R, &t2[w2]);
+        ge_p1p1_to_p3(&R, &tmp);
+    }
+}
+
+/// 固定基点 B 的 4-bit 仿射表 (16 项, 一次性构建): table[i] = i*B
+static const ge_precomp* basepoint_table16_precomp() {
+    static ge_precomp table[16];
+    static bool init = false;
+    if (!init) {
+        init = true;
+        ge_p3 p3[16];
+        point_table_build(p3, *ge_get_basepoint());
+        for (int i = 0; i < 16; ++i)
+            ge_p3_to_precomp(&table[i], &p3[i]);
+    }
+    return table;
+}
+
+/// 双标量乘 (Strauss-Shamir): R = s1*P1 + s2*P2
+/// P1 用仿射 precomp (ge_madd, 省一次 fe_mul), P2 用 ge_p3 表
+static void double_scalar_mult_mixed(ge_p3& R,
+                                     const uint8_t s1[32], const ge_precomp t1[16],
+                                     const uint8_t s2[32], const ge_p3 t2[16]) {
+    ge_p3_0(&R);
+    for (int wi = 63; wi >= 0; --wi) {
+        for (int j = 0; j < 4; ++j) {
+            ge_p1p1 d;
+            ge_p3_dbl(&d, &R);
+            ge_p1p1_to_p3(&R, &d);
+        }
+        int w1 = extract_window4(s1, 4 * wi);
+        int w2 = extract_window4(s2, 4 * wi);
+        ge_p1p1 tmp;
+        ge_madd(&tmp, &R, &t1[w1]);
         ge_p1p1_to_p3(&R, &tmp);
         ge_add(&tmp, &R, &t2[w2]);
         ge_p1p1_to_p3(&R, &tmp);
@@ -665,7 +984,7 @@ void ed25519_keygen(uint8_t pub[32], uint8_t priv[64]) {
     h[31] &= 127;
     h[31] |= 64;
     ge_p3 A;
-    scalar_mult_windows8_precomp(A, h, basepoint_table8_precomp());
+    scalar_mult_comb3(A, h, basepoint_table_comb3());
     ge_tobytes(pub, &A);
     memcpy(priv + 32, pub, 32);
 }
@@ -691,7 +1010,7 @@ void ed25519_sign(const uint8_t priv[64], const uint8_t* msg, size_t msg_len, ui
     uint8_t r_scalar[32];
     memcpy(r_scalar, r_hash, 32);
     ge_p3 R;
-    scalar_mult_windows8_precomp(R, r_scalar, basepoint_table8_precomp());
+    scalar_mult_comb3(R, r_scalar, basepoint_table_comb3());
     ge_tobytes(sig, &R);
     sha512_init(&ctx);
     sha512_update(&ctx, sig, 32);
@@ -745,7 +1064,7 @@ bool ed25519_verify(const uint8_t pub[32], const uint8_t* msg, size_t msg_len, c
     ge_p3 A_table[16];
     point_table_build(A_table, A);
     ge_p3 T;
-    double_scalar_mult(T, sig + 32, basepoint_table(), k_neg, A_table);
+    double_scalar_mult_mixed(T, sig + 32, basepoint_table16_precomp(), k_neg, A_table);
 
     // 投影坐标相等性检查：T == R ⇔ (T.X*R.Z==R.X*T.Z) && (T.Y*R.Z==R.Y*T.Z)
     fe lhs_x, rhs_x, lhs_y, rhs_y;

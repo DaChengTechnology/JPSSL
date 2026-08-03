@@ -52,9 +52,18 @@ else()
     target_link_libraries(bench_cipher_suites PRIVATE jpssl_cpu OpenSSL::Crypto)
 endif()
 
+if(OpenSSL_FOUND)
+    add_executable(bench_ed25519_ossl bench_ed25519_ossl.cpp)
+    target_include_directories(bench_ed25519_ossl PRIVATE ${BENCH_INCLUDE_DIR} ${BENCH_SRC_DIR})
+    target_link_libraries(bench_ed25519_ossl PRIVATE jpssl_cpu OpenSSL::Crypto)
+endif()
+
 # ── CTest 注册 ──────────────────────────────────────────────────────────
 add_test(NAME bench_rsa_cpu_gpu    COMMAND bench_rsa_cpu_gpu)
 add_test(NAME bench_rsa_gpu        COMMAND bench_rsa_gpu)
 add_test(NAME bench_sha512         COMMAND bench_sha512)
 add_test(NAME bench_hardware_accel COMMAND bench_hardware_accel)
 add_test(NAME bench_cipher_suites  COMMAND bench_cipher_suites)
+if(TARGET bench_ed25519_ossl)
+    add_test(NAME bench_ed25519_ossl COMMAND bench_ed25519_ossl)
+endif()

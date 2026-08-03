@@ -142,6 +142,7 @@ set_property(SOURCE src/rsa.cpp APPEND PROPERTY OBJECT_DEPENDS
 if(MSVC)
     # Windows: MULX 手写汇编 Montgomery 乘法 (K=32/64)
     list(APPEND CPU_SOURCES src/rsa_mont_asm_win.asm)
+    list(APPEND CPU_SOURCES src/fe51_mul_adx.asm)
 endif()
 
 add_library(jpssl_cpu STATIC ${CPU_SOURCES})
@@ -149,6 +150,10 @@ add_library(jpssl_cpu_shared SHARED ${CPU_SOURCES})
 if(WIN32)
     # Windows: 共享库的导入库 (jpssl_cpu.lib) 与静态库同名冲突，静态库改名
     set_target_properties(jpssl_cpu PROPERTIES OUTPUT_NAME jpssl_cpu_static)
+endif()
+if(MSVC)
+    target_compile_definitions(jpssl_cpu PRIVATE JP_HAVE_ADX_ASM)
+    target_compile_definitions(jpssl_cpu_shared PRIVATE JP_HAVE_ADX_ASM)
 endif()
 target_include_directories(jpssl_cpu PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
