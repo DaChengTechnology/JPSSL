@@ -21,6 +21,7 @@
 #include <intrin.h>
 #if defined(JP_HAVE_ADX_ASM)
 extern "C" void fe51_mul_adx(uint64_t r[5], const uint64_t a[5], const uint64_t b[5]);
+extern "C" void fe51_sq_adx(uint64_t r[5], const uint64_t a[5]);
 #endif
 #endif
 
@@ -308,6 +309,17 @@ inline void fe51_mul(fe51 r, const fe51 a, const fe51 b) {
 
 /// r = a^2 (mod p)锛堝绉版€у噺灏?25 涓?5 涓箻绉級
 inline void fe51_sq(fe51 r, const fe51 a) {
+#if defined(JP_HAVE_ADX_ASM)
+    static const int adx_ok = [] {
+        int regs[4];
+        __cpuidex(regs, 7, 0);
+        return ((regs[1] >> 8) & 1) && ((regs[1] >> 19) & 1);  // BMI2 && ADX
+    }();
+    if (adx_ok) {
+        fe51_sq_adx(r, a);
+        return;
+    }
+#endif
     const uint64_t a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3], a4 = a[4];
     uint64_t lo[9] = {}, hi[9] = {};
 

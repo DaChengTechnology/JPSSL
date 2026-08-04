@@ -144,6 +144,7 @@ if(MSVC)
     # Windows: MULX 手写汇编 Montgomery 乘法 (K=32/64)
     list(APPEND CPU_SOURCES src/rsa_mont_asm_win.asm)
     list(APPEND CPU_SOURCES src/fe51_mul_adx.asm)
+    list(APPEND CPU_SOURCES src/fe51_sq_adx.asm)
 endif()
 
 add_library(jpssl_cpu STATIC ${CPU_SOURCES})

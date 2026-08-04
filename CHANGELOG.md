@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.9.3] — 2026-08-01
+## [0.9.3] — 2026-08-04
 
 ### Added
 
@@ -30,6 +30,30 @@
 - **RSA 卡死根因修复（MSVC 优化引入的回归）**：
   - `mont_mul` 优化分支的 `_umul128` 参数颠倒（`hi=_umul128(...,&lo)`：返回值是低 64 位、指针输出高 64 位）→ Montgomery 数学完全错误 → `bn_is_prime` 对素数候选卡死（`bn_modpow(2,153,613)` 曾 150s 不返回）→ `rsa_keygen` >97s → `test_tls` 卡在 RSA 证书测试。已改为 `lo=_umul128(...,&hi)`；另修复进位链 ca 权重与 cf1/cf2 双进位传播。
   - `bn_modinv` 重写：原除法版欧几里得 or_/rc 角色颠倒（除法方向反、0.00s 返回错误结果），二进制扩展欧几里得又要求模数 m 为奇数（RSA 的 phi=(p-1)(q-1) 为偶数，÷2 需 2 可逆故失效）→ 改为标准扩展欧几里得除法版（r0=m,r1=a，系数 `(s0-q·s1) mod m` 经 `bn_mulmod` 取模更新，无 BN 容器截断、对任意 m 有效）。修复后 RSA 2048 往返 sign/verify 全部正确。
+
+### Changed
+
+#### RSA 性能优化（OpenSSL FIOS 移植 + keygen 兜底）
+- **RSA Montgomery 乘法移植 OpenSSL FIOS**：`src/rsa_mont_asm.cpp`/`src/rsa_mont_asm_win.asm` 实现 4 路展开 ADCX/ADOX 的 FIOS Montgomery 乘法，Windows 走手写 MASM（MULX 加速，K=32/64），Linux 走 GCC 内联汇编；加密/解密/批量运算全部接入。运行时不支持 BMI2/ADX 的 CPU 自动回退到标量 `_umul128` 实现，CPUID 检测结果进程内缓存。
+- **CRT 半尺寸汇编加速**：CRT 私钥解密的 p/q 模幂改用半尺寸 Montgomery 乘法 `mont_mul_half_`（只处理前 K/2 个 limb），MASM 宏生成双实例 + GCC 动态 HK 单实例，核心吞吐提升约 1.3–1.45×。
+- **CRT 解密默认双线程 OpenMP**：`rsa_decrypt`/`rsa_crt_decrypt` 的两路独立模幂 m1/m2 用 `#pragma omp parallel sections num_threads(2)` 并行（`-DJP_ENABLE_OPENMP=OFF` 或非 OpenMP 编译器自动回退串行），2048/4096 解密实测提速 1.5–1.7×。
+- **RSA keygen 素数预算兜底**：素数搜索预算 100ms（2048/4096 keygen 统一），超时即从预制素数表（`src/rsa_prebuilt_primes_data.inc`，1024 位×50 对 + 2048 位×50 对，MR 已验证）随机取一组完成 keygen，保证 keygen 永不因素数搜索卡死；预制素数公开、仅作测试/兜底，不用于生产密钥。
+
+#### Ed25519 性能优化
+- 新增 `src/fe51_mul_adx.asm`：radix-2^51 域乘法/平方走 ADX 指令集汇编快速路径；对比 OpenSSL keygen 9.4× / sign 8× / verify 4.3×，全面反超。
+- 新增 OpenSSL 对比基准 `benchmarks/bench_ed25519_ossl.cpp`。
+
+#### X25519 性能优化
+- 新增 `src/fe51_sq_adx.asm`：域平方专用 ADX 汇编（15 次 MULX 利用对称性，非对角项翻倍），`fe51_sq` 运行时按 BMI2+ADX 分派。
+- 梯形改用无进位减法 `ladder_sub`（输出 limb < 2^53 直接作 mul/sq 输入），并将 AA 平方原地化消除每轮一次 `fe51_copy`。
+- 实测（Raptor Lake，无 AVX512）：X25519 标量乘 47.0µs → 39.6µs（+15.8%），ECDH 吞吐 1.15× OpenSSL EVP derive 路径；RFC 7748 向量、30 万组随机域运算、6000+ 组 OpenSSL 对拍全部通过。
+
+#### Poly1305 AVX2 向量化
+- 新增 `src/poly1305_avx2.cpp`（4 块并行，26-bit 肢体），`chacha20_poly1305` 运行时分派接入。
+
+#### Ed448 / X448 性能优化与 SIMD 向量化
+- 字段运算改用 u64 原语 + 专用平方 + 窗口化求逆，标量 mod-L 折叠，修复加法/倍点/乘法进位 bug；对比 OpenSSL：keygen 5.7× / sign 6× / verify 2.3× / x448 1.9×，新增基准 `benchmarks/bench_ed448_x448_ossl.cpp`。
+- 新增 radix-2^28 的 4/8 路 SIMD 字段层 `src/fe_448_simd.hpp`，向量化批量验签与 X448 批量阶梯；新增 `x448_scalar_mult_batch` API（AVX512=8 路 / AVX2=4 路 / 标量回退）及测试 `tests/test_x448_batch.cpp`，X448 每签提速约 24%。
 
 ### 验证
 - 本机 VS 2026 Build Tools（MSVC 19.51）+ CMake/Ninja 全量构建通过（166 目标，含静态/动态库、3 个命令行工具、38 个测试 exe）。
