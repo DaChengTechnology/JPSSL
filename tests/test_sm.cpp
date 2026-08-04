@@ -2,6 +2,7 @@
 #include "sm2.hpp"
 #include "sm3.hpp"
 #include "sm4.hpp"
+#include "sm4_gcm.hpp"
 #include <openssl/evp.h>
 #include <openssl/ec.h>
 #include <openssl/obj_mac.h>
@@ -233,6 +234,78 @@ static void test_sm4() {
     std::printf("  (all SM4 ECB sizes 1-64 passed)\n");
 }
 
+// SM4-GCM vs OpenSSL cross-check (covers the fast GHASH path)
+static void test_sm4_gcm_ossl() {
+    std::printf("\n=== SM4-GCM vs OpenSSL ===\n");
+
+    EVP_CIPHER* ossl_gcm = EVP_CIPHER_fetch(nullptr, "SM4-GCM", nullptr);
+    if (!ossl_gcm) {
+        std::printf("  SKIP: OpenSSL provider has no SM4-GCM\n");
+        return;
+    }
+
+    uint8_t key[16] = {0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,
+                       0xfe,0xdc,0xba,0x98,0x76,0x54,0x32,0x10};
+    jpssl::sm4_ctx ctx;
+    jpssl::sm4_init(&ctx, key);
+
+    const uint8_t aad_fixed[] = {0xaa,0xbb,0xcc,0xdd,0xee,0xff,0x11,0x22,0x33,0x44};
+    size_t pt_lens[] = {0, 1, 15, 16, 17, 31, 1000, 65536};
+    size_t iv_lens[] = {12, 8};
+
+    for (size_t len : pt_lens) {
+        std::vector<uint8_t> plain(len);
+        for (size_t i = 0; i < len; ++i) plain[i] = (uint8_t)(i * 7 + 3);
+
+        for (size_t iv_len : iv_lens) {
+            std::vector<uint8_t> iv(iv_len);
+            for (size_t i = 0; i < iv_len; ++i) iv[i] = (uint8_t)(i + 1);
+            std::vector<uint8_t> aad(aad_fixed, aad_fixed + sizeof(aad_fixed));
+            if (len == 0) aad.clear();
+
+            // jpssl
+            std::vector<uint8_t> jp_ct;
+            uint8_t jp_tag[16];
+            jpssl::sm4_gcm_encrypt(&ctx, iv.data(), iv_len,
+                                   std::span<const uint8_t>(plain),
+                                   std::span<const uint8_t>(aad),
+                                   jp_ct, jp_tag, 16);
+
+            // OpenSSL
+            std::vector<uint8_t> ossl_ct(len + 16);
+            uint8_t ossl_tag[16];
+            EVP_CIPHER_CTX* e = EVP_CIPHER_CTX_new();
+            EVP_EncryptInit_ex(e, ossl_gcm, nullptr, nullptr, nullptr);
+            EVP_CIPHER_CTX_ctrl(e, EVP_CTRL_GCM_SET_IVLEN, (int)iv_len, nullptr);
+            EVP_EncryptInit_ex(e, nullptr, nullptr, key, iv.data());
+            int l1 = 0, l2 = 0;
+            // AAD must be supplied before the plaintext for GCM.
+            if (!aad.empty()) EVP_EncryptUpdate(e, nullptr, &l1, aad.data(), (int)aad.size());
+            if (len) EVP_EncryptUpdate(e, ossl_ct.data(), &l1, plain.data(), (int)len);
+            EVP_EncryptFinal_ex(e, ossl_ct.data() + l1, &l2);
+            EVP_CIPHER_CTX_ctrl(e, EVP_CTRL_GCM_GET_TAG, 16, ossl_tag);
+            EVP_CIPHER_CTX_free(e);
+
+            std::string label = "SM4-GCM len=" + std::to_string(len) +
+                                " iv=" + std::to_string(iv_len) + " vs OpenSSL";
+            ASSERT(jp_ct.size() == len &&
+                   std::memcmp(jp_ct.data(), ossl_ct.data(), len) == 0 &&
+                   std::memcmp(jp_tag, ossl_tag, 16) == 0,
+                   label.c_str());
+
+            // jpssl decrypts OpenSSL ciphertext
+            std::vector<uint8_t> pt2;
+            bool dec = jpssl::sm4_gcm_decrypt(&ctx, iv.data(), iv_len,
+                                              std::span<const uint8_t>(ossl_ct.data(), len),
+                                              std::span<const uint8_t>(aad),
+                                              ossl_tag, 16, pt2);
+            ASSERT(dec && pt2 == plain, (label + " decrypt").c_str());
+        }
+    }
+
+    EVP_CIPHER_free(ossl_gcm);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  SM2 测试（与 OpenSSL 对比）
 // ═══════════════════════════════════════════════════════════════════════
@@ -380,6 +453,7 @@ int main() {
 
     test_sm3();
     test_sm4();
+    test_sm4_gcm_ossl();
     test_sm2();
 
     std::printf("\n=== ALL TESTS PASSED ===\n");

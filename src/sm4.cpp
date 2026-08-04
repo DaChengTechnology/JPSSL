@@ -11,7 +11,7 @@ namespace jpssl {
 
 // ── S-Box（256 字节） ────────────────────────────────────────────────────
 
-static const uint8_t SM4_SBOX[256] = {
+static constexpr uint8_t SM4_SBOX[256] = {
     0xd6,0x90,0xe9,0xfe,0xcc,0xe1,0x3d,0xb7,0x16,0xb6,0x14,0xc2,0x28,0xfb,0x2c,0x05,
     0x2b,0x67,0x9a,0x76,0x2a,0xbe,0x04,0xc3,0xaa,0x44,0x13,0x26,0x49,0x86,0x06,0x99,
     0x9c,0x42,0x50,0xf4,0x91,0xef,0x98,0x7a,0x33,0x54,0x0b,0x43,0xed,0xcf,0xac,0x62,
@@ -49,12 +49,12 @@ static const uint32_t CK[32] = {
 
 // ── 基本操作 ────────────────────────────────────────────────────────────
 
-static inline uint32_t ROTL(uint32_t x, int n) {
+static constexpr uint32_t ROTL(uint32_t x, int n) {
     return (x << n) | (x >> (32 - n));
 }
 
 // τ: 对 32 位字的每个字节应用 S-Box
-static uint32_t sm4_tau(uint32_t a) {
+static constexpr uint32_t sm4_tau(uint32_t a) {
     return ((uint32_t)SM4_SBOX[(a >> 24) & 0xFF] << 24)
          | ((uint32_t)SM4_SBOX[(a >> 16) & 0xFF] << 16)
          | ((uint32_t)SM4_SBOX[(a >>  8) & 0xFF] <<  8)
@@ -62,23 +62,41 @@ static uint32_t sm4_tau(uint32_t a) {
 }
 
 // L(B): 线性变换（加密/解密用）
-static uint32_t sm4_L(uint32_t b) {
+static constexpr uint32_t sm4_L(uint32_t b) {
     return b ^ ROTL(b, 2) ^ ROTL(b, 10) ^ ROTL(b, 18) ^ ROTL(b, 24);
 }
 
 // L'(B): 线性变换（密钥扩展用）
-static uint32_t sm4_Lp(uint32_t b) {
+static constexpr uint32_t sm4_Lp(uint32_t b) {
     return b ^ ROTL(b, 13) ^ ROTL(b, 23);
-}
-
-// T(A) = L(τ(A))
-static uint32_t sm4_T(uint32_t a) {
-    return sm4_L(sm4_tau(a));
 }
 
 // T'(A) = L'(τ(A))
 static uint32_t sm4_Tp(uint32_t a) {
     return sm4_Lp(sm4_tau(a));
+}
+
+// ── T 表：S-box 与 L 线性变换合并（加密/解密共用）──
+//   T(a) = L(τ(a)) = TE0[a>>24] ^ TE1[(a>>16)&0xff] ^ TE2[(a>>8)&0xff] ^ TE3[a&0xff]
+struct Sm4TBox {
+    uint32_t te0[256], te1[256], te2[256], te3[256];
+    constexpr Sm4TBox() : te0{}, te1{}, te2{}, te3{} {
+        for (int i = 0; i < 256; ++i) {
+            const uint32_t s = SM4_SBOX[i];
+            te0[i] = sm4_L(s << 24);
+            te1[i] = sm4_L(s << 16);
+            te2[i] = sm4_L(s <<  8);
+            te3[i] = sm4_L(s);
+        }
+    }
+};
+static constexpr Sm4TBox SM4_TBOX{};
+
+static inline uint32_t sm4_TT(uint32_t a) {
+    return SM4_TBOX.te0[(a >> 24) & 0xFF]
+         ^ SM4_TBOX.te1[(a >> 16) & 0xFF]
+         ^ SM4_TBOX.te2[(a >>  8) & 0xFF]
+         ^ SM4_TBOX.te3[a & 0xFF];
 }
 
 // ── 大端读写 ────────────────────────────────────────────────────────────
@@ -102,11 +120,6 @@ static void store_be32_x4(uint8_t out[SM4_BLOCK_SIZE], const uint32_t x[4]) {
 }
 
 // ── 轮函数：F(X0, X1, X2, X3, rk) = X0 ⊕ T(X1 ⊕ X2 ⊕ X3 ⊕ rk) ───────────
-
-static inline uint32_t sm4_F(uint32_t x0, uint32_t x1, uint32_t x2, uint32_t x3,
-                              uint32_t rk) {
-    return x0 ^ sm4_T(x1 ^ x2 ^ x3 ^ rk);
-}
 
 // ── 密钥扩展 ────────────────────────────────────────────────────────────
 
@@ -134,15 +147,17 @@ void sm4_init(sm4_ctx* ctx, const uint8_t key[SM4_KEY_SIZE]) {
 // 核心变换（加密：正向轮密钥；解密：反向轮密钥）
 static void sm4_transform(const uint32_t rk[32], const uint8_t in[SM4_BLOCK_SIZE],
                            uint8_t out[SM4_BLOCK_SIZE]) {
-    uint32_t x[36];  // X_0..X_35
-    load_be32_x4(x, in);  // X_0, X_1, X_2, X_3
+    uint32_t x[4];
+    load_be32_x4(x, in);
+    uint32_t x0 = x[0], x1 = x[1], x2 = x[2], x3 = x[3];
 
     for (int i = 0; i < 32; ++i) {
-        x[i + 4] = sm4_F(x[i], x[i+1], x[i+2], x[i+3], rk[i]);
+        uint32_t t = x0 ^ sm4_TT(x1 ^ x2 ^ x3 ^ rk[i]);
+        x0 = x1; x1 = x2; x2 = x3; x3 = t;
     }
 
     // 输出为反序：X_35, X_34, X_33, X_32
-    uint32_t y[4] = { x[35], x[34], x[33], x[32] };
+    uint32_t y[4] = { x3, x2, x1, x0 };
     store_be32_x4(out, y);
 }
 
@@ -151,13 +166,25 @@ void sm4_encrypt_block(const sm4_ctx* ctx, const uint8_t plain[SM4_BLOCK_SIZE],
     sm4_transform(ctx->rk, plain, cipher);
 }
 
+// 解密变换：直接以 rk[31-i] 索引反向轮密钥，避免每块复制 rk_rev 数组。
+static void sm4_transform_decrypt(const uint32_t rk[32], const uint8_t in[SM4_BLOCK_SIZE],
+                                  uint8_t out[SM4_BLOCK_SIZE]) {
+    uint32_t x[4];
+    load_be32_x4(x, in);
+    uint32_t x0 = x[0], x1 = x[1], x2 = x[2], x3 = x[3];
+
+    for (int i = 0; i < 32; ++i) {
+        uint32_t t = x0 ^ sm4_TT(x1 ^ x2 ^ x3 ^ rk[31 - i]);
+        x0 = x1; x1 = x2; x2 = x3; x3 = t;
+    }
+
+    uint32_t y[4] = { x3, x2, x1, x0 };
+    store_be32_x4(out, y);
+}
+
 void sm4_decrypt_block(const sm4_ctx* ctx, const uint8_t cipher[SM4_BLOCK_SIZE],
                         uint8_t plain[SM4_BLOCK_SIZE]) {
-    // 解密使用反向轮密钥
-    uint32_t rk_rev[32];
-    for (int i = 0; i < 32; ++i)
-        rk_rev[i] = ctx->rk[31 - i];
-    sm4_transform(rk_rev, cipher, plain);
+    sm4_transform_decrypt(ctx->rk, cipher, plain);
 }
 
 // ── CBC 模式 ────────────────────────────────────────────────────────────
