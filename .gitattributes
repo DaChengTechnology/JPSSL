@@ -1,0 +1,21 @@
+# 统一仓库文本格式：
+#   - 所有文本文件统一为 UTF-8（无 BOM）
+#   - git 索引统一存 LF，Windows 检出统一为 CRLF
+* text=auto eol=crlf
+
+# 二进制文件不参与换行/编码转换
+*.idx binary
+*.db binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.bmp binary
+*.exe binary
+*.dll binary
+*.lib binary
+*.obj binary
+*.o binary
+*.a binary
+*.pdb binary
