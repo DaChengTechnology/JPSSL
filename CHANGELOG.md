@@ -11,6 +11,7 @@
 - **CMake 平台分支**：MSVC 编译选项（`/utf-8`、`/bigobj`、`/EHsc`、`/FI`、`NOMINMAX`）、按源文件加 `/arch:AVX2|AVX512`、bcrypt 链接、`WINDOWS_EXPORT_ALL_SYMBOLS` DLL 导出、Windows 下静态库改名 `jpssl_cpu_static.lib`（避免与共享库导入库同名冲突）、MUSA 自动禁用、OpenSSL 改为可选（缺失时跳过对比测试）。
 - **测试/基准条件化**：OpenSSL 依赖的测试目标在无 OpenSSL 时整体跳过。
 - README 新增「Windows 构建（MSVC）」章节。
+- README：性能基准章节补全 `bench_sm4` / `bench_ed25519_ossl` / `bench_ed448_x448_ossl` / `bench_x25519_ossl` 目标并说明 GPU 段由 `JP_MUSA` 守卫（MUSA 关闭时自动跳过、基准仍可编译运行）；条件编译章节补充 `JP_ENABLE_BENCH`（默认 OFF）与 `JP_ENABLE_OPENMP`（默认 ON）选项。
 
 ### Fixed
 - **`jp_uint128::operator&=` 高位未清零**：64 位掩码与 128 位值按位与时 `hi` 残留，导致 radix-2^51 域运算（fe51_mul 进位链）在大输入下错误——表现为 X25519 密钥协商结果错误；已改为 `hi = 0`（与 GCC 原生 `__uint128_t` 语义一致）。
@@ -20,7 +21,7 @@
 - **`keygen_with_watchdog` 偶发锁死（跨平台既有 bug）**：原实现用 `std::thread` + `condition_variable` + `join()` 看门狗，在 Windows 上偶发 CPU≈0% 阻塞（watchdog 线程与 `work()`/`join()` 时序竞争）；且 `rsa_keygen_crt`/`rsa4096_keygen_crt` 的 `while (n.bit_length() < ...)` 重试循环不检查 abort，`find_prime` 因超时提前返回后 p/q 不变、重试永不达标而**死循环**。已重构为 deadline 时间预算（`find_prime` 每步检查 `steady_clock` 超时，超时置 `g_kgen_abort` 并返回），彻底移除看门狗线程；并在重试循环条件中加入 abort 检查。验证：2048/4096 CRT keygen 各 10/3 次全部快速完成且加解密往返正确。
 - **GCC 扩展 → 标准 C++**：`tls.cpp` 两处 VLA（`uint8_t buf[n+size()]`）改 `std::vector`；`tests/test_aes.cpp`、`test_ghash.cpp`、`test_ossl_verify.cpp` 零长度数组 `[0]` 改 `[1]`。
 - **`timegm` 平台化**：`x509.cpp` 在 Windows 用 `_mkgmtime`。
-- **MUSA GPU 测试守卫**：`src/main.cpp` 的 5 个 GPU 测试函数与 `tests/test_openssl_compare.cpp` 的 GPU 基准加 `#ifdef JP_MUSA`（MUSA 关闭时跳过，修复跨平台既有链接缺陷）；CMake MUSA 分支为 `jpssl-test` 补 `JP_MUSA` 宏定义。
+- **MUSA GPU 测试守卫（含 benchmarks）**：`src/main.cpp` 的 5 个 GPU 测试函数、`tests/test_openssl_compare.cpp` 的 GPU 基准，以及 `benchmarks/bench_sha512.cpp` / `benchmarks/bench_hardware_accel.cpp` 的 GPU 段（`musa_sha512_init/cleanup/compute/batch`、`musa_chacha20_pool_*`）均加 `#ifdef JP_MUSA` 守卫，MUSA 关闭时跳过对应 GPU 代码；修复 `JP_ENABLE_MUSA=OFF` 下 `bench_sha512`、`bench_hardware_accel` 的 MUSA 未定义引用而链接失败的跨平台既有缺陷；CMake MUSA 分支为 `jpssl-test`、`bench_sha512`、`bench_hardware_accel` 补 `JP_MUSA` 宏定义。
 - **X.509 证书验证修复（跨平台既有 bug，`test_x509` 从 53/54 修复到 54/54 全过）**：
   - `verify_signature` 改用 `from_der` 保存的原始 `tbs_raw`（与签名时字节一致），消除 `to_der()` 重编码导致的 TBS 差异（此前 DER 往返证书签名验证失败，影响 `test_x509` 的 TLS 自签名项与 `test_tls_sm` 握手）。
   - `encode_spki` 的 ECDSA/SM2 公钥从错误的 `OCTET STRING` 改为标准的 `BIT STRING`（此前 `from_der` 因要求 BIT STRING 而解析失败）。

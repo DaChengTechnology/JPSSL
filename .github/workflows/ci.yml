@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    name: Build & test (x86 Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libssl-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+  # 仅验证 benchmarks/ 目标可正常编译（MUSA OFF 时 GPU 段由 JP_MUSA 守卫跳过）
+  bench:
+    name: Build benchmarks (x86 Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libssl-dev
+
+      - name: Configure (benchmarks)
+        run: cmake -S . -B build-bench -DCMAKE_BUILD_TYPE=Release -DJP_ENABLE_BENCH=ON
+
+      - name: Build benchmarks
+        run: cmake --build build-bench -j"$(nproc)"

@@ -236,6 +236,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
         # AES-CPU: 需要 PCLMULQDQ 指令（用于 GCM GHASH 加速）
         set_source_files_properties(src/aes_cpu.cpp PROPERTIES
             COMPILE_FLAGS "-mpclmul")
+        # SM4-GCM: GHASH 同样需要 PCLMULQDQ
+        set_source_files_properties(src/sm4_gcm.cpp PROPERTIES
+            COMPILE_FLAGS "-mpclmul")
         # AVX2 GCM: 需要 PCLMULQDQ 指令
         set_source_files_properties(src/aes_gcm_avx2.cpp PROPERTIES
             COMPILE_FLAGS "-mpclmul")
@@ -248,14 +251,20 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
         # SHA-256 SHA-NI: Intel SHA Extensions accelerated implementation
         set_source_files_properties(src/sha256_sha_ni.cpp PROPERTIES
             COMPILE_FLAGS "-msha")
+        # RSA Montgomery asm: 内联 asm 模板为 Intel 语法且含 "m" 内存操作数，
+        # 需 -masm=intel 使 GCC 生成与模板一致的 Intel 形式操作数文本
+        set_source_files_properties(src/rsa_mont_asm.cpp PROPERTIES
+            COMPILE_FLAGS "-masm=intel")
         # RSA batch AVX2: 4-wide Montgomery multiplication
         set_source_files_properties(src/rsa_batch_avx2.cpp PROPERTIES
             COMPILE_FLAGS "-mavx2")
         # RSA batch AVX-512: 8-wide Montgomery multiplication
         set_source_files_properties(src/rsa_batch_avx512.cpp PROPERTIES
             COMPILE_FLAGS "-mavx512f -mavx512vl")
-        # X25519: radix-2^51 域运算的 __uint128_t 乘法在 -madx 下
-        # 生成低效的 MULX/ADCX/ADOX 序列（实测慢 ~5%），覆盖为 -mno-adx
+        # X25519/Ed25519: 域乘/平方的 C++ 回退（fe51_mul_portable）在 -madx 下
+        # 生成的 __uint128_t MULX 序列实测慢 ~5%，故回退代码用 -mno-adx 编译。
+        # BMI2+ADX 快速路径是 fe_25519_r51.hpp 中的手写内联汇编（MULX/ADCX/ADOX
+        # 双进位链），运行时检测 CPU 特性后分派，不受 -mno-adx 影响。
         set_source_files_properties(
             src/x25519.cpp src/ed25519_r51.cpp PROPERTIES
             COMPILE_FLAGS "-mno-adx")

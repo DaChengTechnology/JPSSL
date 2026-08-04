@@ -289,6 +289,7 @@ static void bench_chacha20_paths() {
         TEST("ChaCha20-Poly1305 CPU round-trip", ok);
     }
 
+#ifdef JP_MUSA
     // ── MUSA GPU Pool ──
     {
         auto* pool = musa_chacha20_pool_create(key, nonce, DATA_SIZE);
@@ -308,6 +309,7 @@ static void bench_chacha20_paths() {
             std::printf("  [SKIP] GPU pool not available\n");
         }
     }
+#endif // JP_MUSA
 
     // ── OpenSSL ──
     {
@@ -457,6 +459,7 @@ static void bench_sha512() {
     std::printf("  %-12s %9.3f ms  %8.3f GB/s  %.2fx vs CPU\n",
                 "OpenSSL", ossl_ms, to_gbps(LEN, ossl_ms), cpu_ms / ossl_ms);
 
+#ifdef JP_MUSA
     // ── GPU batch ──
     std::printf("\n  ── SHA-512 GPU batch ──\n");
     musa_sha512_init();
@@ -482,6 +485,7 @@ static void bench_sha512() {
     });
     std::printf("  GPU single 128B:   %.3f μs/hash\n", gpu_single_ms * 1000.0 / 1000);
     musa_sha512_cleanup();
+#endif // JP_MUSA
 
     double cpu_128b_per_op = (cpu_ms / REPEATS) * (128.0 / LEN) * 1000; // μs for 128B
     std::printf("  CPU 128B:          ~%.3f μs/hash\n", cpu_128b_per_op);

@@ -17,12 +17,488 @@
 #include <cstdint>
 #include <cstring>
 
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__)) && !defined(_MSC_VER)
+#include <cpuid.h>   // fe51_adx_ok(): __get_cpuid_count
+#endif
+
 #if defined(_MSC_VER) && !defined(__clang__)
 #include <intrin.h>
 #if defined(JP_HAVE_ADX_ASM)
 extern "C" void fe51_mul_adx(uint64_t r[5], const uint64_t a[5], const uint64_t b[5]);
 extern "C" void fe51_sq_adx(uint64_t r[5], const uint64_t a[5]);
 #endif
+#elif defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__)) && !defined(JP_NO_FE51_ADX_ASM)
+
+// ── GCC/Clang x86-64: MULX + ADCX/ADOX 双进位链内联汇编 ────────────────
+// 与 MSVC 的 fe51_mul_adx.asm / fe51_sq_adx.asm 逐指令等价。
+//   - MULX (BMI2): 25 次乘法 (sq 用对称性减到 15), 不污染标志位
+//   - ADCX (CF 链) / ADOX (OF 链): 偶数列与奇数列两条进位链交错, 提升 ILP
+//   - 输入 limb 允许 [0, 2^53); 输出每个 limb < 2^51 + eps (与 portable 一致)
+//
+// noinline 是必要的: 本函数 clobber 11 个通用寄存器, 若内联进 ladder
+// 调用点, 每次调用都要做全量 save/restore, 反而得不偿失。
+// 函数只读 a/b、通过 r 写回内存, 操作数 %0/%1/%2 由编译器分配到
+// 非 clobber 寄存器 (rcx/rsi/rdi/r14), 内部硬编码寄存器全部列入 clobber。
+__attribute__((noinline))
+static void fe51_mul_adx(uint64_t r[5], const uint64_t a[5], const uint64_t b[5]) {
+    __asm__ __volatile__(
+        "subq    $160, %%rsp\n\t"
+
+        // ---- 列对 (t0, t1): t0 = a0*b0 ; t1 = a0*b1 + a1*b0 ----
+        "movq    (%1), %%rdx\n\t"
+        "mulxq   (%2), %%r9, %%r8\n\t"
+        "mulxq   8(%2), %%r11, %%r10\n\t"
+        "movq    8(%1), %%rdx\n\t"
+        "mulxq   (%2), %%rbp, %%rbx\n\t"
+        "xorq    %%rax, %%rax\n\t"
+        "adoxq   %%rbp, %%r11\n\t"
+        "adoxq   %%rbx, %%r10\n\t"
+        "movq    %%r9, 0(%%rsp)\n\t"
+        "movq    %%r8, 8(%%rsp)\n\t"
+        "movq    %%r11, 16(%%rsp)\n\t"
+        "movq    %%r10, 24(%%rsp)\n\t"
+
+        // ---- 列对 (t2, t3) ----
+        "movq    (%1), %%rdx\n\t"
+        "mulxq   16(%2), %%r9, %%r8\n\t"
+        "mulxq   24(%2), %%r11, %%r10\n\t"
+        "xorq    %%rax, %%rax\n\t"
+        "movq    8(%1), %%rdx\n\t"
+        "mulxq   8(%2), %%r13, %%r12\n\t"
+        "adcxq   %%r13, %%r9\n\t"
+        "mulxq   16(%2), %%rax, %%r15\n\t"
+        "adoxq   %%rax, %%r11\n\t"
+        "adcxq   %%r12, %%r8\n\t"
+        "adoxq   %%r15, %%r10\n\t"
+        "movq    16(%1), %%rdx\n\t"
+        "mulxq   (%2), %%r13, %%r12\n\t"
+        "adcxq   %%r13, %%r9\n\t"
+        "mulxq   8(%2), %%rax, %%r15\n\t"
+        "adoxq   %%rax, %%r11\n\t"
+        "adcxq   %%r12, %%r8\n\t"
+        "adoxq   %%r15, %%r10\n\t"
+        "movq    24(%1), %%rdx\n\t"
+        "mulxq   (%2), %%rax, %%r15\n\t"
+        "adoxq   %%rax, %%r11\n\t"
+        "adoxq   %%r15, %%r10\n\t"
+        "movq    %%r9, 32(%%rsp)\n\t"
+        "movq    %%r8, 40(%%rsp)\n\t"
+        "movq    %%r11, 48(%%rsp)\n\t"
+        "movq    %%r10, 56(%%rsp)\n\t"
+
+        // ---- 列对 (t4, t5) ----
+        "movq    (%1), %%rdx\n\t"
+        "mulxq   32(%2), %%r9, %%r8\n\t"
+        "xorq    %%rax, %%rax\n\t"
+        "movq    8(%1), %%rdx\n\t"
+        "mulxq   32(%2), %%r11, %%r10\n\t"
+        "mulxq   24(%2), %%r13, %%r12\n\t"
+        "adcxq   %%r13, %%r9\n\t"
+        "adcxq   %%r12, %%r8\n\t"
+        "movq    16(%1), %%rdx\n\t"
+        "mulxq   24(%2), %%r13, %%r12\n\t"
+        "adoxq   %%r13, %%r11\n\t"
+        "adoxq   %%r12, %%r10\n\t"
+        "mulxq   16(%2), %%r13, %%r12\n\t"
+        "adcxq   %%r13, %%r9\n\t"
+        "adcxq   %%r12, %%r8\n\t"
+        "movq    24(%1), %%rdx\n\t"
+        "mulxq   16(%2), %%r13, %%r12\n\t"
+        "adoxq   %%r13, %%r11\n\t"
+        "adoxq   %%r12, %%r10\n\t"
+        "mulxq   8(%2), %%r13, %%r12\n\t"
+        "adcxq   %%r13, %%r9\n\t"
+        "adcxq   %%r12, %%r8\n\t"
+        "movq    32(%1), %%rdx\n\t"
+        "mulxq   8(%2), %%r13, %%r12\n\t"
+        "adoxq   %%r13, %%r11\n\t"
+        "adoxq   %%r12, %%r10\n\t"
+        "mulxq   (%2), %%r13, %%r12\n\t"
+        "adcxq   %%r13, %%r9\n\t"
+        "adcxq   %%r12, %%r8\n\t"
+        "movq    %%r9, 64(%%rsp)\n\t"
+        "movq    %%r8, 72(%%rsp)\n\t"
+        "movq    %%r11, 80(%%rsp)\n\t"
+        "movq    %%r10, 88(%%rsp)\n\t"
+
+        // ---- 列对 (t6, t7) ----
+        "movq    16(%1), %%rdx\n\t"
+        "mulxq   32(%2), %%r9, %%r8\n\t"
+        "xorq    %%rax, %%rax\n\t"
+        "movq    24(%1), %%rdx\n\t"
+        "mulxq   32(%2), %%r11, %%r10\n\t"
+        "mulxq   24(%2), %%r13, %%r12\n\t"
+        "adcxq   %%r13, %%r9\n\t"
+        "adcxq   %%r12, %%r8\n\t"
+        "movq    32(%1), %%rdx\n\t"
+        "mulxq   24(%2), %%r13, %%r12\n\t"
+        "adoxq   %%r13, %%r11\n\t"
+        "adoxq   %%r12, %%r10\n\t"
+        "mulxq   16(%2), %%r13, %%r12\n\t"
+        "adcxq   %%r13, %%r9\n\t"
+        "adcxq   %%r12, %%r8\n\t"
+        "movq    %%r9, 96(%%rsp)\n\t"
+        "movq    %%r8, 104(%%rsp)\n\t"
+        "movq    %%r11, 112(%%rsp)\n\t"
+        "movq    %%r10, 120(%%rsp)\n\t"
+
+        // ---- t8 = a4*b4 ----
+        "movq    32(%1), %%rdx\n\t"
+        "mulxq   32(%2), %%r9, %%r8\n\t"
+        "movq    %%r9, 128(%%rsp)\n\t"
+        "movq    %%r8, 136(%%rsp)\n\t"
+
+        // ---- 折叠: t0 += 19*t5 ; t1 += 19*t6 ; t2 += 19*t7 ; t3 += 19*t8 ----
+        "movq    $19, %%rdx\n\t"
+        "mulxq   80(%%rsp), %%rbx, %%rbp\n\t"
+        "movq    88(%%rsp), %%rax\n\t"
+        "imulq   $19, %%rax, %%rax\n\t"
+        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rbx, 0(%%rsp)\n\t"
+        "adcq    %%rbp, 8(%%rsp)\n\t"
+
+        "movq    $19, %%rdx\n\t"
+        "mulxq   96(%%rsp), %%rbx, %%rbp\n\t"
+        "movq    104(%%rsp), %%rax\n\t"
+        "imulq   $19, %%rax, %%rax\n\t"
+        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rbx, 16(%%rsp)\n\t"
+        "adcq    %%rbp, 24(%%rsp)\n\t"
+
+        "movq    $19, %%rdx\n\t"
+        "mulxq   112(%%rsp), %%rbx, %%rbp\n\t"
+        "movq    120(%%rsp), %%rax\n\t"
+        "imulq   $19, %%rax, %%rax\n\t"
+        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rbx, 32(%%rsp)\n\t"
+        "adcq    %%rbp, 40(%%rsp)\n\t"
+
+        "movq    $19, %%rdx\n\t"
+        "mulxq   128(%%rsp), %%rbx, %%rbp\n\t"
+        "movq    136(%%rsp), %%rax\n\t"
+        "imulq   $19, %%rax, %%rax\n\t"
+        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rbx, 48(%%rsp)\n\t"
+        "adcq    %%rbp, 56(%%rsp)\n\t"
+
+        // ---- 51-bit 进位链 (t0_hi 直接从栈读, 避免占用额外寄存器) ----
+        "movq    0(%%rsp), %%rax\n\t"
+        "movq    16(%%rsp), %%r8\n\t"
+        "movq    24(%%rsp), %%r9\n\t"
+        "movq    32(%%rsp), %%r10\n\t"
+        "movq    40(%%rsp), %%r11\n\t"
+        "movq    48(%%rsp), %%rbx\n\t"
+        "movq    56(%%rsp), %%rbp\n\t"
+        "movq    64(%%rsp), %%r12\n\t"
+        "movq    72(%%rsp), %%r13\n\t"
+
+        // c = t0>>51; t0 &= MASK51; t1 += c
+        "movq    8(%%rsp), %%r15\n\t"
+        "shlq    $13, %%r15\n\t"
+        "movq    %%rax, %%rdx\n\t"
+        "shrq    $51, %%rdx\n\t"
+        "orq     %%r15, %%rdx\n\t"
+        "shlq    $13, %%rax\n\t"
+        "shrq    $13, %%rax\n\t"
+        "addq    %%rdx, %%r8\n\t"
+        "adcq    $0, %%r9\n\t"
+
+        // c = t1>>51; t1 &= MASK51; t2 += c
+        "movq    %%r9, %%r15\n\t"
+        "shlq    $13, %%r15\n\t"
+        "movq    %%r8, %%rdx\n\t"
+        "shrq    $51, %%rdx\n\t"
+        "orq     %%r15, %%rdx\n\t"
+        "shlq    $13, %%r8\n\t"
+        "shrq    $13, %%r8\n\t"
+        "xorq    %%r9, %%r9\n\t"
+        "addq    %%rdx, %%r10\n\t"
+        "adcq    $0, %%r11\n\t"
+
+        // c = t2>>51; t2 &= MASK51; t3 += c
+        "movq    %%r11, %%r15\n\t"
+        "shlq    $13, %%r15\n\t"
+        "movq    %%r10, %%rdx\n\t"
+        "shrq    $51, %%rdx\n\t"
+        "orq     %%r15, %%rdx\n\t"
+        "shlq    $13, %%r10\n\t"
+        "shrq    $13, %%r10\n\t"
+        "xorq    %%r11, %%r11\n\t"
+        "addq    %%rdx, %%rbx\n\t"
+        "adcq    $0, %%rbp\n\t"
+
+        // c = t3>>51; t3 &= MASK51; t4 += c
+        "movq    %%rbp, %%r15\n\t"
+        "shlq    $13, %%r15\n\t"
+        "movq    %%rbx, %%rdx\n\t"
+        "shrq    $51, %%rdx\n\t"
+        "orq     %%r15, %%rdx\n\t"
+        "shlq    $13, %%rbx\n\t"
+        "shrq    $13, %%rbx\n\t"
+        "xorq    %%rbp, %%rbp\n\t"
+        "addq    %%rdx, %%r12\n\t"
+        "adcq    $0, %%r13\n\t"
+
+        // c = t4>>51; t4 &= MASK51; t0 += c*19
+        "movq    %%r13, %%r15\n\t"
+        "shlq    $13, %%r15\n\t"
+        "movq    %%r12, %%rdx\n\t"
+        "shrq    $51, %%rdx\n\t"
+        "orq     %%r15, %%rdx\n\t"
+        "shlq    $13, %%r12\n\t"
+        "shrq    $13, %%r12\n\t"
+        "xorq    %%r13, %%r13\n\t"
+        "imulq   $19, %%rdx, %%rdx\n\t"
+        "addq    %%rdx, %%rax\n\t"
+        "sbbq    %%r15, %%r15\n\t"
+        "negq    %%r15\n\t"
+
+        // c = t0>>51; t0 &= MASK51; t1 += c
+        "shlq    $13, %%r15\n\t"
+        "movq    %%rax, %%rdx\n\t"
+        "shrq    $51, %%rdx\n\t"
+        "orq     %%r15, %%rdx\n\t"
+        "shlq    $13, %%rax\n\t"
+        "shrq    $13, %%rax\n\t"
+        "addq    %%rdx, %%r8\n\t"
+        "adcq    $0, %%r9\n\t"
+
+        // ---- 写回 r ----
+        "movq    %%rax, (%0)\n\t"
+        "movq    %%r8, 8(%0)\n\t"
+        "movq    %%r10, 16(%0)\n\t"
+        "movq    %%rbx, 24(%0)\n\t"
+        "movq    %%r12, 32(%0)\n\t"
+        "addq    $160, %%rsp\n\t"
+
+        :                        // 无输出操作数 (通过 %0 写内存)
+        : "r"(r), "r"(a), "r"(b)
+        : "memory", "cc",
+          "rax", "rbx", "rbp", "rdx",
+          "r8", "r9", "r10", "r11", "r12", "r13", "r15");
+}
+
+__attribute__((noinline))
+static void fe51_sq_adx(uint64_t r[5], const uint64_t a[5]) {
+    __asm__ __volatile__(
+        "subq    $160, %%rsp\n\t"
+
+        // ---- t0 = a0^2 ; t1 = 2*a0*a1 ----
+        "movq    (%1), %%rdx\n\t"
+        "mulxq   (%1), %%r9, %%r8\n\t"
+        "mulxq   8(%1), %%r11, %%r10\n\t"
+        "addq    %%r11, %%r11\n\t"
+        "adcq    %%r10, %%r10\n\t"
+        "movq    %%r9, 0(%%rsp)\n\t"
+        "movq    %%r8, 8(%%rsp)\n\t"
+        "movq    %%r11, 16(%%rsp)\n\t"
+        "movq    %%r10, 24(%%rsp)\n\t"
+
+        // ---- t2 = 2*a0*a2 + a1^2 ; t3 = 2*a0*a3 + 2*a1*a2 ----
+        "movq    (%1), %%rdx\n\t"
+        "mulxq   16(%1), %%r9, %%r8\n\t"
+        "addq    %%r9, %%r9\n\t"
+        "adcq    %%r8, %%r8\n\t"
+        "mulxq   24(%1), %%r11, %%r10\n\t"
+        "addq    %%r11, %%r11\n\t"
+        "adcq    %%r10, %%r10\n\t"
+        "movq    8(%1), %%rdx\n\t"
+        "mulxq   8(%1), %%r13, %%r12\n\t"
+        "mulxq   16(%1), %%rax, %%rbx\n\t"
+        "addq    %%rax, %%rax\n\t"
+        "adcq    %%rbx, %%rbx\n\t"
+        "xorq    %%r15, %%r15\n\t"
+        "adcxq   %%r13, %%r9\n\t"
+        "adcxq   %%r12, %%r8\n\t"
+        "adoxq   %%rax, %%r11\n\t"
+        "adoxq   %%rbx, %%r10\n\t"
+        "movq    %%r9, 32(%%rsp)\n\t"
+        "movq    %%r8, 40(%%rsp)\n\t"
+        "movq    %%r11, 48(%%rsp)\n\t"
+        "movq    %%r10, 56(%%rsp)\n\t"
+
+        // ---- t4 = 2*a0*a4 + 2*a1*a3 + a2^2 ; t5 = 2*a1*a4 + 2*a2*a3 ----
+        "movq    (%1), %%rdx\n\t"
+        "mulxq   32(%1), %%r9, %%r8\n\t"
+        "addq    %%r9, %%r9\n\t"
+        "adcq    %%r8, %%r8\n\t"
+        "movq    8(%1), %%rdx\n\t"
+        "mulxq   32(%1), %%r11, %%r10\n\t"
+        "addq    %%r11, %%r11\n\t"
+        "adcq    %%r10, %%r10\n\t"
+        "mulxq   24(%1), %%r13, %%r12\n\t"
+        "addq    %%r13, %%r13\n\t"
+        "adcq    %%r12, %%r12\n\t"
+        "movq    16(%1), %%rdx\n\t"
+        "mulxq   16(%1), %%rbp, %%rbx\n\t"
+        "mulxq   24(%1), %%rax, %%r15\n\t"
+        "addq    %%rax, %%rax\n\t"
+        "adcq    %%r15, %%r15\n\t"
+        "xorq    %%rdx, %%rdx\n\t"
+        "adcxq   %%r13, %%r9\n\t"
+        "adcxq   %%r12, %%r8\n\t"
+        "adcxq   %%rbp, %%r9\n\t"
+        "adcxq   %%rbx, %%r8\n\t"
+        "adoxq   %%rax, %%r11\n\t"
+        "adoxq   %%r15, %%r10\n\t"
+        "movq    %%r9, 64(%%rsp)\n\t"
+        "movq    %%r8, 72(%%rsp)\n\t"
+        "movq    %%r11, 80(%%rsp)\n\t"
+        "movq    %%r10, 88(%%rsp)\n\t"
+
+        // ---- t6 = 2*a2*a4 + a3^2 ; t7 = 2*a3*a4 ----
+        "movq    16(%1), %%rdx\n\t"
+        "mulxq   32(%1), %%r9, %%r8\n\t"
+        "addq    %%r9, %%r9\n\t"
+        "adcq    %%r8, %%r8\n\t"
+        "movq    24(%1), %%rdx\n\t"
+        "mulxq   32(%1), %%r11, %%r10\n\t"
+        "addq    %%r11, %%r11\n\t"
+        "adcq    %%r10, %%r10\n\t"
+        "mulxq   24(%1), %%r13, %%r12\n\t"
+        "xorq    %%r15, %%r15\n\t"
+        "adcxq   %%r13, %%r9\n\t"
+        "adcxq   %%r12, %%r8\n\t"
+        "movq    %%r9, 96(%%rsp)\n\t"
+        "movq    %%r8, 104(%%rsp)\n\t"
+        "movq    %%r11, 112(%%rsp)\n\t"
+        "movq    %%r10, 120(%%rsp)\n\t"
+
+        // ---- t8 = a4^2 ----
+        "movq    32(%1), %%rdx\n\t"
+        "mulxq   32(%1), %%r9, %%r8\n\t"
+        "movq    %%r9, 128(%%rsp)\n\t"
+        "movq    %%r8, 136(%%rsp)\n\t"
+
+        // ---- 折叠 (与 mul 完全一致) ----
+        "movq    $19, %%rdx\n\t"
+        "mulxq   80(%%rsp), %%rbx, %%rbp\n\t"
+        "movq    88(%%rsp), %%rax\n\t"
+        "imulq   $19, %%rax, %%rax\n\t"
+        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rbx, 0(%%rsp)\n\t"
+        "adcq    %%rbp, 8(%%rsp)\n\t"
+
+        "movq    $19, %%rdx\n\t"
+        "mulxq   96(%%rsp), %%rbx, %%rbp\n\t"
+        "movq    104(%%rsp), %%rax\n\t"
+        "imulq   $19, %%rax, %%rax\n\t"
+        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rbx, 16(%%rsp)\n\t"
+        "adcq    %%rbp, 24(%%rsp)\n\t"
+
+        "movq    $19, %%rdx\n\t"
+        "mulxq   112(%%rsp), %%rbx, %%rbp\n\t"
+        "movq    120(%%rsp), %%rax\n\t"
+        "imulq   $19, %%rax, %%rax\n\t"
+        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rbx, 32(%%rsp)\n\t"
+        "adcq    %%rbp, 40(%%rsp)\n\t"
+
+        "movq    $19, %%rdx\n\t"
+        "mulxq   128(%%rsp), %%rbx, %%rbp\n\t"
+        "movq    136(%%rsp), %%rax\n\t"
+        "imulq   $19, %%rax, %%rax\n\t"
+        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rbx, 48(%%rsp)\n\t"
+        "adcq    %%rbp, 56(%%rsp)\n\t"
+
+        // ---- 51-bit 进位链 ----
+        "movq    0(%%rsp), %%rax\n\t"
+        "movq    16(%%rsp), %%r8\n\t"
+        "movq    24(%%rsp), %%r9\n\t"
+        "movq    32(%%rsp), %%r10\n\t"
+        "movq    40(%%rsp), %%r11\n\t"
+        "movq    48(%%rsp), %%rbx\n\t"
+        "movq    56(%%rsp), %%rbp\n\t"
+        "movq    64(%%rsp), %%r12\n\t"
+        "movq    72(%%rsp), %%r13\n\t"
+
+        // c = t0>>51; t0 &= MASK51; t1 += c
+        "movq    8(%%rsp), %%r15\n\t"
+        "shlq    $13, %%r15\n\t"
+        "movq    %%rax, %%rdx\n\t"
+        "shrq    $51, %%rdx\n\t"
+        "orq     %%r15, %%rdx\n\t"
+        "shlq    $13, %%rax\n\t"
+        "shrq    $13, %%rax\n\t"
+        "addq    %%rdx, %%r8\n\t"
+        "adcq    $0, %%r9\n\t"
+
+        // c = t1>>51; t1 &= MASK51; t2 += c
+        "movq    %%r9, %%r15\n\t"
+        "shlq    $13, %%r15\n\t"
+        "movq    %%r8, %%rdx\n\t"
+        "shrq    $51, %%rdx\n\t"
+        "orq     %%r15, %%rdx\n\t"
+        "shlq    $13, %%r8\n\t"
+        "shrq    $13, %%r8\n\t"
+        "xorq    %%r9, %%r9\n\t"
+        "addq    %%rdx, %%r10\n\t"
+        "adcq    $0, %%r11\n\t"
+
+        // c = t2>>51; t2 &= MASK51; t3 += c
+        "movq    %%r11, %%r15\n\t"
+        "shlq    $13, %%r15\n\t"
+        "movq    %%r10, %%rdx\n\t"
+        "shrq    $51, %%rdx\n\t"
+        "orq     %%r15, %%rdx\n\t"
+        "shlq    $13, %%r10\n\t"
+        "shrq    $13, %%r10\n\t"
+        "xorq    %%r11, %%r11\n\t"
+        "addq    %%rdx, %%rbx\n\t"
+        "adcq    $0, %%rbp\n\t"
+
+        // c = t3>>51; t3 &= MASK51; t4 += c
+        "movq    %%rbp, %%r15\n\t"
+        "shlq    $13, %%r15\n\t"
+        "movq    %%rbx, %%rdx\n\t"
+        "shrq    $51, %%rdx\n\t"
+        "orq     %%r15, %%rdx\n\t"
+        "shlq    $13, %%rbx\n\t"
+        "shrq    $13, %%rbx\n\t"
+        "xorq    %%rbp, %%rbp\n\t"
+        "addq    %%rdx, %%r12\n\t"
+        "adcq    $0, %%r13\n\t"
+
+        // c = t4>>51; t4 &= MASK51; t0 += c*19
+        "movq    %%r13, %%r15\n\t"
+        "shlq    $13, %%r15\n\t"
+        "movq    %%r12, %%rdx\n\t"
+        "shrq    $51, %%rdx\n\t"
+        "orq     %%r15, %%rdx\n\t"
+        "shlq    $13, %%r12\n\t"
+        "shrq    $13, %%r12\n\t"
+        "xorq    %%r13, %%r13\n\t"
+        "imulq   $19, %%rdx, %%rdx\n\t"
+        "addq    %%rdx, %%rax\n\t"
+        "sbbq    %%r15, %%r15\n\t"
+        "negq    %%r15\n\t"
+
+        // c = t0>>51; t0 &= MASK51; t1 += c
+        "shlq    $13, %%r15\n\t"
+        "movq    %%rax, %%rdx\n\t"
+        "shrq    $51, %%rdx\n\t"
+        "orq     %%r15, %%rdx\n\t"
+        "shlq    $13, %%rax\n\t"
+        "shrq    $13, %%rax\n\t"
+        "addq    %%rdx, %%r8\n\t"
+        "adcq    $0, %%r9\n\t"
+
+        // ---- 写回 r ----
+        "movq    %%rax, (%0)\n\t"
+        "movq    %%r8, 8(%0)\n\t"
+        "movq    %%r10, 16(%0)\n\t"
+        "movq    %%rbx, 24(%0)\n\t"
+        "movq    %%r12, 32(%0)\n\t"
+        "addq    $160, %%rsp\n\t"
+
+        :
+        : "r"(r), "r"(a)
+        : "memory", "cc",
+          "rax", "rbx", "rbp", "rdx",
+          "r8", "r9", "r10", "r11", "r12", "r13", "r15");
+}
 #endif
 
 namespace jpssl { namespace x25519_r51 {
@@ -354,8 +830,34 @@ inline void fe51_sq(fe51 r, const fe51 a) {
 
 #else
 
-inline void fe51_mul(fe51 r, const fe51 a, const fe51 b) { fe51_mul_portable(r, a, b); }
-inline void fe51_sq(fe51 r, const fe51 a) { fe51_mul_portable(r, a, a); }
+// GCC/Clang（x86-64）：BMI2+ADX 可用时走手写内联汇编快速路径，
+// 否则回退 portable 实现。__builtin_cpu_supports 首次调用会自动
+// 执行 __builtin_cpu_init，无需显式初始化。
+// BMI2 (MULX) + ADX (ADCX/ADOX) 运行时检测。用 <cpuid.h> 的 __get_cpuid_count
+//（GCC 与 Clang 均提供的 GNU 扩展头），避免 clang 对 __builtin_cpu_supports
+// 特性字符串（如 "adx"）支持不全的问题。
+static inline bool fe51_adx_ok() {
+    unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+    if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx) == 0) return false;
+    return (ebx & (1u << 19)) != 0 &&   // ADX
+           (ebx & (1u <<  8)) != 0;     // BMI2
+}
+
+inline void fe51_mul(fe51 r, const fe51 a, const fe51 b) {
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__)) && !defined(JP_NO_FE51_ADX_ASM)
+    static const bool adx_ok = fe51_adx_ok();
+    if (adx_ok) { fe51_mul_adx(r, a, b); return; }
+#endif
+    fe51_mul_portable(r, a, b);
+}
+
+inline void fe51_sq(fe51 r, const fe51 a) {
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__)) && !defined(JP_NO_FE51_ADX_ASM)
+    static const bool adx_ok = fe51_adx_ok();
+    if (adx_ok) { fe51_sq_adx(r, a); return; }
+#endif
+    fe51_mul_portable(r, a, a);
+}
 
 #endif
 

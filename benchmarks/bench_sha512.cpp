@@ -57,6 +57,7 @@ static double bench_opt(const uint8_t* data, size_t len, int repeats) {
     return duration<double, std::milli>(t1 - t0).count() / repeats;
 }
 
+#ifdef JP_MUSA
 // GPU single block (≤128 bytes)
 static double bench_gpu_single(const uint8_t* data, size_t len, int repeats) {
     uint8_t digest[64];
@@ -77,6 +78,7 @@ static double bench_gpu_batch(const uint8_t* data, int num_msgs, int repeats) {
     auto t1 = high_resolution_clock::now();
     return duration<double, std::milli>(t1 - t0).count() / repeats;
 }
+#endif // JP_MUSA
 
 int main() {
     std::printf("╔══════════════════════════════════════════════════════════╗\n");
@@ -117,6 +119,7 @@ int main() {
     std::printf("\n── OPT (SSE4.1 SIMD) — not compiled (JP_AVX2=OFF) ──\n");
 #endif
 
+#ifdef JP_MUSA
     // ── GPU single-block + batch ──
     std::printf("\n── GPU (MUSA) ───────────────────────────────────────\n");
     musa_sha512_init();
@@ -148,6 +151,8 @@ int main() {
                      t.label, ms, mbps, us_per_op);
     }
 
+#endif // JP_MUSA
+
     // ── Speedup summary (before cleanup) ──
     std::printf("\n── Speedup vs CPU (1 MB streaming) ──────────────────\n");
     double cpu_1mb_ms = bench_cpu(data_1mb.data(), 1048576, 100);
@@ -157,14 +162,18 @@ int main() {
     std::printf("  OPT (1 MB):    %9.3f ms  (%.2fx)\n", opt_1mb_ms, cpu_1mb_ms / opt_1mb_ms);
 #endif
 
+#ifdef JP_MUSA
     double gpu_128b_ms = bench_gpu_single(data_1mb.data(), 128, 100000);
     std::printf("  GPU (128 B):   %9.3f μs  (per hash)\n", gpu_128b_ms * 1000);
 
     double gpu_batch_ms = bench_gpu_batch(data_batch.data(), 1000000, 1);
     double gpu_total_mb = 1000000.0 * 128.0 / (1024.0 * 1024.0);
     std::printf("  GPU batch:     %9.3f ms  (%.2f MB/s)\n", gpu_batch_ms, gpu_total_mb / (gpu_batch_ms / 1000.0));
+#endif // JP_MUSA
 
+#ifdef JP_MUSA
     musa_sha512_cleanup();
+#endif // JP_MUSA
     std::printf("\n");
     return 0;
 }

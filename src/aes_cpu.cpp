@@ -94,33 +94,13 @@ static void aesni_key_expansion_128(const uint8_t key[16], uint8_t rk_buf[176]) 
 }
 
 /// AES-NI 密钥扩展（AES-192）
+///
+/// 委托给软件 key_expansion（FIPS 197 标准字节实现）。原 intrinsic 版本存在缺陷：
+/// _mm_aeskeygenassist 的通道/Rcon 语义在本 GCC 环境与 SDM 不符（ch0 取自 63:32、
+/// Rcon 落在低字节），且循环只生成 rk[0..8]（缺 rk[9..12] 四轮），产生错误轮密钥。
+/// 密钥扩展仅在 init 时执行一次，软件实现无性能影响。
 static void aesni_key_expansion_192(const uint8_t key[24], uint8_t rk_buf[208]) {
-    __m128i* rk = (__m128i*)rk_buf;
-    rk[0] = _mm_loadu_si128((const __m128i*)key);
-    rk[1] = _mm_loadl_epi64((const __m128i*)(key + 16));
-    for (int i = 0; i < 8; ++i) {
-        __m128i t;
-        switch (i) {
-            case 0: t = _mm_aeskeygenassist_si128(rk[0], 0x01); break;
-            case 1: t = _mm_aeskeygenassist_si128(rk[1], 0x02); break;
-            case 2: t = _mm_aeskeygenassist_si128(rk[2], 0x04); break;
-            case 3: t = _mm_aeskeygenassist_si128(rk[3], 0x08); break;
-            case 4: t = _mm_aeskeygenassist_si128(rk[4], 0x10); break;
-            case 5: t = _mm_aeskeygenassist_si128(rk[5], 0x20); break;
-            case 6: t = _mm_aeskeygenassist_si128(rk[6], 0x40); break;
-            case 7: t = _mm_aeskeygenassist_si128(rk[7], 0x80); break;
-        }
-        t = _mm_shuffle_epi32(t, 0x55);
-        rk[i + 1] = _mm_xor_si128(rk[i + 1], _mm_slli_si128(rk[i + 1], 4));
-        rk[i + 1] = _mm_xor_si128(rk[i + 1], _mm_slli_si128(rk[i + 1], 4));
-        rk[i + 1] = _mm_xor_si128(rk[i + 1], _mm_slli_si128(rk[i + 1], 4));
-        rk[i + 1] = _mm_xor_si128(rk[i + 1], t);
-        if (i < 7) {
-            __m128i next = _mm_xor_si128(rk[i + 1], rk[i]);
-            rk[i + 2] = _mm_slli_si128(next, 8);
-            rk[i + 2] = _mm_xor_si128(rk[i + 2], _mm_srli_si128(next, 8));
-        }
-    }
+    key_expansion(key, AesKeySize::AES_192, rk_buf);
 }
 
 /// AES-NI 密钥扩展（AES-256）
@@ -304,7 +284,7 @@ void key_expansion(const uint8_t* key, AesKeySize ks, uint8_t* rk_buf) {
             rot_word(temp);
             sub_word(temp);
             temp[0] ^= RCON[i / nk];
-        } else if (nk > 6 && i % nk == 4) {
+        } else if (nk > 6 && i % nk == 4) {   // 仅 AES-256 (Nk=8) 才进入此分支 (FIPS 197 §5.2)
             sub_word(temp);
         }
 

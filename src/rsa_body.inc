@@ -160,8 +160,13 @@ static void CAT(mont_mul_half_,K)(BN&r,const BN&a,const BN&b,const BN&m,uint64_t
     // 鏉′欢鍑忔硶 (鍗婂昂瀵?: 杈撳嚭 = r + t[2*HK]*2^(HK*64) < 2m
     // 蹇呴』鐢?HK-limb 鍑忔硶 (妯?2^(HK*64)): 鍏ㄥ昂瀵?bn_sub 鏄ā 2^(K*64),
     // t[2*HK]=1 涓?r<m 鏃跺€熶綅浼氬惊鐜垚 r-m+2^(K*64) 鐨勫法澶ч敊璇€?
+#if defined(_MSC_VER) && !defined(__clang__)
     if(t[2*HK]){unsigned char bo=0;for(int i=0;i<HK;++i)bo=_subborrow_u64(bo,r.d[i],m.d[i],&r.d[i]);}
     int guard=0;while(!(r<m)&&guard++<32){unsigned char bo=0;for(int i=0;i<HK;++i)bo=_subborrow_u64(bo,r.d[i],m.d[i],&r.d[i]);}
+#else
+    if(t[2*HK]){uint64_t bo=0;for(int i=0;i<HK;++i){uint64_t sb=m.d[i]+bo;bo=(sb<m.d[i])?1:(r.d[i]<sb)?1:0;r.d[i]-=sb;}}
+    int guard=0;while(!(r<m)&&guard++<32){uint64_t bo=0;for(int i=0;i<HK;++i){uint64_t sb=m.d[i]+bo;bo=(sb<m.d[i])?1:(r.d[i]<sb)?1:0;r.d[i]-=sb;}}
+#endif
     if(!(r<m))fprintf(stderr,"[mmh] SUB FAIL hi=%016llx t2hk=%d\n",(unsigned long long)r.d[K-1],(int)t[2*HK]);
 }
 // 鈹€鈹€ 鍗婂昂瀵?8-bit 绐楀彛 Montgomery 妯″箓 (CRT 鐨?m1/m2: 妯℃暟涓?p/q) 鈹€鈹€

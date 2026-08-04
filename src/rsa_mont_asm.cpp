@@ -80,24 +80,17 @@ static void mont_mul_k32_asm(uint64_t* r,
         ".intel_syntax noprefix\n\t"
 
         // ── 保存 callee-saved ──
-        "push rbx\n\t"
-        "push rbp\n\t"
-        "push r12\n\t"
-        "push r13\n\t"
-        "push r14\n\t"
-        "push r15\n\t"
-
         // ── 加载参数 ──
-        "mov r12, %[r_out]\n\t"    // r12 = r
+        "mov r12, %[r_out]\n\t"    // r12 = r (指针值)
         "mov r13, %[a_ptr]\n\t"    // r13 = a
         "mov r14, %[b_ptr]\n\t"    // r14 = b
         "mov r15, %[m_ptr]\n\t"    // r15 = m
-        "mov rbp, %[t_ptr]\n\t"    // rbp = &t[0]
+        "lea rsi, %[t_mem]\n\t"    // rsi = &t[0] (rbp 是 GCC 帧指针, 不可用)
 
         // ── 清零 t[0..65] ──
         "xor eax, eax\n\t"
         "mov ecx, 66\n\t"
-        "mov rdi, rbp\n\t"
+        "mov rdi, rsi\n\t"
         "rep stosq\n\t"
 
         // ── 外循环 i = 0..31 ──
@@ -110,7 +103,7 @@ static void mont_mul_k32_asm(uint64_t* r,
         "mov rdx, [r13 + rbx*8]\n\t"  // rdx = a[i]
         "xor r11d, r11d\n\t"           // r11 = carry
         "xor ecx, ecx\n\t"             // ecx = j
-        "lea r8, [rbp + rbx*8]\n\t"  // r8 = &t[i]
+        "lea r8, [rsi + rbx*8]\n\t"  // r8 = &t[i]
 
     ".L32_s1_loop:\n\t"
         "mulx r10, rax, [r14 + rcx*8]\n\t"  // r10:rax = a[i]*b[j]
@@ -126,7 +119,7 @@ static void mont_mul_k32_asm(uint64_t* r,
 
         // t[i+32] += carry (累加, 不能覆盖: 前一轮 step2 进位传播可能已写
         // t[i+32]); 溢出向高位传播, 与标量 CIOS (rsa_body.inc) 一致
-        "lea rdi, [rbp + rbx*8 + 256]\n\t"
+        "lea rdi, [rsi + rbx*8 + 256]\n\t"
         "add [rdi], r11\n\t"
         "jnc .L32_s2_start\n\t"
         "mov r11d, 1\n\t"
@@ -138,12 +131,13 @@ static void mont_mul_k32_asm(uint64_t* r,
     ".L32_s2_start:\n\t"
         // ══════════════════ Step 2: u * m[0..31] ══════════════════
         // u = t[i] * mp  (只需要低64位)
-        "mov rax, [rbp + rbx*8]\n\t"   // rax = t[i]
-        "mul QWORD PTR %[mp_val]\n\t"   // rdx:rax = t[i] * mp
+        "mov rax, [rsi + rbx*8]\n\t"   // rax = t[i]
+        "mov rdx, %[mp_val]\n\t"   // rdx = mp (寄存器中转: GCC/Clang 的 "m" 文本不同)
+        "mul rdx\n\t"              // rdx:rax = t[i] * mp
         "mov rdx, rax\n\t"             // rdx = u (MULX 隐式操作数)
         "xor r11d, r11d\n\t"           // r11 = carry
         "xor ecx, ecx\n\t"             // ecx = j
-        "lea r8, [rbp + rbx*8]\n\t"  // r8 = &t[i]
+        "lea r8, [rsi + rbx*8]\n\t"  // r8 = &t[i]
 
     ".L32_s2_loop:\n\t"
         "mulx r10, rax, [r15 + rcx*8]\n\t"   // r10:rax = u*m[j]
@@ -158,7 +152,7 @@ static void mont_mul_k32_asm(uint64_t* r,
         "jl .L32_s2_loop\n\t"
 
         // ── 进位传播 t[i+32 + k] ──
-        "lea rdi, [rbp + rbx*8 + 256]\n\t"  // rdi = &t[i+32]
+        "lea rdi, [rsi + rbx*8 + 256]\n\t"  // rdi = &t[i+32]
     ".L32_carry_prop:\n\t"
         "add [rdi], r11\n\t"
         "jnc .L32_carry_done\n\t"
@@ -174,32 +168,31 @@ static void mont_mul_k32_asm(uint64_t* r,
         // ══════════════════ 写入结果: r = t[32..63] ══════════════════
         "xor ecx, ecx\n\t"
     ".L32_copy:\n\t"
-        "mov rax, [rbp + rcx*8 + 256]\n\t"    // rax = t[K + i]
+        "mov rax, [rsi + rcx*8 + 256]\n\t"    // rax = t[K + i]
         "mov [r12 + rcx*8], rax\n\t"
         "inc ecx\n\t"
         "cmp ecx, 32\n\t"
         "jl .L32_copy\n\t"
 
-        // ══════════════════ 条件减法: if (r >= m) r -= m ══════════════════
-        // 检查 t[64] (第65个limb) 或 r >= m
-        "mov r8, [rbp + 512]\n\t"    // t[2K] = t[64]
+        // ══════════════════ 条件减法: 循环直到 r < m ══════════════════
+        // t[2K] 非零 → 结果溢出 2^(K*64), 必然 >= m, 先减一次
+        // 之后循环: 全 limb 比较 r vs m; r >= m 再减 (标量 CIOS 同样可减多次)
+        "mov r8, [rsi + 512]\n\t"    // t[2K] = t[64]
         "test r8, r8\n\t"
-        "jnz .L32_do_sub1\n\t"
+        "jnz .L32_do_sub\n\t"
 
-        // 比较 r 和 m (从高位到低位)
+    ".L32_recheck:\n\t"
         "mov ecx, 31\n\t"
     ".L32_cmp_loop:\n\t"
         "mov rax, [r12 + rcx*8]\n\t"
         "cmp rax, [r15 + rcx*8]\n\t"
-        "ja .L32_do_sub1\n\t"
+        "ja .L32_do_sub\n\t"
         "jb .L32_done\n\t"
         "dec ecx\n\t"
         "jns .L32_cmp_loop\n\t"
-        // 全部相等 → r == m → 减法
-        // (实际上 r < m 不应该发生, 但安全起见)
-        "jmp .L32_done\n\t"
+        // r == m → 减一次 (结果为 0, 落入 do_sub)
 
-    ".L32_do_sub1:\n\t"
+    ".L32_do_sub:\n\t"
         "xor r11d, r11d\n\t"        // borrow = 0 (CF=0)
         "mov r9d, 32\n\t"
         "xor ecx, ecx\n\t"
@@ -208,44 +201,24 @@ static void mont_mul_k32_asm(uint64_t* r,
         "sbb rax, [r15 + rcx*8]\n\t"
         "mov [r12 + rcx*8], rax\n\t"
         "inc ecx\n\t"
-        "dec r9d\n\t"               // 不修改 CF (cmp 会破坏借位!)
-        "jnz .L32_sub_loop\n\t"
-
-        // 二次检查: 如果仍然 r >= m, 再减一次 (处理进位传播)
-        "mov r9, [r12 + 31*8]\n\t"
-        "cmp r9, [r15 + 31*8]\n\t"
-        "jb .L32_done\n\t"
-        "xor r11d, r11d\n\t"
-        "mov r9d, 32\n\t"
-        "xor ecx, ecx\n\t"
-    ".L32_sub2_loop:\n\t"
-        "mov rax, [r12 + rcx*8]\n\t"
-        "sbb rax, [r15 + rcx*8]\n\t"
-        "mov [r12 + rcx*8], rax\n\t"
-        "inc ecx\n\t"
         "dec r9d\n\t"               // 不修改 CF
-        "jnz .L32_sub2_loop\n\t"
+        "jnz .L32_sub_loop\n\t"
+        "jmp .L32_recheck\n\t"      // 减后重新比较, 直到 r < m
 
     ".L32_done:\n\t"
 
-        // ── 恢复 callee-saved ──
-        "pop r15\n\t"
-        "pop r14\n\t"
-        "pop r13\n\t"
-        "pop r12\n\t"
-        "pop rbp\n\t"
-        "pop rbx\n\t"
-
-        ".att_syntax prefix"
+        ""
         :
-        : [r_out]  "r" (r),
-          [a_ptr]  "r" (a),
-          [b_ptr]  "r" (b),
-          [m_ptr]  "r" (m),
+        : [r_out]  "m" (r),
+          [a_ptr]  "m" (a),
+          [b_ptr]  "m" (b),
+          [m_ptr]  "m" (m),
           [mp_val] "m" (mp),
-          [t_ptr]  "r" (t)
+          [t_mem]  "m" (t)
         : "rax", "rcx", "rdx", "rdi", "rsi",
-          "r8", "r9", "r10", "r11", "memory"
+          "r8", "r9", "r10", "r11",
+          "rbx", "r12", "r13", "r14", "r15",
+          "memory"
     );
 }
 
@@ -267,24 +240,17 @@ static void mont_mul_k64_asm(uint64_t* r,
         ".intel_syntax noprefix\n\t"
 
         // ── 保存 callee-saved ──
-        "push rbx\n\t"
-        "push rbp\n\t"
-        "push r12\n\t"
-        "push r13\n\t"
-        "push r14\n\t"
-        "push r15\n\t"
-
         // ── 加载参数 ──
         "mov r12, %[r_out]\n\t"
         "mov r13, %[a_ptr]\n\t"
         "mov r14, %[b_ptr]\n\t"
         "mov r15, %[m_ptr]\n\t"
-        "mov rbp, %[t_ptr]\n\t"
+        "lea rsi, %[t_mem]\n\t"    // rsi = &t[0] (rbp 是 GCC 帧指针, 不可用)
 
         // ── 清零 t (130 limbs) ──
         "xor eax, eax\n\t"
         "mov ecx, 130\n\t"
-        "mov rdi, rbp\n\t"
+        "mov rdi, rsi\n\t"
         "rep stosq\n\t"
 
         // ── 外循环 i = 0..63 ──
@@ -296,7 +262,7 @@ static void mont_mul_k64_asm(uint64_t* r,
         "mov rdx, [r13 + rbx*8]\n\t"
         "xor r11d, r11d\n\t"
         "xor ecx, ecx\n\t"
-        "lea r8, [rbp + rbx*8]\n\t"  // r8 = &t[i]
+        "lea r8, [rsi + rbx*8]\n\t"  // r8 = &t[i]
 
     ".L64_s1_loop:\n\t"
         "mulx r10, rax, [r14 + rcx*8]\n\t"
@@ -311,7 +277,7 @@ static void mont_mul_k64_asm(uint64_t* r,
         "jl .L64_s1_loop\n\t"
 
         // t[i+64] += carry (累加, 不能覆盖), 溢出向高位传播
-        "lea rdi, [rbp + rbx*8 + 512]\n\t"
+        "lea rdi, [rsi + rbx*8 + 512]\n\t"
         "add [rdi], r11\n\t"
         "jnc .L64_s2_start\n\t"
         "mov r11d, 1\n\t"
@@ -322,12 +288,13 @@ static void mont_mul_k64_asm(uint64_t* r,
 
     ".L64_s2_start:\n\t"
         // ══════════════════ Step 2: u * m[0..63] ══════════════════
-        "mov rax, [rbp + rbx*8]\n\t"
-        "mul QWORD PTR %[mp_val]\n\t"
+        "mov rax, [rsi + rbx*8]\n\t"
+        "mov rdx, %[mp_val]\n\t"
+        "mul rdx\n\t"
         "mov rdx, rax\n\t"
         "xor r11d, r11d\n\t"
         "xor ecx, ecx\n\t"
-        "lea r8, [rbp + rbx*8]\n\t"  // r8 = &t[i]
+        "lea r8, [rsi + rbx*8]\n\t"  // r8 = &t[i]
 
     ".L64_s2_loop:\n\t"
         "mulx r10, rax, [r15 + rcx*8]\n\t"
@@ -342,7 +309,7 @@ static void mont_mul_k64_asm(uint64_t* r,
         "jl .L64_s2_loop\n\t"
 
         // 进位传播
-        "lea rdi, [rbp + rbx*8 + 512]\n\t"
+        "lea rdi, [rsi + rbx*8 + 512]\n\t"
     ".L64_carry_prop:\n\t"
         "add [rdi], r11\n\t"
         "jnc .L64_carry_done\n\t"
@@ -358,28 +325,28 @@ static void mont_mul_k64_asm(uint64_t* r,
         // ══════════════════ 写入结果: r = t[64..127] ══════════════════
         "xor ecx, ecx\n\t"
     ".L64_copy:\n\t"
-        "mov rax, [rbp + rcx*8 + 512]\n\t"
+        "mov rax, [rsi + rcx*8 + 512]\n\t"
         "mov [r12 + rcx*8], rax\n\t"
         "inc ecx\n\t"
         "cmp ecx, 64\n\t"
         "jl .L64_copy\n\t"
 
-        // ══════════════════ 条件减法 ══════════════════
-        "mov r8, [rbp + 1024]\n\t"    // t[2K] = t[128]
+        // ══════════════════ 条件减法: r >= m 时 r -= m (最多一次, CIOS 保证 < 2m) ══════════════════
+        "mov r8, [rsi + 1024]\n\t"    // t[2K] = t[128]
         "test r8, r8\n\t"
-        "jnz .L64_do_sub1\n\t"
+        "jnz .L64_do_sub\n\t"
 
         "mov ecx, 63\n\t"
     ".L64_cmp_loop:\n\t"
         "mov rax, [r12 + rcx*8]\n\t"
         "cmp rax, [r15 + rcx*8]\n\t"
-        "ja .L64_do_sub1\n\t"
+        "ja .L64_do_sub\n\t"
         "jb .L64_done\n\t"
         "dec ecx\n\t"
         "jns .L64_cmp_loop\n\t"
-        "jmp .L64_done\n\t"
+        // r == m → 减一次 (结果为 0)
 
-    ".L64_do_sub1:\n\t"
+    ".L64_do_sub:\n\t"
         "xor r11d, r11d\n\t"        // borrow = 0 (CF=0)
         "mov r9d, 64\n\t"
         "xor ecx, ecx\n\t"
@@ -388,44 +355,24 @@ static void mont_mul_k64_asm(uint64_t* r,
         "sbb rax, [r15 + rcx*8]\n\t"
         "mov [r12 + rcx*8], rax\n\t"
         "inc ecx\n\t"
-        "dec r9d\n\t"               // 不修改 CF (cmp 会破坏借位!)
-        "jnz .L64_sub_loop\n\t"
-
-        // 二次检查
-        "mov r9, [r12 + 63*8]\n\t"
-        "cmp r9, [r15 + 63*8]\n\t"
-        "jb .L64_done\n\t"
-        "xor r11d, r11d\n\t"
-        "mov r9d, 64\n\t"
-        "xor ecx, ecx\n\t"
-    ".L64_sub2_loop:\n\t"
-        "mov rax, [r12 + rcx*8]\n\t"
-        "sbb rax, [r15 + rcx*8]\n\t"
-        "mov [r12 + rcx*8], rax\n\t"
-        "inc ecx\n\t"
         "dec r9d\n\t"               // 不修改 CF
-        "jnz .L64_sub2_loop\n\t"
+        "jnz .L64_sub_loop\n\t"
+        // 减后 r < m 由 CIOS (< 2m) 保证, 无需二次检查
 
     ".L64_done:\n\t"
 
-        // ── 恢复 callee-saved ──
-        "pop r15\n\t"
-        "pop r14\n\t"
-        "pop r13\n\t"
-        "pop r12\n\t"
-        "pop rbp\n\t"
-        "pop rbx\n\t"
-
-        ".att_syntax prefix"
+        ""
         :
-        : [r_out]  "r" (r),
-          [a_ptr]  "r" (a),
-          [b_ptr]  "r" (b),
-          [m_ptr]  "r" (m),
+        : [r_out]  "m" (r),
+          [a_ptr]  "m" (a),
+          [b_ptr]  "m" (b),
+          [m_ptr]  "m" (m),
           [mp_val] "m" (mp),
-          [t_ptr]  "r" (t)
+          [t_mem]  "m" (t)
         : "rax", "rcx", "rdx", "rdi", "rsi",
-          "r8", "r9", "r10", "r11", "memory"
+          "r8", "r9", "r10", "r11",
+          "rbx", "r12", "r13", "r14", "r15",
+          "memory"
     );
 }
 
@@ -455,25 +402,18 @@ static void mont_mul_half_asm_impl(uint64_t* r,
         ".intel_syntax noprefix\n\t"
 
         // ── 保存 callee-saved ──
-        "push rbx\n\t"
-        "push rbp\n\t"
-        "push r12\n\t"
-        "push r13\n\t"
-        "push r14\n\t"
-        "push r15\n\t"
-
         // ── 加载参数 ──
-        "mov r12, %[r_out]\n\t"    // r12 = r
+        "mov r12, %[r_out]\n\t"    // r12 = r (指针值)
         "mov r13, %[a_ptr]\n\t"    // r13 = a
         "mov r14, %[b_ptr]\n\t"    // r14 = b
         "mov r15, %[m_ptr]\n\t"    // r15 = m
-        "mov rbp, %[t_ptr]\n\t"    // rbp = &t[0]
+        "lea rsi, %[t_mem]\n\t"    // rsi = &t[0] (rbp 是 GCC 帧指针, 不可用)
         "mov r9d, %[hk_val]\n\t"   // r9d = HK (外循环/内循环上限)
 
         // ── 清零 t[0 .. 2*HK+1] ──
         "xor eax, eax\n\t"
         "lea ecx, [r9*2 + 2]\n\t"
-        "mov rdi, rbp\n\t"
+        "mov rdi, rsi\n\t"
         "rep stosq\n\t"
 
         // ── 外循环 i = 0..HK-1 ──
@@ -485,7 +425,7 @@ static void mont_mul_half_asm_impl(uint64_t* r,
         "mov rdx, [r13 + rbx*8]\n\t"  // rdx = a[i]
         "xor r11d, r11d\n\t"          // r11 = carry
         "xor ecx, ecx\n\t"            // ecx = j
-        "lea r8, [rbp + rbx*8]\n\t"   // r8 = &t[i]
+        "lea r8, [rsi + rbx*8]\n\t"   // r8 = &t[i]
 
     ".Lh_s1_loop:\n\t"
         "mulx r10, rax, [r14 + rcx*8]\n\t"  // r10:rax = a[i]*b[j]
@@ -500,7 +440,7 @@ static void mont_mul_half_asm_impl(uint64_t* r,
         "jl .Lh_s1_loop\n\t"
 
         // t[i+HK] += carry (累加), 溢出向高位传播
-        "lea rdi, [rbp + rbx*8]\n\t"
+        "lea rdi, [rsi + rbx*8]\n\t"
         "lea rdi, [rdi + r9*8]\n\t"
         "add [rdi], r11\n\t"
         "jnc .Lh_s2_start\n\t"
@@ -513,12 +453,13 @@ static void mont_mul_half_asm_impl(uint64_t* r,
     ".Lh_s2_start:\n\t"
         // ══════════════════ Step 2: u * m[0..HK-1] ══════════════════
         // u = t[i] * mp (只需要低64位)
-        "mov rax, [rbp + rbx*8]\n\t"    // rax = t[i]
-        "mul QWORD PTR %[mp_val]\n\t"  // rdx:rax = t[i] * mp
+        "mov rax, [rsi + rbx*8]\n\t"    // rax = t[i]
+        "mov rdx, %[mp_val]\n\t"  // rdx = mp (寄存器中转)
+        "mul rdx\n\t"             // rdx:rax = t[i] * mp
         "mov rdx, rax\n\t"             // rdx = u (MULX 隐式操作数)
         "xor r11d, r11d\n\t"           // r11 = carry
         "xor ecx, ecx\n\t"             // ecx = j
-        "lea r8, [rbp + rbx*8]\n\t"    // r8 = &t[i]
+        "lea r8, [rsi + rbx*8]\n\t"    // r8 = &t[i]
 
     ".Lh_s2_loop:\n\t"
         "mulx r10, rax, [r15 + rcx*8]\n\t"  // r10:rax = u*m[j]
@@ -533,7 +474,7 @@ static void mont_mul_half_asm_impl(uint64_t* r,
         "jl .Lh_s2_loop\n\t"
 
         // ── 进位传播 t[i+HK + k] ──
-        "lea rdi, [rbp + rbx*8]\n\t"
+        "lea rdi, [rsi + rbx*8]\n\t"
         "lea rdi, [rdi + r9*8]\n\t"   // rdi = &t[i+HK]
     ".Lh_carry_prop:\n\t"
         "add [rdi], r11\n\t"
@@ -548,7 +489,7 @@ static void mont_mul_half_asm_impl(uint64_t* r,
         "jl .Lh_outer\n\t"
 
         // ══════════════════ 写入结果: r[0..HK-1] = t[HK..2HK-1] ══════════════════
-        "lea rdi, [rbp + r9*8]\n\t"   // rdi = &t[HK]
+        "lea rdi, [rsi + r9*8]\n\t"   // rdi = &t[HK]
         "xor ecx, ecx\n\t"
     ".Lh_copy:\n\t"
         "mov rax, [rdi + rcx*8]\n\t"
@@ -565,7 +506,7 @@ static void mont_mul_half_asm_impl(uint64_t* r,
 
         // ══════════════════ 条件减法 (半尺寸, HK-limb) ══════════════════
         // t[2*HK] 非零 → 至少减一次; 否则完整比较 r 与 m (高位优先)
-        "lea rdi, [rbp + r9*8]\n\t"
+        "lea rdi, [rsi + r9*8]\n\t"
         "mov r8, [rdi + r9*8]\n\t"   // r8 = t[2*HK]
         "test r8, r8\n\t"
         "jnz .Lh_do_sub\n\t"
@@ -617,25 +558,19 @@ static void mont_mul_half_asm_impl(uint64_t* r,
 
     ".Lh_done:\n\t"
 
-        // ── 恢复 callee-saved ──
-        "pop r15\n\t"
-        "pop r14\n\t"
-        "pop r13\n\t"
-        "pop r12\n\t"
-        "pop rbp\n\t"
-        "pop rbx\n\t"
-
-        ".att_syntax prefix"
+        ""
         :
-        : [r_out]  "r" (r),
-          [a_ptr]  "r" (a),
-          [b_ptr]  "r" (b),
-          [m_ptr]  "r" (m),
+        : [r_out]  "m" (r),
+          [a_ptr]  "m" (a),
+          [b_ptr]  "m" (b),
+          [m_ptr]  "m" (m),
           [mp_val] "m" (mp),
-          [hk_val] "r" (HK),
-          [t_ptr]  "r" (t)
+          [hk_val] "m" (HK),
+          [t_mem]  "m" (t)
         : "rax", "rcx", "rdx", "rdi", "rsi",
-          "r8", "r9", "r10", "r11", "memory"
+          "r8", "r9", "r10", "r11",
+          "rbx", "r12", "r13", "r14", "r15",
+          "memory"
     );
 }
 
@@ -684,7 +619,7 @@ void mont_mul_asm(uint64_t* r,
         return;
     }
     if (K == 64) {
-        mont_mul_fios_asm(r, a, b, m, mp, K);
+        mont_mul_k64_asm(r, a, b, m, mp);
         return;
     }
 #elif defined(_MSC_VER) && defined(_M_X64)

@@ -1,0 +1,24 @@
+# jpssl — GitLab CI
+# 目前仅支持 x86 Linux：使用自定义 x86 Linux 镜像 `linux`。
+# （MUSA GPU 加速默认关闭；如需 GPU 测试请配置带 MUSA SDK 的镜像并传 -DJP_ENABLE_MUSA=ON）
+
+default:
+  image: linux
+
+stages:
+  - build_test
+  - bench
+
+build_test:
+  stage: build_test
+  script:
+    - cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+    - cmake --build build -j"$(nproc)"
+    - ctest --test-dir build --output-on-failure
+
+# 仅验证 benchmarks/ 目标可正常编译（JP_ENABLE_BENCH=ON，GPU 段由 JP_MUSA 守卫）
+bench:
+  stage: bench
+  script:
+    - cmake -S . -B build-bench -DCMAKE_BUILD_TYPE=Release -DJP_ENABLE_BENCH=ON
+    - cmake --build build-bench -j"$(nproc)"

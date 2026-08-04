@@ -60,11 +60,17 @@ cmake -DJP_ENABLE_BENCH=ON .. && make bench_rsa_cpu_gpu
 | 目标 | 内容 |
 |---|---|
 | `bench_rsa_cpu_gpu` | RSA CPU vs GPU vs OpenSSL 综合基准（2048/4096 私钥、2048 公钥） |
-| `bench_rsa_gpu` | RSA-2048/4096 CPU 批量 vs MUSA GPU 批量 |
-| `bench_sha512` | SHA-512 CPU vs SSE vs OpenSSL |
-| `bench_hardware_accel` | AES-NI/AVX2/AVX512 硬件加速对比 |
+| `bench_rsa_gpu` | RSA-2048/4096 CPU 批量 vs MUSA GPU 批量（仅 `JP_ENABLE_MUSA=ON` 时构建） |
+| `bench_sha512` | SHA-512 CPU vs SSE4.1 SIMD；GPU 单块/批量（仅 MUSA 构建） |
+| `bench_hardware_accel` | AES / ChaCha20-Poly1305 / SHA-512 硬件加速路径对比（GPU 段仅 MUSA 构建） |
 | `bench_cipher_suites` | TLS 密码套件性能 |
+| `bench_sm4` | SM4 (ECB/GCM) vs OpenSSL |
 | `bench_sm_ossl` | SM3 吞吐 + SM2 keygen/sign/verify vs OpenSSL |
+| `bench_ed25519_ossl` | Ed25519 签名/验证 vs OpenSSL（仅找到 OpenSSL 时构建） |
+| `bench_ed448_x448_ossl` | Ed448 / X448 vs OpenSSL（仅找到 OpenSSL 时构建） |
+| `bench_x25519_ossl` | X25519 ECDH vs OpenSSL（仅找到 OpenSSL 时构建） |
+
+> 所有 GPU 基准段（`bench_sha512` / `bench_hardware_accel` 中的 `musa_*` 调用、`bench_rsa_gpu` 目标）都由 `JP_MUSA` 宏守卫：`JP_ENABLE_MUSA=OFF`（默认）时自动跳过 GPU 段，基准程序仍可正常编译运行。
 
 ## 快速开始
 
@@ -976,6 +982,8 @@ jpssl/
 | 选项 | 默认 | 说明 |
 |------|------|------|
 | `JP_ENABLE_MUSA` | **OFF** | MUSA GPU 加速 (实验性) |
+| `JP_ENABLE_BENCH` | **OFF** | 构建 benchmarks/ 基准程序 |
+| `JP_ENABLE_OPENMP` | ON | OpenMP 并行（CPU 批量 RSA） |
 | `JP_ENABLE_AVX2` | ON | AVX2 GCM (4 路并行) + SHA-512 SIMD 消息调度 |
 | `JP_ENABLE_AVX512` | ON | AVX512 VAES GCM (8 路并行) |
 

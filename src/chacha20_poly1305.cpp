@@ -11,14 +11,14 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
 #include <intrin.h>
 #endif
 #ifdef JP_MUSA
 #include <musa_runtime.h>
 #endif
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(__clang__)
 #define JP_POLY_FORCEINLINE __forceinline
 #elif defined(__GNUC__) || defined(__clang__)
 #define JP_POLY_FORCEINLINE inline __attribute__((always_inline))
@@ -193,29 +193,53 @@ struct P128 {
 };
 
 static JP_POLY_FORCEINLINE P128 p128_mul(uint64_t a, uint64_t b) {
+#if defined(_MSC_VER) && !defined(__clang__)
     uint64_t hi;
     uint64_t lo = _umul128(a, b, &hi);
     return P128{lo, hi};
+#else
+    __uint128_t r = (__uint128_t)a * b;
+    return P128{(uint64_t)r, (uint64_t)(r >> 64)};
+#endif
 }
 
 static JP_POLY_FORCEINLINE P128 p128_add(P128 a, P128 b) {
+#if defined(_MSC_VER) && !defined(__clang__)
     unsigned char c = _addcarry_u64(0, a.lo, b.lo, &a.lo);
     _addcarry_u64(c, a.hi, b.hi, &a.hi);
     return a;
+#else
+    __uint128_t t = (__uint128_t)a.lo | ((__uint128_t)a.hi << 64);
+    t += (__uint128_t)b.lo | ((__uint128_t)b.hi << 64);
+    return P128{(uint64_t)t, (uint64_t)(t >> 64)};
+#endif
 }
 
 static JP_POLY_FORCEINLINE P128 p128_add_u64(P128 a, uint64_t b) {
+#if defined(_MSC_VER) && !defined(__clang__)
     unsigned char c = _addcarry_u64(0, a.lo, b, &a.lo);
     _addcarry_u64(c, a.hi, 0, &a.hi);
     return a;
+#else
+    __uint128_t t = (__uint128_t)a.lo | ((__uint128_t)a.hi << 64);
+    t += b;
+    return P128{(uint64_t)t, (uint64_t)(t >> 64)};
+#endif
 }
 
 // a * k where k is a small constant (fits in 64 bits: hi*a <= 64 bits)
 static JP_POLY_FORCEINLINE P128 p128_mul_u64(P128 a, uint64_t k) {
+#if defined(_MSC_VER) && !defined(__clang__)
     uint64_t hi;
     uint64_t lo = _umul128(a.lo, k, &hi);
     hi += a.hi * k;
     return P128{lo, hi};
+#else
+    __uint128_t r = (__uint128_t)a.lo * k;
+    uint64_t lo = (uint64_t)r;
+    uint64_t hi = (uint64_t)(r >> 64) + a.hi * k;
+    return P128{lo, hi};
+#endif
 }
 
 // h *= r (mod 2^130-5), with r already clamped
