@@ -91,6 +91,7 @@ set(CPU_SOURCES
     src/chacha20_poly1305.cpp
     src/chacha20_avx2.cpp
     src/chacha20_avx512.cpp
+    src/poly1305_avx2.cpp
     src/rsa.cpp
     src/sha256.cpp
     src/sha256_sha_ni.cpp
@@ -208,6 +209,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
             COMPILE_FLAGS "/arch:AVX2")
         set_source_files_properties(src/chacha20_avx512.cpp PROPERTIES
             COMPILE_FLAGS "/arch:AVX512")
+        # Poly1305 AVX2
+        set_source_files_properties(src/poly1305_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
         # RSA Montgomery MULX/ADCX/ADOX intrinsics (K=32/64 快速路径)
         set_source_files_properties(src/rsa_mont_asm.cpp PROPERTIES
             COMPILE_FLAGS "/arch:AVX2")

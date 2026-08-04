@@ -32,8 +32,9 @@ static inline void qr_avx2(__m256i& a, __m256i& b, __m256i& c, __m256i& d) {
 }
 
 /// 一次生成 8 个块的 keystream（512 字节），counter 从 base 起连续
-static void chacha20_blocks8(const uint8_t key[32], uint32_t base_counter,
-                             const uint8_t nonce[12], uint8_t keystream[512]) {
+static void chacha20_blocks8_xor(const uint8_t key[32], uint32_t base_counter,
+                                 const uint8_t nonce[12],
+                                 const uint8_t* in, uint8_t* out) {
     // 常量 "expand 32-byte k"
     const __m256i C0 = _mm256_set1_epi32(0x61707865);
     const __m256i C1 = _mm256_set1_epi32(0x3320646e);
@@ -132,22 +133,22 @@ static void chacha20_blocks8(const uint8_t key[32], uint32_t base_counter,
 
     // 现在 t[i] = 块 i 的字 0..7（前 32B），u[i] = 块 i 的字 8..15（后 32B）
     // 直接 XOR 输出到 keystream
-    _mm256_storeu_si256((__m256i*)(keystream +   0), t0);
-    _mm256_storeu_si256((__m256i*)(keystream +  32), u0);
-    _mm256_storeu_si256((__m256i*)(keystream +  64), t1);
-    _mm256_storeu_si256((__m256i*)(keystream +  96), u1);
-    _mm256_storeu_si256((__m256i*)(keystream + 128), t2);
-    _mm256_storeu_si256((__m256i*)(keystream + 160), u2);
-    _mm256_storeu_si256((__m256i*)(keystream + 192), t3);
-    _mm256_storeu_si256((__m256i*)(keystream + 224), u3);
-    _mm256_storeu_si256((__m256i*)(keystream + 256), t4);
-    _mm256_storeu_si256((__m256i*)(keystream + 288), u4);
-    _mm256_storeu_si256((__m256i*)(keystream + 320), t5);
-    _mm256_storeu_si256((__m256i*)(keystream + 352), u5);
-    _mm256_storeu_si256((__m256i*)(keystream + 384), t6);
-    _mm256_storeu_si256((__m256i*)(keystream + 416), u6);
-    _mm256_storeu_si256((__m256i*)(keystream + 448), t7);
-    _mm256_storeu_si256((__m256i*)(keystream + 480), u7);
+    _mm256_storeu_si256((__m256i*)(out +   0), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in +   0)), t0));
+    _mm256_storeu_si256((__m256i*)(out +  32), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in +  32)), u0));
+    _mm256_storeu_si256((__m256i*)(out +  64), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in +  64)), t1));
+    _mm256_storeu_si256((__m256i*)(out +  96), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in +  96)), u1));
+    _mm256_storeu_si256((__m256i*)(out + 128), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in + 128)), t2));
+    _mm256_storeu_si256((__m256i*)(out + 160), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in + 160)), u2));
+    _mm256_storeu_si256((__m256i*)(out + 192), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in + 192)), t3));
+    _mm256_storeu_si256((__m256i*)(out + 224), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in + 224)), u3));
+    _mm256_storeu_si256((__m256i*)(out + 256), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in + 256)), t4));
+    _mm256_storeu_si256((__m256i*)(out + 288), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in + 288)), u4));
+    _mm256_storeu_si256((__m256i*)(out + 320), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in + 320)), t5));
+    _mm256_storeu_si256((__m256i*)(out + 352), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in + 352)), u5));
+    _mm256_storeu_si256((__m256i*)(out + 384), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in + 384)), t6));
+    _mm256_storeu_si256((__m256i*)(out + 416), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in + 416)), u6));
+    _mm256_storeu_si256((__m256i*)(out + 448), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in + 448)), t7));
+    _mm256_storeu_si256((__m256i*)(out + 480), _mm256_xor_si256(_mm256_loadu_si256((const __m256i*)(in + 480)), u7));
 }
 
 /// AVX2 流加密入口
@@ -155,14 +156,12 @@ void chacha20_crypt_avx2(const uint8_t key[32], uint32_t counter,
                          const uint8_t nonce[12],
                          std::span<const uint8_t> input,
                          std::span<uint8_t> output) {
-    uint8_t keystream[512];
     size_t pos = 0;
 
     // 主循环：每次 512 字节（8 块）
     while (pos + 512 <= input.size()) {
-        chacha20_blocks8(key, counter, nonce, keystream);
-        for (int i = 0; i < 512; ++i)
-            output[pos + i] = input[pos + i] ^ keystream[i];
+        chacha20_blocks8_xor(key, counter, nonce,
+                             input.data() + pos, output.data() + pos);
         counter += 8;
         pos += 512;
     }

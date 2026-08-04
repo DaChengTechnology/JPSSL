@@ -114,8 +114,13 @@ void chacha20_crypt_avx512(const uint8_t key[32], uint32_t counter,
 
     while (pos + 1024 <= input.size()) {
         chacha20_blocks16(key, counter, nonce, keystream);
-        for (int i = 0; i < 1024; ++i)
-            output[pos + i] = input[pos + i] ^ keystream[i];
+        const uint8_t* in = input.data() + pos;
+        uint8_t* out = output.data() + pos;
+        for (int b = 0; b < 16; ++b) {
+            __m512i k = _mm512_loadu_si512((const void*)(keystream + 64 * b));
+            __m512i v = _mm512_loadu_si512((const void*)(in + 64 * b));
+            _mm512_storeu_si512((void*)(out + 64 * b), _mm512_xor_si512(v, k));
+        }
         counter += 16;
         pos += 1024;
     }

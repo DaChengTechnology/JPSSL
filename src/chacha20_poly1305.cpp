@@ -11,8 +11,19 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #ifdef JP_MUSA
 #include <musa_runtime.h>
+#endif
+
+#if defined(_MSC_VER)
+#define JP_POLY_FORCEINLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define JP_POLY_FORCEINLINE inline __attribute__((always_inline))
+#else
+#define JP_POLY_FORCEINLINE inline
 #endif
 
 namespace jpssl {
@@ -156,146 +167,419 @@ static void poly1305_clamp(uint8_t r[16]) {
 }
 
 /// 将 16 字节 little-endian 读入 5 个 26-bit limbs
-static void poly1305_load(uint64_t* h, const uint8_t* src, int len) {
-    uint8_t buf[17] = {};
-    std::memcpy(buf, src, len);
-    if (len < 17) buf[len] = 1;  // 附加 0x01 字节
 
-    h[0] = (uint64_t)buf[0] | ((uint64_t)buf[1] << 8) | ((uint64_t)buf[2] << 16) | ((uint64_t)(buf[3] & 3) << 24);
-    h[1] = ((uint64_t)(buf[3] >> 2)) | ((uint64_t)buf[4] << 6) | ((uint64_t)buf[5] << 14) | ((uint64_t)(buf[6] & 15) << 22);
-    h[2] = ((uint64_t)(buf[6] >> 4)) | ((uint64_t)buf[7] << 4) | ((uint64_t)buf[8] << 12) | ((uint64_t)(buf[9] & 63) << 20);
-    h[3] = ((uint64_t)(buf[9] >> 6)) | ((uint64_t)buf[10] << 2) | ((uint64_t)buf[11] << 10) | ((uint64_t)(buf[12] & 255) << 18);
-    h[4] = ((uint64_t)buf[13]) | ((uint64_t)buf[14] << 8) | ((uint64_t)buf[15] << 16) | ((uint64_t)(buf[16] & 3) << 24);
+// ============================================================
+//  Fast Poly1305: 3-limb (44/44/42-bit) representation.
+//  h = h0 + h1*B + h2*B^2 with B = 2^44; mod 2^130-5:
+//    B^3 = 2^132 = 20,  B^4 = 2^176 = 20*B
+//  Only 9 64x64->128 multiplies per 16-byte block.
+// ============================================================
+
+static JP_POLY_FORCEINLINE uint64_t poly_load64(const uint8_t* p) {
+    uint64_t v;
+    std::memcpy(&v, p, 8);
+    return v;
 }
 
-/// 将累加器写入 16 字节 little-endian
-static void poly1305_store(uint8_t* dst, const uint64_t* h) {
-    // 完全 reduce: carry propagation
-    uint64_t g[5];
-    std::memcpy(g, h, 5 * sizeof(uint64_t));
+static JP_POLY_FORCEINLINE void poly_store64(uint8_t* p, uint64_t v) {
+    std::memcpy(p, &v, 8);
+}
 
-    // 模 2^130-5 的 reduce
-    g[1] += g[0] >> 26; g[0] &= 0x3ffffff;
-    g[2] += g[1] >> 26; g[1] &= 0x3ffffff;
-    g[3] += g[2] >> 26; g[2] &= 0x3ffffff;
-    g[4] += g[3] >> 26; g[3] &= 0x3ffffff;
-    g[0] += (g[4] >> 26) * 5; g[4] &= 0x3ffffff;
-    g[1] += g[0] >> 26; g[0] &= 0x3ffffff;
+// 128-bit product/accumulation helpers using native x64 intrinsics.
+// MSVC has no __int128; emulated jp_uint128 costs 3 muls + call overhead
+// per 64x64 multiply, so Poly1305 uses explicit lo/hi arithmetic instead.
+struct P128 {
+    uint64_t lo, hi;
+};
 
-    // 转换为字节
-    uint32_t w0 = (uint32_t)(g[0] | (g[1] << 26));
-    uint32_t w1 = (uint32_t)((g[1] >> 6) | (g[2] << 20));
-    uint32_t w2 = (uint32_t)((g[2] >> 12) | (g[3] << 14));
-    uint32_t w3 = (uint32_t)((g[3] >> 18) | (g[4] << 8));
-    store32_le(dst, w0);
-    store32_le(dst + 4, w1);
-    store32_le(dst + 8, w2);
-    store32_le(dst + 12, w3);
+static JP_POLY_FORCEINLINE P128 p128_mul(uint64_t a, uint64_t b) {
+    uint64_t hi;
+    uint64_t lo = _umul128(a, b, &hi);
+    return P128{lo, hi};
+}
+
+static JP_POLY_FORCEINLINE P128 p128_add(P128 a, P128 b) {
+    unsigned char c = _addcarry_u64(0, a.lo, b.lo, &a.lo);
+    _addcarry_u64(c, a.hi, b.hi, &a.hi);
+    return a;
+}
+
+static JP_POLY_FORCEINLINE P128 p128_add_u64(P128 a, uint64_t b) {
+    unsigned char c = _addcarry_u64(0, a.lo, b, &a.lo);
+    _addcarry_u64(c, a.hi, 0, &a.hi);
+    return a;
+}
+
+// a * k where k is a small constant (fits in 64 bits: hi*a <= 64 bits)
+static JP_POLY_FORCEINLINE P128 p128_mul_u64(P128 a, uint64_t k) {
+    uint64_t hi;
+    uint64_t lo = _umul128(a.lo, k, &hi);
+    hi += a.hi * k;
+    return P128{lo, hi};
+}
+
+// h *= r (mod 2^130-5), with r already clamped
+static JP_POLY_FORCEINLINE void poly_mul3(uint64_t& h0, uint64_t& h1, uint64_t& h2,
+                                          uint64_t r0, uint64_t r1, uint64_t r2) {
+    const uint64_t M44 = 0xfffffffffffULL;
+    const uint64_t M42 = 0x3ffffffffffULL;
+    P128 p0 = p128_mul(h0, r0);
+    P128 p1 = p128_add(p128_mul(h0, r1), p128_mul(h1, r0));
+    P128 p2 = p128_add(p128_add(p128_mul(h0, r2), p128_mul(h1, r1)),
+                       p128_mul(h2, r0));
+    P128 p3 = p128_add(p128_mul(h1, r2), p128_mul(h2, r1));
+    P128 p4 = p128_mul(h2, r2);
+
+    // fold B^3=2^132=20 and B^4=2^176=20*B into limbs 0 and 1
+    P128 d0 = p128_add(p0, p128_mul_u64(p3, 20));
+    P128 d1 = p128_add(p1, p128_mul_u64(p4, 20));
+    P128 d2 = p2;
+
+    // carry propagation; overflow of the 42-bit h2 limb is 2^130 = 5
+    uint64_t c;
+    h0 = d0.lo & M44; c = (d0.hi << 20) | (d0.lo >> 44);
+    d1 = p128_add_u64(d1, c);
+    h1 = d1.lo & M44; c = (d1.hi << 20) | (d1.lo >> 44);
+    d2 = p128_add_u64(d2, c);
+    h2 = d2.lo & M42; c = (d2.hi << 22) | (d2.lo >> 42);
+    h0 += c * 5;
+    c = h0 >> 44; h0 &= M44; h1 += c;
+    c = h1 >> 44; h1 &= M44; h2 += c;
+    c = h2 >> 42; h2 &= M42; h0 += c * 5;
+    c = h0 >> 44; h0 &= M44; h1 += c;
+}
+
+// load a 16-byte block into 3 limbs, with optional 2^128 pad bit
+static JP_POLY_FORCEINLINE void poly_load_block(const uint8_t* p, uint64_t& m0,
+                                                uint64_t& m1, uint64_t& m2,
+                                                bool pad_bit) {
+    const uint64_t M44 = 0xfffffffffffULL;
+    const uint64_t M42 = 0x3ffffffffffULL;
+    uint64_t w0 = poly_load64(p);
+    uint64_t w1 = poly_load64(p + 8);
+    m0 = w0 & M44;
+    m1 = ((w0 >> 44) | (w1 << 20)) & M44;
+    m2 = (w1 >> 24) & M42;
+    if (pad_bit) m2 += (1ULL << 40);
+}
+
+// add one 16-byte block (with optional 0x01 pad bit at bit 128) and multiply
+static JP_POLY_FORCEINLINE void poly_add_block3(uint64_t& h0, uint64_t& h1,
+                                                uint64_t& h2, const uint8_t* p,
+                                                uint64_t r0, uint64_t r1,
+                                                uint64_t r2, bool pad_bit) {
+    uint64_t m0, m1, m2;
+    poly_load_block(p, m0, m1, m2, pad_bit);
+    h0 += m0; h1 += m1; h2 += m2;
+    poly_mul3(h0, h1, h2, r0, r1, r2);
+}
+
+// process 4 consecutive 16-byte blocks in parallel:
+//   h' = (h+m0)*r^4 + m1*r^3 + m2*r^2 + m3*r
+// The four products are independent, giving 4-way ILP.
+static JP_POLY_FORCEINLINE void poly_blocks4(uint64_t& h0, uint64_t& h1,
+                                             uint64_t& h2, const uint8_t* m,
+                                             uint64_t r0, uint64_t r1,
+                                             uint64_t r2,
+                                             uint64_t r20, uint64_t r21,
+                                             uint64_t r22,
+                                             uint64_t r30, uint64_t r31,
+                                             uint64_t r32,
+                                             uint64_t r40, uint64_t r41,
+                                             uint64_t r42) {
+    const uint64_t M44 = 0xfffffffffffULL;
+    const uint64_t M42 = 0x3ffffffffffULL;
+    uint64_t a0, a1, a2, b0, b1, b2, c0, c1, c2, d0, d1, d2;
+    poly_load_block(m,      a0, a1, a2, true);
+    poly_load_block(m + 16, b0, b1, b2, true);
+    poly_load_block(m + 32, c0, c1, c2, true);
+    poly_load_block(m + 48, d0, d1, d2, true);
+
+    uint64_t A0 = a0 + h0, A1 = a1 + h1, A2 = a2 + h2;
+    poly_mul3(A0, A1, A2, r40, r41, r42);
+    poly_mul3(b0, b1, b2, r30, r31, r32);
+    poly_mul3(c0, c1, c2, r20, r21, r22);
+    poly_mul3(d0, d1, d2, r0, r1, r2);
+
+    // accumulate incrementally so the compiler can free product registers
+    uint64_t s0 = A0 + b0;
+    uint64_t s1 = A1 + b1;
+    uint64_t s2 = A2 + b2;
+    s0 += c0; s1 += c1; s2 += c2;
+    s0 += d0; s1 += d1; s2 += d2;
+
+    uint64_t carry;
+    carry = s0 >> 44; s0 &= M44; s1 += carry;
+    carry = s1 >> 44; s1 &= M44; s2 += carry;
+    carry = s2 >> 42; s2 &= M42; s0 += carry * 5;
+
+    h0 = s0; h1 = s1; h2 = s2;
+}
+
+// Reusable Poly1305 state (3-limb) so the AEAD path can feed ciphertext
+// blocks as they are produced by the ChaCha stream, without a second pass.
+struct Poly1305State64 {
+    uint64_t h0 = 0, h1 = 0, h2 = 0;
+    uint64_t r0, r1, r2;
+    uint64_t r20, r21, r22;
+    uint64_t r30, r31, r32;
+    uint64_t r40, r41, r42;
+    poly_avx2::State avx;      // AVX2 路径状态（26-bit 肢体）
+    uint8_t key[32] = {};      // 一次性密钥（finish 需要）
+    bool use_avx = false;      // 本消息是否已走 AVX2 路径
+};
+
+static void poly1305_init64(Poly1305State64& st, const uint8_t key[32]) {
+    const uint64_t M44 = 0xfffffffffffULL;
+    const uint64_t M42 = 0x3ffffffffffULL;
+
+    uint8_t rbytes[16];
+    std::memcpy(rbytes, key, 16);
+    poly1305_clamp(rbytes);
+    uint64_t rw0 = poly_load64(rbytes);
+    uint64_t rw1 = poly_load64(rbytes + 8);
+    st.r0 = rw0 & M44;
+    st.r1 = ((rw0 >> 44) | (rw1 << 20)) & M44;
+    st.r2 = (rw1 >> 24) & M42;
+
+    // precompute r^2, r^3, r^4 for the 4-way block routine
+    st.r20 = st.r0; st.r21 = st.r1; st.r22 = st.r2;
+    poly_mul3(st.r20, st.r21, st.r22, st.r0, st.r1, st.r2);
+    st.r30 = st.r20; st.r31 = st.r21; st.r32 = st.r22;
+    poly_mul3(st.r30, st.r31, st.r32, st.r0, st.r1, st.r2);
+    st.r40 = st.r30; st.r41 = st.r31; st.r42 = st.r32;
+    poly_mul3(st.r40, st.r41, st.r42, st.r0, st.r1, st.r2);
+    std::memcpy(st.key, key, 32);
+    st.use_avx = false;
+}
+
+// Feed n bytes. For the AEAD layout (AAD || pad(AAD) || ct || pad(ct) ...)
+// the trailing partial block is zero-padded to 16 and gets the 2^128 pad bit.
+static void poly1305_feed64(Poly1305State64& st, const uint8_t* p, size_t n) {
+    static const bool has_avx2 = cpu_has_avx2();
+    // AVX2 路径只处理完整的 64 字节块；剩余不足 64B 的交给标量路径，
+    // 避免 16B 尾部块在 AVX2 中把零填充块也纳入多项式。
+    if (has_avx2 && n >= 64) {
+        if (!st.use_avx) {
+            poly_avx2::init(st.avx, st.key);
+            // 迁移已有标量 44-bit 哈希到 AVX2 26-bit 状态
+            uint64_t s0 = st.h0, s1 = st.h1, s2 = st.h2;
+            st.avx.h0 = s0 & 0x3ffffff;
+            st.avx.h1 = ((s0 >> 26) | (s1 << 18)) & 0x3ffffff;
+            st.avx.h2 = (s1 >> 8) & 0x3ffffff;
+            st.avx.h3 = ((s1 >> 34) | (s2 << 10)) & 0x3ffffff;
+            st.avx.h4 = (s2 >> 16) & 0x3ffffff;
+            st.use_avx = true;
+        }
+        size_t n64 = n & ~(size_t)63;
+        poly_avx2::feed(st.avx, p, n64);
+        p += n64;
+        n -= n64;
+        if (n == 0) return;
+        // 剩余 <64B：转回标量继续
+        uint64_t h0 = st.avx.h0, h1 = st.avx.h1, h2 = st.avx.h2,
+                 h3 = st.avx.h3, h4 = st.avx.h4;
+        st.h0 = h0 | ((h1 & 0x3ffff) << 26);
+        st.h1 = (h1 >> 18) | (h2 << 8) | ((h3 & 0x3ff) << 34);
+        st.h2 = (h3 >> 10) | (h4 << 16);
+        st.h0 &= 0xfffffffffffULL;
+        st.h1 &= 0xfffffffffffULL;
+        st.h2 &= 0x3ffffffffffULL;
+        st.use_avx = false;
+    }
+    if (st.use_avx) {
+        // 已走 AVX2 路径但遇到非 16 倍数输入：把 AVX2 哈希转回标量
+        uint64_t h0 = st.avx.h0, h1 = st.avx.h1, h2 = st.avx.h2,
+                 h3 = st.avx.h3, h4 = st.avx.h4;
+        st.h0 = h0 | ((h1 & 0x3ffff) << 26);
+        st.h1 = (h1 >> 18) | (h2 << 8) | ((h3 & 0x3ff) << 34);
+        st.h2 = (h3 >> 10) | (h4 << 16);
+        st.h0 &= 0xfffffffffffULL;
+        st.h1 &= 0xfffffffffffULL;
+        st.h2 &= 0x3ffffffffffULL;
+        st.use_avx = false;
+    }
+    while (n >= 64) {
+        poly_blocks4(st.h0, st.h1, st.h2, p,
+                     st.r0, st.r1, st.r2,
+                     st.r20, st.r21, st.r22,
+                     st.r30, st.r31, st.r32,
+                     st.r40, st.r41, st.r42);
+        p += 64;
+        n -= 64;
+    }
+    while (n >= 16) {
+        poly_add_block3(st.h0, st.h1, st.h2, p, st.r0, st.r1, st.r2, true);
+        p += 16;
+        n -= 16;
+    }
+    if (n) {
+        uint8_t t[16] = {0};
+        std::memcpy(t, p, n);
+        poly_add_block3(st.h0, st.h1, st.h2, t, st.r0, st.r1, st.r2, true);
+    }
+}
+
+// Software-pipelined fused ChaCha20 stream + Poly1305 feed.
+// Processes CH bytes per iteration. The SIMD ChaCha work for the NEXT chunk
+// is issued before the scalar Poly1305 work of the CURRENT chunk, so the two
+// use different execution ports and overlap, and the freshly written
+// ciphertext is still in L1 when Poly1305 reads it (no second DRAM pass).
+static void chacha20_crypt_feed_poly(
+    const uint8_t key[32], const uint8_t nonce[12],
+    std::span<const uint8_t> in, std::span<uint8_t> out,
+    std::span<const uint8_t> ct, Poly1305State64& st) {
+    constexpr size_t CH = 4096;  // 64 ChaCha blocks
+    const size_t n = in.size();
+    size_t pos = 0;
+
+    bool use512 = cpu_has_avx512();
+    bool use256 = cpu_has_avx2();
+    auto gen = [&](size_t p, size_t len) {
+        uint32_t ctr = 1 + (uint32_t)(p / 64);
+        if (use512)
+            chacha20_crypt_avx512(key, ctr, nonce, in.subspan(p, len), out.subspan(p, len));
+        else if (use256)
+            chacha20_crypt_avx2(key, ctr, nonce, in.subspan(p, len), out.subspan(p, len));
+        else
+            chacha20_crypt(key, ctr, nonce, in.subspan(p, len), out.subspan(p, len));
+    };
+
+    if (n >= CH) { gen(0, CH); pos = CH; }
+    while (pos + CH <= n) {
+        gen(pos, CH);  // SIMD ChaCha for the next chunk (independent of poly)
+        poly1305_feed64(st, ct.data() + pos - CH, CH);  // scalar Poly1305
+        pos += CH;
+    }
+    if (pos >= CH)
+        poly1305_feed64(st, ct.data() + pos - CH, CH);  // last full chunk
+    if (pos < n) {
+        gen(pos, n - pos);
+        poly1305_feed64(st, ct.data() + pos, n - pos);
+    }
+}
+
+// 若当前状态走的是 AVX2 路径，把 26-bit 哈希转回 44-bit 标量 limb
+static void poly1305_sync_scalar(Poly1305State64& st) {
+    if (!st.use_avx) return;
+    uint64_t h0 = st.avx.h0, h1 = st.avx.h1, h2 = st.avx.h2,
+             h3 = st.avx.h3, h4 = st.avx.h4;
+    st.h0 = h0 | ((h1 & 0x3ffff) << 26);
+    st.h1 = (h1 >> 18) | (h2 << 8) | ((h3 & 0x3ff) << 34);
+    st.h2 = (h3 >> 10) | (h4 << 16);
+    st.h0 &= 0xfffffffffffULL;
+    st.h1 &= 0xfffffffffffULL;
+    st.h2 &= 0x3ffffffffffULL;
+    st.use_avx = false;
+}
+
+// finish: full reduction mod 2^130-5, select h < p, then tag = (h + s) mod 2^128
+static void poly1305_finish3(uint64_t h0, uint64_t h1, uint64_t h2,
+                             const uint8_t key[32], uint8_t tag[16]) {
+    const uint64_t M44 = 0xfffffffffffULL;
+    const uint64_t M42 = 0x3ffffffffffULL;
+
+    uint64_t c;
+    c = h1 >> 44; h1 &= M44; h2 += c;
+    c = h2 >> 42; h2 &= M42; h0 += c * 5;
+    c = h0 >> 44; h0 &= M44; h1 += c;
+    c = h1 >> 44; h1 &= M44; h2 += c;
+    c = h2 >> 42; h2 &= M42; h0 += c * 5;
+    c = h0 >> 44; h0 &= M44; h1 += c;
+
+    // select h if h < p, else h - p (= h + 5 - 2^130)
+    uint64_t g0 = h0 + 5; c = g0 >> 44; g0 &= M44;
+    uint64_t g1 = h1 + c; c = g1 >> 44; g1 &= M44;
+    uint64_t g2 = h2 + c - (1ULL << 42);
+    c = (g2 >> 63) - 1;
+    g0 &= c; g1 &= c; g2 &= c;
+    c = ~c;
+    h0 = (h0 & c) | g0;
+    h1 = (h1 & c) | g1;
+    h2 = (h2 & c) | g2;
+
+    // tag = (h + s) mod 2^128
+    uint64_t lo = h0 | (h1 << 44);
+    uint64_t hi = (h1 >> 20) | (h2 << 24);
+    uint64_t f0 = lo + poly_load64(key + 16);
+    uint64_t f1 = hi + poly_load64(key + 24) + (f0 < lo);
+    poly_store64(tag, f0);
+    poly_store64(tag + 8, f1);
+}
+
+// Poly1305 over the AEAD layout AAD || pad(AAD) || ct || pad(ct) || len64 || len64,
+// without building a concatenated message buffer.
+static void poly1305_mac_parts64(const uint8_t key[32],
+                                 std::span<const uint8_t> aad,
+                                 std::span<const uint8_t> ct,
+                                 uint8_t tag[16]) {
+    Poly1305State64 st;
+    poly1305_init64(st, key);
+    poly1305_feed64(st, aad.data(), aad.size());
+    poly1305_feed64(st, ct.data(), ct.size());
+
+    uint8_t lenblock[16];
+    poly_store64(lenblock, (uint64_t)aad.size());
+    poly_store64(lenblock + 8, (uint64_t)ct.size());
+    poly1305_feed64(st, lenblock, 16);
+    if (st.use_avx) {
+        uint64_t h0 = st.avx.h0, h1 = st.avx.h1, h2 = st.avx.h2,
+                 h3 = st.avx.h3, h4 = st.avx.h4;
+        st.h0 = h0 | ((h1 & 0x3ffff) << 26);
+        st.h1 = (h1 >> 18) | (h2 << 8) | ((h3 & 0x3ff) << 34);
+        st.h2 = (h3 >> 10) | (h4 << 16);
+        st.h0 &= 0xfffffffffffULL;
+        st.h1 &= 0xfffffffffffULL;
+        st.h2 &= 0x3ffffffffffULL;
+    }
+    poly1305_finish3(st.h0, st.h1, st.h2, key, tag);
 }
 
 void poly1305_mac(const uint8_t key[32],
                   std::span<const uint8_t> msg,
                   uint8_t tag[16]) {
-    // 1. 解析密钥：r = key[0..15] (clamped), s = key[16..31]
-    uint8_t r[16];
-    std::memcpy(r, key, 16);
-    poly1305_clamp(r);
+    // Fast 3-limb (44/44/42-bit) Poly1305 over a raw message span:
+    // full 16-byte blocks get the 2^128 bit; a final partial block is
+    // appended with 0x01 and zero-padded to 16 bytes (no 2^128 bit).
+    uint8_t rbytes[16];
+    std::memcpy(rbytes, key, 16);
+    poly1305_clamp(rbytes);
 
-    // 将 r 分解为 5 个 26-bit limbs
-    uint64_t rlimbs[5];
-    rlimbs[0] = load32_le(r) & 0x3ffffff;
-    rlimbs[1] = (load32_le(r + 3) >> 2) & 0x3ffffff;
-    rlimbs[2] = (load32_le(r + 6) >> 4) & 0x3ffffff;
-    rlimbs[3] = (load32_le(r + 9) >> 6) & 0x3ffffff;
-    rlimbs[4] = (load32_le(r + 12) >> 8) & 0x3ffffff;
+    const uint64_t M44 = 0xfffffffffffULL;
+    const uint64_t M42 = 0x3ffffffffffULL;
+    uint64_t rw0 = poly_load64(rbytes);
+    uint64_t rw1 = poly_load64(rbytes + 8);
+    uint64_t r0 = rw0 & M44;
+    uint64_t r1 = ((rw0 >> 44) | (rw1 << 20)) & M44;
+    uint64_t r2 = (rw1 >> 24) & M42;
 
-    // s 的 5 个 limbs
-    uint64_t s0 = load32_le(key + 16);
-    uint64_t s1 = load32_le(key + 20);
-    uint64_t s2 = load32_le(key + 24);
-    uint64_t s3 = load32_le(key + 28);
+    // precompute r^2, r^3, r^4 for the 4-way block routine
+    uint64_t r20 = r0, r21 = r1, r22 = r2;
+    poly_mul3(r20, r21, r22, r0, r1, r2);
+    uint64_t r30 = r20, r31 = r21, r32 = r22;
+    poly_mul3(r30, r31, r32, r0, r1, r2);
+    uint64_t r40 = r30, r41 = r31, r42 = r32;
+    poly_mul3(r40, r41, r42, r0, r1, r2);
 
-    // 2. 累加器初始化为 0
-    uint64_t h[5] = {};
-
-    // 3. 处理每个 16 字节消息块
+    uint64_t h0 = 0, h1 = 0, h2 = 0;
     size_t pos = 0;
-    while (pos < msg.size()) {
-        size_t chunk = std::min<size_t>(16, msg.size() - pos);
-
-        uint64_t block[5];
-        poly1305_load(block, msg.data() + pos, (int)chunk);
-
-        // h += block
-        h[0] += block[0];
-        h[1] += block[1];
-        h[2] += block[2];
-        h[3] += block[3];
-        h[4] += block[4];
-
-        // h *= r (模 2^130-5)
-        uint64_t d[10] = {};
-        // 学校乘法（5×5）
-        d[0] = h[0] * rlimbs[0];
-        d[1] = h[0] * rlimbs[1] + h[1] * rlimbs[0];
-        d[2] = h[0] * rlimbs[2] + h[1] * rlimbs[1] + h[2] * rlimbs[0];
-        d[3] = h[0] * rlimbs[3] + h[1] * rlimbs[2] + h[2] * rlimbs[1] + h[3] * rlimbs[0];
-        d[4] = h[0] * rlimbs[4] + h[1] * rlimbs[3] + h[2] * rlimbs[2] + h[3] * rlimbs[1] + h[4] * rlimbs[0];
-        d[5] = h[1] * rlimbs[4] + h[2] * rlimbs[3] + h[3] * rlimbs[2] + h[4] * rlimbs[1];
-        d[6] = h[2] * rlimbs[4] + h[3] * rlimbs[3] + h[4] * rlimbs[2];
-        d[7] = h[3] * rlimbs[4] + h[4] * rlimbs[3];
-        d[8] = h[4] * rlimbs[4];
-
-        // 模约简（利用 2^130 ≡ 5 mod 2^130-5）
-        // 带进位传播
-        uint64_t carry;
-        carry = d[0] >> 26; h[0] = d[0] & 0x3ffffff; d[1] += carry;
-        carry = d[1] >> 26; h[1] = d[1] & 0x3ffffff; d[2] += carry;
-        carry = d[2] >> 26; h[2] = d[2] & 0x3ffffff; d[3] += carry;
-        carry = d[3] >> 26; h[3] = d[3] & 0x3ffffff; d[4] += carry;
-        carry = d[4] >> 26; h[4] = d[4] & 0x3ffffff; d[5] += carry;
-        carry = d[5] >> 26; d[5] &= 0x3ffffff; d[6] += carry;
-        carry = d[6] >> 26; d[6] &= 0x3ffffff; d[7] += carry;
-        carry = d[7] >> 26; d[7] &= 0x3ffffff; d[8] += carry;
-        // 折叠高位 → 低位（利用 2^130 ≡ 5）
-        h[0] += d[5] * 5;
-        h[1] += d[6] * 5;
-        h[2] += d[7] * 5;
-        h[3] += d[8] * 5;
-        // 注意：d[4]*5 已经在 h[4] 的基础上被 include（h[4] = d[4] & mask）
-
-        // 再次 carry propagate
-        carry = h[0] >> 26; h[0] &= 0x3ffffff; h[1] += carry;
-        carry = h[1] >> 26; h[1] &= 0x3ffffff; h[2] += carry;
-        carry = h[2] >> 26; h[2] &= 0x3ffffff; h[3] += carry;
-        carry = h[3] >> 26; h[3] &= 0x3ffffff; h[4] += carry;
-        carry = h[4] >> 26; h[4] &= 0x3ffffff; h[0] += carry * 5;
-        carry = h[0] >> 26; h[0] &= 0x3ffffff; h[1] += carry;
-
-        pos += chunk;
+    while (msg.size() - pos >= 64) {
+        poly_blocks4(h0, h1, h2, msg.data() + pos,
+                     r0, r1, r2, r20, r21, r22, r30, r31, r32, r40, r41, r42);
+        pos += 64;
     }
-
-    // 4. 最终加 s（模 2^128）
-    uint64_t g0 = h[0] | (h[1] << 26);
-    uint64_t g1 = (h[1] >> 6) | (h[2] << 20);
-    uint64_t g2 = (h[2] >> 12) | (h[3] << 14);
-    uint64_t g3 = (h[3] >> 18) | (h[4] << 8);
-
-    uint64_t f0 = g0 + s0 + (s1 << 32);
-    uint64_t f1 = g1 + (s1 >> 32) + s2;
-    uint64_t f2 = g2 + s3;
-    uint64_t f3 = g3;  // s 只有 128 bit
-
-    // carry propagate
-    f1 += f0 >> 32; f0 &= 0xffffffff;
-    f2 += f1 >> 32; f1 &= 0xffffffff;
-    f3 += f2 >> 32; f2 &= 0xffffffff;
-
-    // 输出为 16 字节 little-endian
-    store32_le(tag,      (uint32_t)f0);
-    store32_le(tag + 4,  (uint32_t)(f0 >> 32));
-    store32_le(tag + 8,  (uint32_t)f1);
-    store32_le(tag + 12, (uint32_t)(f1 >> 32));
+    while (msg.size() - pos >= 16) {
+        poly_add_block3(h0, h1, h2, msg.data() + pos, r0, r1, r2, true);
+        pos += 16;
+    }
+    if (pos < msg.size()) {
+        uint8_t t[16] = {0};
+        size_t n = msg.size() - pos;
+        std::memcpy(t, msg.data() + pos, n);
+        t[n] = 1;
+        poly_add_block3(h0, h1, h2, t, r0, r1, r2, false);
+    }
+    poly1305_finish3(h0, h1, h2, key, tag);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -312,39 +596,23 @@ void chacha20_poly1305_encrypt(
     // 1. 用 counter=0 生成 Poly1305 一次性密钥（32 字节）
     uint8_t poly_key[64];
     chacha20_block(key, 0, nonce, poly_key);
-    // 只需要前 32 字节
 
     // 2. 用 counter=1 加密明文
     ciphertext.resize(plaintext.size());
-    chacha20_crypt(key, 1, nonce, plaintext, ciphertext);
 
-    // 3. 构造 Poly1305 认证消息
-    // 格式：AAD || pad(AAD) || ciphertext || pad(ciphertext) || len(AAD)_64 || len(ciphertext)_64
-    std::vector<uint8_t> poly_msg;
-    poly_msg.reserve(aad.size() + ciphertext.size() + 32);
+    // 3. 边加密边累计 Poly1305（单遍，流水线重叠 SIMD 与标量）
+    Poly1305State64 st;
+    poly1305_init64(st, poly_key);
+    poly1305_feed64(st, aad.data(), aad.size());
+    chacha20_crypt_feed_poly(key, nonce, plaintext, ciphertext, ciphertext, st);
 
-    // AAD
-    poly_msg.insert(poly_msg.end(), aad.begin(), aad.end());
-    // 零填充 AAD 到 16 字节边界
-    while (poly_msg.size() % 16 != 0) poly_msg.push_back(0);
-
-    // 密文
-    poly_msg.insert(poly_msg.end(), ciphertext.begin(), ciphertext.end());
-    // 零填充密文到 16 字节边界
-    while (poly_msg.size() % 16 != 0) poly_msg.push_back(0);
-
-    // len(AAD) || len(ciphertext) — 各 8 字节 little-endian
-    uint64_t aad_len = aad.size();
-    uint64_t ct_len  = ciphertext.size();
-    for (int i = 0; i < 8; ++i) {
-        poly_msg.push_back((uint8_t)(aad_len >> (i * 8)));
-    }
-    for (int i = 0; i < 8; ++i) {
-        poly_msg.push_back((uint8_t)(ct_len >> (i * 8)));
-    }
-
-    // 4. 计算 Poly1305 MAC
-    poly1305_mac(poly_key, poly_msg, tag);
+    // 4. 认证消息尾部：len(AAD)_64 || len(ciphertext)_64
+    uint8_t lenblock[16];
+    poly_store64(lenblock, (uint64_t)aad.size());
+    poly_store64(lenblock + 8, (uint64_t)plaintext.size());
+    poly1305_feed64(st, lenblock, 16);
+    poly1305_sync_scalar(st);
+    poly1305_finish3(st.h0, st.h1, st.h2, poly_key, tag);
 }
 
 bool chacha20_poly1305_decrypt(
@@ -358,31 +626,25 @@ bool chacha20_poly1305_decrypt(
     uint8_t poly_key[64];
     chacha20_block(key, 0, nonce, poly_key);
 
-    // 2. 构造 Poly1305 认证消息（与加密相同）
-    std::vector<uint8_t> poly_msg;
-    poly_msg.reserve(aad.size() + ciphertext.size() + 32);
-
-    poly_msg.insert(poly_msg.end(), aad.begin(), aad.end());
-    while (poly_msg.size() % 16 != 0) poly_msg.push_back(0);
-
-    poly_msg.insert(poly_msg.end(), ciphertext.begin(), ciphertext.end());
-    while (poly_msg.size() % 16 != 0) poly_msg.push_back(0);
-
-    uint64_t aad_len = aad.size();
-    uint64_t ct_len  = ciphertext.size();
-    for (int i = 0; i < 8; ++i) poly_msg.push_back((uint8_t)(aad_len >> (i * 8)));
-    for (int i = 0; i < 8; ++i) poly_msg.push_back((uint8_t)(ct_len >> (i * 8)));
-
-    // 3. 计算期望的 tag
+    // 2. 先验签再解密：失败时不输出任何明文
     uint8_t expected_tag[16];
-    poly1305_mac(poly_key, poly_msg, expected_tag);
+    Poly1305State64 st;
+    poly1305_init64(st, poly_key);
+    poly1305_feed64(st, aad.data(), aad.size());
+    poly1305_feed64(st, ciphertext.data(), ciphertext.size());
+    uint8_t lenblock[16];
+    poly_store64(lenblock, (uint64_t)aad.size());
+    poly_store64(lenblock + 8, (uint64_t)ciphertext.size());
+    poly1305_feed64(st, lenblock, 16);
+    poly1305_sync_scalar(st);
+    poly1305_finish3(st.h0, st.h1, st.h2, poly_key, expected_tag);
 
-    // 4. 常数时间比较 tag
+    // 3. 常数时间比较 tag
     uint8_t diff = 0;
     for (int i = 0; i < 16; ++i) diff |= tag[i] ^ expected_tag[i];
     if (diff != 0) return false;
 
-    // 5. 解密密文
+    // 4. 解密密文
     plaintext.resize(ciphertext.size());
     chacha20_crypt(key, 1, nonce, ciphertext, plaintext);
 

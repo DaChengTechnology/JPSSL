@@ -70,6 +70,28 @@ void poly1305_mac(const uint8_t key[32],
                   uint8_t tag[16]);
 
 // ═══════════════════════════════════════════════════════════════════════
+//  Poly1305 AVX2 加速（poly1305_avx2.cpp，运行时检测后由内部 dispatch 调用）
+// ═══════════════════════════════════════════════════════════════════════
+
+namespace poly_avx2 {
+
+/// AVX2 内部状态（布局固定，poly1305_avx2.cpp 内部按 __m256i 使用）
+struct State {
+    // 26-bit 哈希肢体（lane0 为链；下一块组前广播）
+    uint64_t h0 = 0, h1 = 0, h2 = 0, h3 = 0, h4 = 0;
+    // r 幂系数表：r0..r4 与 5r1..5r4，每个 4×64 位 lane（块 0..3）
+    uint64_t c[9][4] = {};
+};
+
+void init(State& st, const uint8_t key[32]);
+/// 处理 n 字节（调用方保证 n 是 16 的倍数）
+void feed(State& st, const uint8_t* p, size_t n);
+/// 输出 16 字节标签
+void finish(const State& st, const uint8_t key[32], uint8_t tag[16]);
+
+}  // namespace poly_avx2
+
+// ═══════════════════════════════════════════════════════════════════════
 //  ChaCha20-Poly1305 AEAD（RFC 8439 §2.8）
 // ═══════════════════════════════════════════════════════════════════════
 
