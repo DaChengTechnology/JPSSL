@@ -9,6 +9,11 @@
 #include "sm3.hpp"
 #include <cstring>
 
+#if defined(JP_HAVE_SM3_ASM)
+// Windows x64 (MSVC): scalar asm compression, src/sm3_win.asm
+extern "C" void sm3_compress_asm(uint32_t h[8], const uint8_t block[64]);
+#endif
+
 namespace jpssl {
 
 // ─── 常量 ──────────────────────────────────────────────────────────────
@@ -47,13 +52,20 @@ static inline uint32_t GG1(uint32_t x, uint32_t y, uint32_t z) {
     return (x & y) | (~x & z);
 }
 
+static void load_be32(uint32_t dst[16], const uint8_t src[64]);
+
 // ─── 压缩函数 ───────────────────────────────────────────────────────────
 
 // CF(V, B)：消息扩展 + 64 轮（8 轮/组展开）
-static void sm3_cf(uint32_t v[8], const uint32_t block[16]) {
+static void sm3_cf(uint32_t v[8], const uint8_t block[64]) {
+#if defined(JP_HAVE_SM3_ASM)
+    sm3_compress_asm(v, block);
+#else
     uint32_t w[68];  // W_0 .. W_67
 
-    for (int j = 0; j < 16; ++j) w[j] = block[j];
+    uint32_t be[16];
+    load_be32(be, block);
+    for (int j = 0; j < 16; ++j) w[j] = be[j];
     for (int j = 16; j < 68; ++j) {
         w[j] = P1(w[j-16] ^ w[j-9] ^ ROTL(w[j-3], 15))
              ^ ROTL(w[j-13], 7) ^ w[j-6];
@@ -90,6 +102,7 @@ static void sm3_cf(uint32_t v[8], const uint32_t block[16]) {
 
     v[0] ^= a; v[1] ^= b; v[2] ^= c; v[3] ^= d;
     v[4] ^= e; v[5] ^= f; v[6] ^= g; v[7] ^= h;
+#endif
 }
 
 // ─── 大端读写 ───────────────────────────────────────────────────────────
@@ -133,18 +146,14 @@ void sm3_update(sm3_ctx* ctx, const uint8_t* data, size_t len) {
         len  -= copy;
 
         if (ctx->buf_len == SM3_BLOCK_SIZE) {
-            uint32_t bb[16];
-            load_be32(bb, ctx->buf);
-            sm3_cf(ctx->h, bb);
+            sm3_cf(ctx->h, ctx->buf);
             ctx->buf_len = 0;
         }
     }
 
     // 整块处理
     while (len >= SM3_BLOCK_SIZE) {
-        uint32_t bb[16];
-        load_be32(bb, data);
-        sm3_cf(ctx->h, bb);
+        sm3_cf(ctx->h, data);
         data += SM3_BLOCK_SIZE;
         len  -= SM3_BLOCK_SIZE;
     }
@@ -163,9 +172,7 @@ void sm3_final(sm3_ctx* ctx, uint8_t digest[SM3_DIGEST_SIZE]) {
     if (ctx->buf_len > 56) {
         std::memset(ctx->buf + ctx->buf_len, 0, SM3_BLOCK_SIZE - ctx->buf_len);
         ctx->buf_len = SM3_BLOCK_SIZE;
-        uint32_t bb[16];
-        load_be32(bb, ctx->buf);
-        sm3_cf(ctx->h, bb);
+        sm3_cf(ctx->h, ctx->buf);
         ctx->buf_len = 0;
     }
 
@@ -176,9 +183,7 @@ void sm3_final(sm3_ctx* ctx, uint8_t digest[SM3_DIGEST_SIZE]) {
     for (int i = 7; i >= 0; --i)
         ctx->buf[ctx->buf_len++] = (uint8_t)(bits >> (i * 8));
 
-    uint32_t bb[16];
-    load_be32(bb, ctx->buf);
-    sm3_cf(ctx->h, bb);
+    sm3_cf(ctx->h, ctx->buf);
 
     store_be32(digest, ctx->h);
 }

@@ -37,6 +37,7 @@
 │  ├─ ecdsa.cpp              ECDSA P-256 签名/验证  │
 │  ├─ sm2.cpp                SM2 签名/验证/密钥交换  │
 │  ├─ sm3.cpp                SM3 密码杂凑算法        │
+│  ├─ sm3_win.asm           SM3 标量汇编 (MSVC x64)       │
 │  ├─ sm4.cpp                SM4 分组密码            │
 │  ├─ sm4_gcm.cpp            SM4-GCM AEAD 模式       │
 │  ├─ hmac.cpp               HMAC-SHA256/SHA384/SM3   │

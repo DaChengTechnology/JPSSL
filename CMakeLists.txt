@@ -145,6 +145,8 @@ if(MSVC)
     list(APPEND CPU_SOURCES src/rsa_mont_asm_win.asm)
     list(APPEND CPU_SOURCES src/fe51_mul_adx.asm)
     list(APPEND CPU_SOURCES src/fe51_sq_adx.asm)
+    # SM3 标量压缩汇编
+    list(APPEND CPU_SOURCES src/sm3_win.asm)
 endif()
 
 add_library(jpssl_cpu STATIC ${CPU_SOURCES})
@@ -156,6 +158,8 @@ endif()
 if(MSVC)
     target_compile_definitions(jpssl_cpu PRIVATE JP_HAVE_ADX_ASM)
     target_compile_definitions(jpssl_cpu_shared PRIVATE JP_HAVE_ADX_ASM)
+    target_compile_definitions(jpssl_cpu PRIVATE JP_HAVE_SM3_ASM)
+    target_compile_definitions(jpssl_cpu_shared PRIVATE JP_HAVE_SM3_ASM)
 endif()
 target_include_directories(jpssl_cpu PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -32,6 +32,9 @@
   - `bn_modinv` 重写：原除法版欧几里得 or_/rc 角色颠倒（除法方向反、0.00s 返回错误结果），二进制扩展欧几里得又要求模数 m 为奇数（RSA 的 phi=(p-1)(q-1) 为偶数，÷2 需 2 可逆故失效）→ 改为标准扩展欧几里得除法版（r0=m,r1=a，系数 `(s0-q·s1) mod m` 经 `bn_mulmod` 取模更新，无 BN 容器截断、对任意 m 有效）。修复后 RSA 2048 往返 sign/verify 全部正确。
 
 ### Changed
+#### SM3 标量汇编 (Windows x64, MASM)
+- 新增 `src/sm3_win.asm`：`sm3_compress_asm` 标量压缩函数，64 轮全展开、状态 A–H 寄存器轮换、W[0..67] 栈上展开、block 大端 bswap 载入；MSVC x64 下 `sm3_cf` 自动走汇编（`JP_HAVE_SM3_ASM`），其他平台回退 C 标量。
+- 实测（本机 MSVC Release）：8 KiB 单条 SM3 吞吐约 350 → 387 MB/s（约 +10.5%），对比 OpenSSL 4.0 的 349 MB/s 约 +11%；纯标量指令，不依赖 BMI2/ADX，任意 x86-64 CPU 可用。
 
 #### RSA 性能优化（OpenSSL FIOS 移植 + keygen 兜底）
 - **RSA Montgomery 乘法移植 OpenSSL FIOS**：`src/rsa_mont_asm.cpp`/`src/rsa_mont_asm_win.asm` 实现 4 路展开 ADCX/ADOX 的 FIOS Montgomery 乘法，Windows 走手写 MASM（MULX 加速，K=32/64），Linux 走 GCC 内联汇编；加密/解密/批量运算全部接入。运行时不支持 BMI2/ADX 的 CPU 自动回退到标量 `_umul128` 实现，CPUID 检测结果进程内缓存。
@@ -57,7 +60,7 @@
 
 #### SM2 / SM3 性能优化
 - **SM2 重写**（`src/sm2.cpp`）：域运算改为 Montgomery（R=2^256）4×64 位表示，CIOS 乘法 + 对称平方（10 次 MULX），MSVC 用 `_umul128/_addcarry_u64` intrinsic；求逆用 Montgomery 快速幂并支持批量仿射化（单次求逆）；标量乘改用宽度-5 wNAF（G 奇倍点表全局预计算，仿射混合加法），验签用 Shamir 双标量同时乘共享倍点；顺带修正 e/x1 规约、坐标规约与签名格式细节。实测（MSVC Release）：keygen 16.2ms → 0.19ms（约 84×）、sign 18.0ms → 0.22ms（约 83×）、verify 30.6ms → 0.23ms（约 135×）；对比 OpenSSL 4.0：keygen 1.31× / sign 1.35× / verify 1.26×，双向签名互操作（OpenSSL 验 jpssl、jpssl 验 OpenSSL）全部通过。
-- **SM3 标量重写**（`src/sm3.cpp`）：压缩函数按 8 轮一组展开，T/FF/GG 全部编译期常量消除分支，W′ = W_j ^ W_{j+4} 轮内即时计算；8 KiB 块吞吐约 356 MB/s，与 OpenSSL 持平。
+- **SM3 标量重写**（`src/sm3.cpp`）：压缩函数按 8 轮一组展开，T/FF/GG 全部编译期常量消除分支，W′ = W_j ^ W_{j+4} 轮内即时计算；8 KiB 块吞吐约 349–356 MB/s，与 OpenSSL 持平。
 - 新增 OpenSSL 对比基准 `benchmarks/bench_sm_ossl.cpp`（SM3 吞吐 + SM2 keygen/sign/verify，含 DER↔原始 r||s 签名互操作自检）。
 
 ### 验证
