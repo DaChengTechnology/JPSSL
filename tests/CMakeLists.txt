@@ -145,6 +145,10 @@ add_executable(test_x448_rfc test_x448_rfc.cpp)
 target_include_directories(test_x448_rfc PRIVATE ${INCLUDE_DIR} ${SRC_DIR})
 target_link_libraries(test_x448_rfc PRIVATE jpssl_cpu)
 
+add_executable(test_x448_batch test_x448_batch.cpp)
+target_include_directories(test_x448_batch PRIVATE ${INCLUDE_DIR} ${SRC_DIR})
+target_link_libraries(test_x448_batch PRIVATE jpssl_cpu)
+
 # ── X25519 OpenSSL 对比 (OpenSSL 对比) ───────────────────────────────────
 if(OpenSSL_FOUND)
 add_executable(test_x25519_ossl test_x25519_ossl.cpp)
@@ -229,3 +233,4 @@ add_test(NAME test_ed448_debug   COMMAND test_ed448_debug)
 add_test(NAME test_ed448_batch   COMMAND test_ed448_batch)
 add_test(NAME test_x25519_rfc    COMMAND test_x25519_rfc)
 add_test(NAME test_x448_rfc      COMMAND test_x448_rfc)
+add_test(NAME test_x448_batch    COMMAND test_x448_batch)

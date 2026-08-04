@@ -1,5 +1,6 @@
 #include "x448.hpp"
 #include "fe_448.hpp"
+#include "cpu_features.hpp"
 #include <cstring>
 #include <random>
 
@@ -11,6 +12,29 @@ namespace jpssl {
 
 void x448_scalar_mult(uint8_t out[56], const uint8_t scalar[56], const uint8_t point[56]) {
     x448_cpu_impl::x448_scalar_mult_impl(out, scalar, point);
+}
+
+void x448_scalar_mult_batch(uint8_t out[][56],
+                            const uint8_t* const* scalars,
+                            const uint8_t* const* points,
+                            int count)
+{
+    if (count <= 0) return;
+#if defined(JP_AVX512)
+    if (cpu_has_avx512()) {
+        x448_scalar_mult_batch_avx512(out, scalars, points, count);
+        return;
+    }
+#endif
+#if defined(JP_AVX2)
+    if (cpu_has_avx2()) {
+        x448_scalar_mult_batch_avx2(out, scalars, points, count);
+        return;
+    }
+#endif
+    for (int i = 0; i < count; ++i)
+        x448_cpu_impl::x448_scalar_mult_impl(out[i], scalars[i],
+                                             points ? points[i] : nullptr);
 }
 
 void x448_generate_keypair(uint8_t pub[56], uint8_t priv[56]) {
