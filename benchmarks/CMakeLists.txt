@@ -56,6 +56,10 @@ if(OpenSSL_FOUND)
     add_executable(bench_ed25519_ossl bench_ed25519_ossl.cpp)
     target_include_directories(bench_ed25519_ossl PRIVATE ${BENCH_INCLUDE_DIR} ${BENCH_SRC_DIR})
     target_link_libraries(bench_ed25519_ossl PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+    add_executable(bench_ed448_x448_ossl bench_ed448_x448_ossl.cpp)
+    target_include_directories(bench_ed448_x448_ossl PRIVATE ${BENCH_INCLUDE_DIR} ${BENCH_SRC_DIR})
+    target_link_libraries(bench_ed448_x448_ossl PRIVATE jpssl_cpu OpenSSL::Crypto)
 endif()
 
 # ── CTest 注册 ──────────────────────────────────────────────────────────
@@ -66,4 +70,7 @@ add_test(NAME bench_hardware_accel COMMAND bench_hardware_accel)
 add_test(NAME bench_cipher_suites  COMMAND bench_cipher_suites)
 if(TARGET bench_ed25519_ossl)
     add_test(NAME bench_ed25519_ossl COMMAND bench_ed25519_ossl)
+endif()
+if(TARGET bench_ed448_x448_ossl)
+    add_test(NAME bench_ed448_x448_ossl COMMAND bench_ed448_x448_ossl)
 endif()
