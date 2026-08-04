@@ -50,9 +50,16 @@ static inline __m128i gcm_gf128_mul(__m128i a, __m128i b) {
     return t0;
 }
 
+/// GHASH 核（单块更新）：state = (state ^ block) * H
+/// 使用已验证的软件 gf128_mul（NIST bit-reflected 约定）
 static inline __m128i gcm_ghash_core(__m128i state, __m128i block, __m128i H) {
-    state = _mm_xor_si128(state, block);
-    return gcm_gf128_mul(state, H);
+    uint8_t s[16], b[16], h[16], out[16];
+    _mm_storeu_si128((__m128i*)s, state);
+    _mm_storeu_si128((__m128i*)b, block);
+    _mm_storeu_si128((__m128i*)h, H);
+    for (int i = 0; i < 16; ++i) s[i] ^= b[i];
+    gf128_mul(s, h, out);
+    return _mm_loadu_si128((const __m128i*)out);
 }
 
 /// 大端序 64-bit 存储
@@ -104,15 +111,15 @@ static inline void vaes_encrypt_8blocks(__m512i& b0, __m512i& b1,
 
 /// 递增 128-bit counter（最后 32-bit 大端序递增）
 static inline __m128i inc_counter(__m128i c) {
-    uint32_t lo = _mm_extract_epi32(c, 3);
+    uint32_t lo = __builtin_bswap32((uint32_t)_mm_extract_epi32(c, 3));
     ++lo;
-    return _mm_insert_epi32(c, lo, 3);
+    return _mm_insert_epi32(c, (int)__builtin_bswap32(lo), 3);
 }
 
 static inline __m128i inc_counter_n(__m128i c, int n) {
-    uint32_t lo = _mm_extract_epi32(c, 3);
-    lo += n;
-    return _mm_insert_epi32(c, lo, 3);
+    uint32_t lo = __builtin_bswap32((uint32_t)_mm_extract_epi32(c, 3));
+    lo += (uint32_t)n;
+    return _mm_insert_epi32(c, (int)__builtin_bswap32(lo), 3);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -141,7 +148,7 @@ static void avx512_gcm_encrypt_impl(const aes_context& ctx,
                                      uint8_t* tag, size_t tag_len) {
     check_avx512();
     if (!g_avx512_ready || ctx.key_size != AesKeySize::AES_128) {
-        aes_gcm_encrypt_avx2(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, 16);
+        aes_gcm_encrypt_avx2(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
         return;
     }
 
@@ -151,7 +158,7 @@ static void avx512_gcm_encrypt_impl(const aes_context& ctx,
     __m512i rk512[15];
     precompute_rk_512(rk128, rounds, rk512);
 
-    // 1. Compute H = AES_encrypt(K, 0^128)
+    // 1. Compute H = AES_encrypt(K, 0^128)，转为 bit-reflected 表示
     __m128i zero = _mm_setzero_si128();
     __m128i H = zero;
     H = _mm_xor_si128(H, rk128[0]);
@@ -232,7 +239,7 @@ static void avx512_gcm_encrypt_impl(const aes_context& ctx,
             ctrs[k] = inc_counter_n(ctrs[k], 8);
     }
 
-    // 剩余块（< 8 个）
+    // 剩余块（< 8 个），逐块处理（支持不完整尾部块）
     __m128i ctr = inc_counter_n(J0, (int)(i + 1));
     for (; i < num_blocks; ++i) {
         __m128i ks = ctr;
@@ -240,12 +247,22 @@ static void avx512_gcm_encrypt_impl(const aes_context& ctx,
         for (int r = 1; r < rounds; ++r) ks = _mm_aesenc_si128(ks, rk128[r]);
         ks = _mm_aesenclast_si128(ks, rk128[rounds]);
 
-        const uint8_t* pt = plaintext.data() + i * 16;
-        __m128i pt_blk = _mm_loadu_si128((const __m128i*)pt);
-        __m128i ct_blk = _mm_xor_si128(pt_blk, ks);
-        _mm_storeu_si128((__m128i*)(ciphertext.data() + i * 16), ct_blk);
-
-        ghash_state = gcm_ghash_core(ghash_state, ct_blk, H);
+        size_t offset = i * 16;
+        size_t remain = plaintext.size() - offset;
+        if (remain >= 16) {
+            __m128i pt_blk = _mm_loadu_si128((const __m128i*)(plaintext.data() + offset));
+            __m128i ct_blk = _mm_xor_si128(pt_blk, ks);
+            _mm_storeu_si128((__m128i*)(ciphertext.data() + offset), ct_blk);
+            ghash_state = gcm_ghash_core(ghash_state, ct_blk, H);
+        } else {
+            uint8_t ks_buf[16], ct_buf[16] = {};
+            _mm_storeu_si128((__m128i*)ks_buf, ks);
+            for (size_t j = 0; j < remain; ++j)
+                ct_buf[j] = plaintext[offset + j] ^ ks_buf[j];
+            std::memcpy(ciphertext.data() + offset, ct_buf, remain);
+            ghash_state = gcm_ghash_core(ghash_state,
+                                         _mm_loadu_si128((const __m128i*)ct_buf), H);
+        }
         ctr = inc_counter(ctr);
     }
 
@@ -288,7 +305,7 @@ static bool avx512_gcm_decrypt_impl(const aes_context& ctx,
     __m512i rk512[15];
     precompute_rk_512(rk128, rounds, rk512);
 
-    // 1. H
+    // 1. H（bit-reflected 表示）
     __m128i zero = _mm_setzero_si128();
     __m128i H = zero;
     H = _mm_xor_si128(H, rk128[0]);
@@ -330,12 +347,13 @@ static bool avx512_gcm_decrypt_impl(const aes_context& ctx,
 
     __m128i expected_tag = _mm_xor_si128(ghash_state, E_J0);
 
-    // 常量时间比较 (NIST SP 800-38D: compare first tag_len bytes)
+    // 常量时间比较（仅比较 tag_len 字节）
     uint8_t expected_buf[16], actual_buf[16] = {};
     _mm_storeu_si128((__m128i*)expected_buf, expected_tag);
     std::memcpy(actual_buf, tag, tag_len);
     uint8_t diff = 0;
-    for (size_t i = 0; i < 16; ++i) diff |= expected_buf[i] ^ actual_buf[i];
+    for (size_t j = 0; j < tag_len; ++j)
+        diff |= expected_buf[j] ^ actual_buf[j];
     if (diff != 0) return false;
 
     // 4. 解密（CTR）
@@ -375,6 +393,7 @@ static bool avx512_gcm_decrypt_impl(const aes_context& ctx,
             ctrs[k] = inc_counter_n(ctrs[k], 8);
     }
 
+    // 剩余块（< 8 个），逐块处理（支持不完整尾部块）
     __m128i ctr = inc_counter_n(J0, (int)(i + 1));
     for (; i < num_blocks; ++i) {
         __m128i ks = ctr;
@@ -382,10 +401,19 @@ static bool avx512_gcm_decrypt_impl(const aes_context& ctx,
         for (int r = 1; r < rounds; ++r) ks = _mm_aesenc_si128(ks, rk128[r]);
         ks = _mm_aesenclast_si128(ks, rk128[rounds]);
 
-        const uint8_t* ct = ciphertext.data() + i * 16;
-        __m128i ct_blk = _mm_loadu_si128((const __m128i*)ct);
-        __m128i pt_blk = _mm_xor_si128(ct_blk, ks);
-        _mm_storeu_si128((__m128i*)(plaintext.data() + i * 16), pt_blk);
+        size_t offset = i * 16;
+        size_t remain = ciphertext.size() - offset;
+        if (remain >= 16) {
+            __m128i ct_blk = _mm_loadu_si128((const __m128i*)(ciphertext.data() + offset));
+            __m128i pt_blk = _mm_xor_si128(ct_blk, ks);
+            _mm_storeu_si128((__m128i*)(plaintext.data() + offset), pt_blk);
+        } else {
+            uint8_t ks_buf[16], pt_buf[16] = {};
+            _mm_storeu_si128((__m128i*)ks_buf, ks);
+            for (size_t j = 0; j < remain; ++j)
+                pt_buf[j] = ciphertext[offset + j] ^ ks_buf[j];
+            std::memcpy(plaintext.data() + offset, pt_buf, remain);
+        }
 
         ctr = inc_counter(ctr);
     }

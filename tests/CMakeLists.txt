@@ -29,6 +29,15 @@ target_include_directories(test_aes PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_aes PRIVATE jpssl_cpu OpenSSL::Crypto)
 endif()
 
+# ── AES 全模式 × 全密钥长度加解密验证 (OpenSSL 对比) ─────────────────────
+# 覆盖：单块(hw/sw)、ECB、CBC、GCM(软件/auto/AVX2/AVX512)、CCM，
+# 每个 AES-128/192/256，含 OpenSSL 交叉验证与篡改检测
+if(OpenSSL_FOUND)
+add_executable(test_aes_modes test_aes_modes.cpp)
+target_include_directories(test_aes_modes PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_aes_modes PRIVATE jpssl_cpu OpenSSL::Crypto)
+endif()
+
 # ── SHA3 单元测试 (OpenSSL 对比) ─────────────────────────────────────────
 if(OpenSSL_FOUND)
 add_executable(test_sha3 test_sha3.cpp)
@@ -208,6 +217,7 @@ target_link_libraries(test_fe448 PRIVATE jpssl_cpu)
 # ═══════════════════════════════════════════════════════════════════════
 add_test(NAME test_aes           COMMAND test_aes)
 add_test(NAME test_aes_ccm       COMMAND test_aes_ccm)
+add_test(NAME test_aes_modes     COMMAND test_aes_modes)
 add_test(NAME test_gcm_simple    COMMAND test_gcm_simple)
 if(OpenSSL_FOUND)
 add_test(NAME test_sha3          COMMAND test_sha3)

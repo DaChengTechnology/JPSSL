@@ -267,6 +267,90 @@ void aes_decrypt_ecb(const aes_context& ctx,
                      std::span<uint8_t> output);
 
 // ═══════════════════════════════════════════════════════════════════════
+//  ECB + PKCS7/PKCS5 填充模式（AES-128/192/256）
+//  PKCS5 在 AES（块大小 16）下与 PKCS7 行为完全一致，复用同一实现。
+//  每组提供三个入口：
+//    - 默认（自动分派 AES-NI / 软件）
+//    - _sw  纯标量实现（无 AES-NI）
+//    - _aesni 强制 AES-NI（CPU 不支持时回退到 _sw）
+// ═══════════════════════════════════════════════════════════════════════
+
+/// ECB + PKCS7 加密（自动分派 AES-NI / 软件）
+/// @param plaintext  明文（任意长度）
+/// @param ciphertext 输出密文（自动调整大小，长度为 16 的倍数）
+void aes_encrypt_ecb_pkcs7(const aes_context& ctx,
+                            std::span<const uint8_t> plaintext,
+                            std::vector<uint8_t>& ciphertext);
+
+/// ECB + PKCS7 解密（自动分派，自动去填充）
+/// @return true 成功, false 填充验证失败
+bool aes_decrypt_ecb_pkcs7(const aes_context& ctx,
+                            std::span<const uint8_t> ciphertext,
+                            std::vector<uint8_t>& plaintext);
+
+/// ECB + PKCS7 加密（纯标量实现，无 AES-NI）
+void aes_encrypt_ecb_pkcs7_sw(const aes_context& ctx,
+                               std::span<const uint8_t> plaintext,
+                               std::vector<uint8_t>& ciphertext);
+
+/// ECB + PKCS7 解密（纯标量实现，自动去填充）
+bool aes_decrypt_ecb_pkcs7_sw(const aes_context& ctx,
+                               std::span<const uint8_t> ciphertext,
+                               std::vector<uint8_t>& plaintext);
+
+/// ECB + PKCS7 加密（AES-NI 硬件加速；CPU 不支持时回退到 _sw）
+void aes_encrypt_ecb_pkcs7_aesni(const aes_context& ctx,
+                                  std::span<const uint8_t> plaintext,
+                                  std::vector<uint8_t>& ciphertext);
+
+/// ECB + PKCS7 解密（AES-NI 硬件加速；CPU 不支持时回退到 _sw）
+bool aes_decrypt_ecb_pkcs7_aesni(const aes_context& ctx,
+                                  std::span<const uint8_t> ciphertext,
+                                  std::vector<uint8_t>& plaintext);
+
+/// ECB + PKCS5 加密（自动分派；PKCS5 在 AES 下与 PKCS7 等价）
+inline void aes_encrypt_ecb_pkcs5(const aes_context& ctx,
+                                   std::span<const uint8_t> plaintext,
+                                   std::vector<uint8_t>& ciphertext) {
+    aes_encrypt_ecb_pkcs7(ctx, plaintext, ciphertext);
+}
+
+/// ECB + PKCS5 解密（自动分派；PKCS5 在 AES 下与 PKCS7 等价）
+inline bool aes_decrypt_ecb_pkcs5(const aes_context& ctx,
+                                   std::span<const uint8_t> ciphertext,
+                                   std::vector<uint8_t>& plaintext) {
+    return aes_decrypt_ecb_pkcs7(ctx, ciphertext, plaintext);
+}
+
+/// ECB + PKCS5 加密（纯标量实现）
+inline void aes_encrypt_ecb_pkcs5_sw(const aes_context& ctx,
+                                      std::span<const uint8_t> plaintext,
+                                      std::vector<uint8_t>& ciphertext) {
+    aes_encrypt_ecb_pkcs7_sw(ctx, plaintext, ciphertext);
+}
+
+/// ECB + PKCS5 解密（纯标量实现）
+inline bool aes_decrypt_ecb_pkcs5_sw(const aes_context& ctx,
+                                      std::span<const uint8_t> ciphertext,
+                                      std::vector<uint8_t>& plaintext) {
+    return aes_decrypt_ecb_pkcs7_sw(ctx, ciphertext, plaintext);
+}
+
+/// ECB + PKCS5 加密（AES-NI 硬件加速）
+inline void aes_encrypt_ecb_pkcs5_aesni(const aes_context& ctx,
+                                         std::span<const uint8_t> plaintext,
+                                         std::vector<uint8_t>& ciphertext) {
+    aes_encrypt_ecb_pkcs7_aesni(ctx, plaintext, ciphertext);
+}
+
+/// ECB + PKCS5 解密（AES-NI 硬件加速）
+inline bool aes_decrypt_ecb_pkcs5_aesni(const aes_context& ctx,
+                                         std::span<const uint8_t> ciphertext,
+                                         std::vector<uint8_t>& plaintext) {
+    return aes_decrypt_ecb_pkcs7_aesni(ctx, ciphertext, plaintext);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  MUSA GPU 端加解密 API
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -315,8 +399,32 @@ bool aes_cbc_decrypt(const aes_context& ctx,
                      std::span<const uint8_t> ciphertext,
                      std::vector<uint8_t>& plaintext);
 
+/// CBC 加密（纯标量实现，无 AES-NI，自动 PKCS7 填充）
+void aes_cbc_encrypt_sw(const aes_context& ctx,
+                        const uint8_t iv[16],
+                        std::span<const uint8_t> plaintext,
+                        std::vector<uint8_t>& ciphertext);
+
+/// CBC 解密（纯标量实现，自动 PKCS7 去填充）
+bool aes_cbc_decrypt_sw(const aes_context& ctx,
+                        const uint8_t iv[16],
+                        std::span<const uint8_t> ciphertext,
+                        std::vector<uint8_t>& plaintext);
+
+/// CBC 加密（AES-NI 硬件加速；CPU 不支持时回退到 _sw）
+void aes_cbc_encrypt_aesni(const aes_context& ctx,
+                           const uint8_t iv[16],
+                           std::span<const uint8_t> plaintext,
+                           std::vector<uint8_t>& ciphertext);
+
+/// CBC 解密（AES-NI 硬件加速；CPU 不支持时回退到 _sw）
+bool aes_cbc_decrypt_aesni(const aes_context& ctx,
+                           const uint8_t iv[16],
+                           std::span<const uint8_t> ciphertext,
+                           std::vector<uint8_t>& plaintext);
+
 // ═══════════════════════════════════════════════════════════════════════
-//  GCM 模式（CPU 端 — Galois/Counter Mode，AEAD 认证加密）
+//  GCM 模式（CPU 端 - Galois/Counter Mode，AEAD 认证加密）
 // ═══════════════════════════════════════════════════════════════════════
 
 /// GF(2^128) 乘法 — NIST SP 800-38D §6.3
@@ -365,8 +473,40 @@ bool aes_gcm_decrypt(const aes_context& ctx,
                      const uint8_t* tag, size_t tag_len,
                      std::vector<uint8_t>& plaintext);
 
+/// GCM 加密（纯标量实现，无 AES-NI；GHASH 使用软件 GF(2^128) 乘法）
+void aes_gcm_encrypt_sw(const aes_context& ctx,
+                         const uint8_t* iv, size_t iv_len,
+                         std::span<const uint8_t> plaintext,
+                         std::span<const uint8_t> aad,
+                         std::vector<uint8_t>& ciphertext,
+                         uint8_t* tag, size_t tag_len = 16);
+
+/// GCM 解密（纯标量实现）
+bool aes_gcm_decrypt_sw(const aes_context& ctx,
+                         const uint8_t* iv, size_t iv_len,
+                         std::span<const uint8_t> ciphertext,
+                         std::span<const uint8_t> aad,
+                         const uint8_t* tag, size_t tag_len,
+                         std::vector<uint8_t>& plaintext);
+
+/// GCM 加密（AES-NI 硬件加速 CTR；GHASH 仍用软件实现，CPU 不支持时回退到 _sw）
+void aes_gcm_encrypt_aesni(const aes_context& ctx,
+                            const uint8_t* iv, size_t iv_len,
+                            std::span<const uint8_t> plaintext,
+                            std::span<const uint8_t> aad,
+                            std::vector<uint8_t>& ciphertext,
+                            uint8_t* tag, size_t tag_len = 16);
+
+/// GCM 解密（AES-NI 硬件加速 CTR；CPU 不支持时回退到 _sw）
+bool aes_gcm_decrypt_aesni(const aes_context& ctx,
+                            const uint8_t* iv, size_t iv_len,
+                            std::span<const uint8_t> ciphertext,
+                            std::span<const uint8_t> aad,
+                            const uint8_t* tag, size_t tag_len,
+                            std::vector<uint8_t>& plaintext);
+
 // ═══════════════════════════════════════════════════════════════════════
-//  GCM 模式 — AVX2 / AVX512 硬件加速（PCLMULQDQ + VAES）
+//  GCM 模式 - AVX2 / AVX512 硬件加速（PCLMULQDQ + VAES）
 // ═══════════════════════════════════════════════════════════════════════
 
 /// AVX2 GCM 加密（4 路并行，需要 PCLMULQDQ + AES-NI）

@@ -402,6 +402,26 @@ void aes_encrypt_block_sw(const aes_context& ctx,
     add_round_key(cipher, rk);
 }
 
+/// 纯软件单块解密（无 AES-NI 分派），供 _sw 路径直接复用
+static void aes_decrypt_block_sw_impl(const aes_context& ctx,
+                                       const uint8_t cipher[16],
+                                       uint8_t plain[16]) {
+    std::memcpy(plain, cipher, 16);
+    const uint8_t* rk = ctx.dec_rk.data();
+    add_round_key(plain, rk);
+    rk += 16;
+    for (int r = 1; r < ctx.rounds; ++r) {
+        inv_shift_rows(plain);
+        inv_sub_bytes(plain);
+        add_round_key(plain, rk);
+        inv_mix_columns(plain);
+        rk += 16;
+    }
+    inv_shift_rows(plain);
+    inv_sub_bytes(plain);
+    add_round_key(plain, rk);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  单块解密
 // ═══════════════════════════════════════════════════════════════════════
@@ -415,27 +435,7 @@ void aes_decrypt_block(const aes_context& ctx,
         return;
     }
 #endif
-    std::memcpy(plain, cipher, 16);
-
-    const uint8_t* rk = ctx.dec_rk.data();
-
-    // 初始轮密钥加
-    add_round_key(plain, rk);
-    rk += 16;
-
-    // 中间轮
-    for (int r = 1; r < ctx.rounds; ++r) {
-        inv_shift_rows(plain);
-        inv_sub_bytes(plain);
-        add_round_key(plain, rk);
-        inv_mix_columns(plain);
-        rk += 16;
-    }
-
-    // 最后一轮（无 InvMixColumns）
-    inv_shift_rows(plain);
-    inv_sub_bytes(plain);
-    add_round_key(plain, rk);
+    aes_decrypt_block_sw_impl(ctx, cipher, plain);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -458,6 +458,129 @@ void aes_decrypt_ecb(const aes_context& ctx,
     for (size_t i = 0; i < n; ++i) {
         aes_decrypt_block(ctx, input.data() + i * 16, output.data() + i * 16);
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ECB + PKCS7/PKCS5 填充模式（AES-128/192/256）
+//  PKCS5 在 AES（块大小 16）下与 PKCS7 行为完全一致，复用同一实现。
+//  三个入口：默认（自动分派）、_sw（纯标量）、_aesni（硬件，不支持时回退 _sw）
+// ═══════════════════════════════════════════════════════════════════════
+
+/// ECB + PKCS7 加密 - 纯标量实现
+void aes_encrypt_ecb_pkcs7_sw(const aes_context& ctx,
+                               std::span<const uint8_t> plaintext,
+                               std::vector<uint8_t>& ciphertext) {
+    auto padded = pkcs7_pad(plaintext);
+    ciphertext.resize(padded.size());
+    size_t n = padded.size() / AES_BLOCK_SIZE;
+    for (size_t i = 0; i < n; ++i) {
+        aes_encrypt_block_sw(ctx, padded.data() + i * AES_BLOCK_SIZE,
+                             ciphertext.data() + i * AES_BLOCK_SIZE);
+    }
+}
+
+/// ECB + PKCS7 解密 - 纯标量实现
+bool aes_decrypt_ecb_pkcs7_sw(const aes_context& ctx,
+                               std::span<const uint8_t> ciphertext,
+                               std::vector<uint8_t>& plaintext) {
+    if (ciphertext.empty() || ciphertext.size() % AES_BLOCK_SIZE != 0)
+        return false;
+
+    std::vector<uint8_t> padded(ciphertext.size());
+    size_t n = ciphertext.size() / AES_BLOCK_SIZE;
+    for (size_t i = 0; i < n; ++i) {
+        aes_decrypt_block_sw_impl(ctx, ciphertext.data() + i * AES_BLOCK_SIZE,
+                                  padded.data() + i * AES_BLOCK_SIZE);
+    }
+
+    try {
+        plaintext = pkcs7_unpad(padded);
+        return true;
+    } catch (const std::runtime_error&) {
+        plaintext.clear();
+        return false;
+    }
+}
+
+#ifdef __x86_64__
+/// ECB + PKCS7 加密 - AES-NI 硬件加速
+void aes_encrypt_ecb_pkcs7_aesni(const aes_context& ctx,
+                                  std::span<const uint8_t> plaintext,
+                                  std::vector<uint8_t>& ciphertext) {
+    if (!g_use_aesni) {
+        aes_encrypt_ecb_pkcs7_sw(ctx, plaintext, ciphertext);
+        return;
+    }
+    auto padded = pkcs7_pad(plaintext);
+    ciphertext.resize(padded.size());
+    size_t n = padded.size() / AES_BLOCK_SIZE;
+    const __m128i* rk = (const __m128i*)ctx.enc_rk.data();
+    for (size_t i = 0; i < n; ++i) {
+        __m128i state = _mm_loadu_si128((const __m128i*)(padded.data() + i * AES_BLOCK_SIZE));
+        state = _mm_xor_si128(state, rk[0]);
+        for (int r = 1; r < ctx.rounds; ++r)
+            state = _mm_aesenc_si128(state, rk[r]);
+        state = _mm_aesenclast_si128(state, rk[ctx.rounds]);
+        _mm_storeu_si128((__m128i*)(ciphertext.data() + i * AES_BLOCK_SIZE), state);
+    }
+}
+
+/// ECB + PKCS7 解密 - AES-NI 硬件加速
+bool aes_decrypt_ecb_pkcs7_aesni(const aes_context& ctx,
+                                  std::span<const uint8_t> ciphertext,
+                                  std::vector<uint8_t>& plaintext) {
+    if (ciphertext.empty() || ciphertext.size() % AES_BLOCK_SIZE != 0)
+        return false;
+    if (!g_use_aesni) {
+        return aes_decrypt_ecb_pkcs7_sw(ctx, ciphertext, plaintext);
+    }
+
+    std::vector<uint8_t> padded(ciphertext.size());
+    size_t n = ciphertext.size() / AES_BLOCK_SIZE;
+    const __m128i* rk = (const __m128i*)ctx.dec_rk_aesni.data();
+    for (size_t i = 0; i < n; ++i) {
+        __m128i state = _mm_loadu_si128((const __m128i*)(ciphertext.data() + i * AES_BLOCK_SIZE));
+        state = _mm_xor_si128(state, rk[0]);
+        for (int r = 1; r < ctx.rounds; ++r)
+            state = _mm_aesdec_si128(state, rk[r]);
+        state = _mm_aesdeclast_si128(state, rk[ctx.rounds]);
+        _mm_storeu_si128((__m128i*)(padded.data() + i * AES_BLOCK_SIZE), state);
+    }
+
+    try {
+        plaintext = pkcs7_unpad(padded);
+        return true;
+    } catch (const std::runtime_error&) {
+        plaintext.clear();
+        return false;
+    }
+}
+#else
+void aes_encrypt_ecb_pkcs7_aesni(const aes_context& ctx,
+                                  std::span<const uint8_t> plaintext,
+                                  std::vector<uint8_t>& ciphertext) {
+    aes_encrypt_ecb_pkcs7_sw(ctx, plaintext, ciphertext);
+}
+
+bool aes_decrypt_ecb_pkcs7_aesni(const aes_context& ctx,
+                                  std::span<const uint8_t> ciphertext,
+                                  std::vector<uint8_t>& plaintext) {
+    return aes_decrypt_ecb_pkcs7_sw(ctx, ciphertext, plaintext);
+}
+#endif
+
+/// ECB + PKCS7 加密 - 自动分派（AES-NI / 软件）
+void aes_encrypt_ecb_pkcs7(const aes_context& ctx,
+                            std::span<const uint8_t> plaintext,
+                            std::vector<uint8_t>& ciphertext) {
+    aes_encrypt_ecb_pkcs7_aesni(ctx, plaintext, ciphertext);
+}
+
+/// ECB + PKCS7 解密 - 自动分派（AES-NI / 软件）
+bool aes_decrypt_ecb_pkcs7(const aes_context& ctx,
+                            std::span<const uint8_t> ciphertext,
+                            std::vector<uint8_t>& plaintext) {
+    return aes_decrypt_ecb_pkcs7_aesni(ctx, ciphertext, plaintext);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -502,10 +625,13 @@ std::vector<uint8_t> pkcs7_unpad(std::span<const uint8_t> data) {
 //  CBC 模式
 // ═══════════════════════════════════════════════════════════════════════
 
-void aes_cbc_encrypt(const aes_context& ctx,
-                     const uint8_t iv[16],
-                     std::span<const uint8_t> plaintext,
-                     std::vector<uint8_t>& ciphertext) {
+/// CBC 加密内部实现（通过函数指针选择块加密后端）
+static void cbc_encrypt_impl(const aes_context& ctx,
+                             const uint8_t iv[16],
+                             std::span<const uint8_t> plaintext,
+                             std::vector<uint8_t>& ciphertext,
+                             void (*enc_block)(const aes_context&,
+                                               const uint8_t[16], uint8_t[16])) {
     // PKCS7 填充
     auto padded = pkcs7_pad(plaintext);
     size_t num_blocks = padded.size() / AES_BLOCK_SIZE;
@@ -524,17 +650,20 @@ void aes_cbc_encrypt(const aes_context& ctx,
         for (int j = 0; j < 16; ++j) xored[j] = pt_block[j] ^ prev[j];
 
         // Encrypt
-        aes_encrypt_block(ctx, xored, ct_block);
+        enc_block(ctx, xored, ct_block);
 
         // Update previous
         std::memcpy(prev, ct_block, 16);
     }
 }
 
-bool aes_cbc_decrypt(const aes_context& ctx,
-                     const uint8_t iv[16],
-                     std::span<const uint8_t> ciphertext,
-                     std::vector<uint8_t>& plaintext) {
+/// CBC 解密内部实现（通过函数指针选择块解密后端）
+static bool cbc_decrypt_impl(const aes_context& ctx,
+                             const uint8_t iv[16],
+                             std::span<const uint8_t> ciphertext,
+                             std::vector<uint8_t>& plaintext,
+                             void (*dec_block)(const aes_context&,
+                                               const uint8_t[16], uint8_t[16])) {
     if (ciphertext.size() % AES_BLOCK_SIZE != 0) return false;
 
     size_t num_blocks = ciphertext.size() / AES_BLOCK_SIZE;
@@ -547,7 +676,7 @@ bool aes_cbc_decrypt(const aes_context& ctx,
         uint8_t*       pt_block = padded.data() + i * AES_BLOCK_SIZE;
 
         // Decrypt
-        aes_decrypt_block(ctx, ct_block, pt_block);
+        dec_block(ctx, ct_block, pt_block);
 
         // XOR with previous ciphertext (or IV)
         for (int j = 0; j < 16; ++j) pt_block[j] ^= prev[j];
@@ -564,9 +693,83 @@ bool aes_cbc_decrypt(const aes_context& ctx,
     }
 }
 
+#ifdef __x86_64__
+/// AES-NI 单块加密（对外暴露的静态包装，用于 CBC/GCM 函数指针分派）
+static void aesni_enc_block_wrap(const aes_context& ctx,
+                                  const uint8_t plain[16], uint8_t cipher[16]) {
+    aesni_encrypt_block(ctx, plain, cipher);
+}
+
+/// AES-NI 单块解密（对外暴露的静态包装，用于 CBC 函数指针分派）
+static void aesni_dec_block_wrap(const aes_context& ctx,
+                                  const uint8_t cipher[16], uint8_t plain[16]) {
+    aesni_decrypt_block(ctx, cipher, plain);
+}
+#endif
+
+/// CBC 加密 - 纯标量实现
+void aes_cbc_encrypt_sw(const aes_context& ctx,
+                        const uint8_t iv[16],
+                        std::span<const uint8_t> plaintext,
+                        std::vector<uint8_t>& ciphertext) {
+    cbc_encrypt_impl(ctx, iv, plaintext, ciphertext, aes_encrypt_block_sw);
+}
+
+/// CBC 解密 - 纯标量实现
+bool aes_cbc_decrypt_sw(const aes_context& ctx,
+                        const uint8_t iv[16],
+                        std::span<const uint8_t> ciphertext,
+                        std::vector<uint8_t>& plaintext) {
+    return cbc_decrypt_impl(ctx, iv, ciphertext, plaintext, aes_decrypt_block_sw_impl);
+}
+
+/// CBC 加密 - AES-NI 硬件加速
+void aes_cbc_encrypt_aesni(const aes_context& ctx,
+                           const uint8_t iv[16],
+                           std::span<const uint8_t> plaintext,
+                           std::vector<uint8_t>& ciphertext) {
+#ifdef __x86_64__
+    if (g_use_aesni) {
+        cbc_encrypt_impl(ctx, iv, plaintext, ciphertext, aesni_enc_block_wrap);
+        return;
+    }
+#endif
+    aes_cbc_encrypt_sw(ctx, iv, plaintext, ciphertext);
+}
+
+/// CBC 解密 - AES-NI 硬件加速
+bool aes_cbc_decrypt_aesni(const aes_context& ctx,
+                           const uint8_t iv[16],
+                           std::span<const uint8_t> ciphertext,
+                           std::vector<uint8_t>& plaintext) {
+#ifdef __x86_64__
+    if (g_use_aesni) {
+        return cbc_decrypt_impl(ctx, iv, ciphertext, plaintext, aesni_dec_block_wrap);
+    }
+#endif
+    return aes_cbc_decrypt_sw(ctx, iv, ciphertext, plaintext);
+}
+
+/// CBC 加密 - 自动分派（AES-NI / 软件）
+void aes_cbc_encrypt(const aes_context& ctx,
+                     const uint8_t iv[16],
+                     std::span<const uint8_t> plaintext,
+                     std::vector<uint8_t>& ciphertext) {
+    aes_cbc_encrypt_aesni(ctx, iv, plaintext, ciphertext);
+}
+
+/// CBC 解密 - 自动分派（AES-NI / 软件）
+bool aes_cbc_decrypt(const aes_context& ctx,
+                     const uint8_t iv[16],
+                     std::span<const uint8_t> ciphertext,
+                     std::vector<uint8_t>& plaintext) {
+    return aes_cbc_decrypt_aesni(ctx, iv, ciphertext, plaintext);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  GCM 辅助：GF(2^128) 乘法 & GHASH
 // ═══════════════════════════════════════════════════════════════════════
+
 
 /// XOR 128-bit: dst ^= src
 static void xor128(uint8_t* dst, const uint8_t* src) {
@@ -692,16 +895,19 @@ static void store_be64(uint8_t* buf, uint64_t val) {
 //  GCM 加密
 // ═══════════════════════════════════════════════════════════════════════
 
-void aes_gcm_encrypt(const aes_context& ctx,
-                     const uint8_t* iv, size_t iv_len,
-                     std::span<const uint8_t> plaintext,
-                     std::span<const uint8_t> aad,
-                     std::vector<uint8_t>& ciphertext,
-                     uint8_t* tag, size_t tag_len) {
+/// GCM 加密内部实现（通过函数指针选择块加密后端）
+static void gcm_encrypt_impl(const aes_context& ctx,
+                              const uint8_t* iv, size_t iv_len,
+                              std::span<const uint8_t> plaintext,
+                              std::span<const uint8_t> aad,
+                              std::vector<uint8_t>& ciphertext,
+                              uint8_t* tag, size_t tag_len,
+                              void (*enc_block)(const aes_context&,
+                                                const uint8_t[16], uint8_t[16])) {
     // ── 1. Compute H = AES_encrypt(K, 0^128) ──
     uint8_t H[16];
     uint8_t zero[16] = {};
-    aes_encrypt_block(ctx, zero, H);
+    enc_block(ctx, zero, H);
 
     // ── 2. Compute J0 ──
     uint8_t J0[16] = {};
@@ -732,7 +938,7 @@ void aes_gcm_encrypt(const aes_context& ctx,
 
     for (size_t i = 0; i < num_ctr_blocks; ++i) {
         inc32(counter);  // First counter = J0 + 1
-        aes_encrypt_block(ctx, counter, keystream.data() + i * 16);
+        enc_block(ctx, counter, keystream.data() + i * 16);
     }
 
     // XOR plaintext with keystream
@@ -763,7 +969,7 @@ void aes_gcm_encrypt(const aes_context& ctx,
 
     // ── 5. Compute tag = S ⊕ AES_encrypt(K, J0) ──
     uint8_t E_J0[16];
-    aes_encrypt_block(ctx, J0, E_J0);
+    enc_block(ctx, J0, E_J0);
 
     for (int i = 0; i < 16; ++i) S[i] ^= E_J0[i];
 
@@ -771,20 +977,19 @@ void aes_gcm_encrypt(const aes_context& ctx,
     std::memcpy(tag, S, tag_len);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  GCM 解密
-// ═══════════════════════════════════════════════════════════════════════
-
-bool aes_gcm_decrypt(const aes_context& ctx,
-                     const uint8_t* iv, size_t iv_len,
-                     std::span<const uint8_t> ciphertext,
-                     std::span<const uint8_t> aad,
-                     const uint8_t* tag, size_t tag_len,
-                     std::vector<uint8_t>& plaintext) {
+/// GCM 解密内部实现（通过函数指针选择块加密后端）
+static bool gcm_decrypt_impl(const aes_context& ctx,
+                              const uint8_t* iv, size_t iv_len,
+                              std::span<const uint8_t> ciphertext,
+                              std::span<const uint8_t> aad,
+                              const uint8_t* tag, size_t tag_len,
+                              std::vector<uint8_t>& plaintext,
+                              void (*enc_block)(const aes_context&,
+                                                const uint8_t[16], uint8_t[16])) {
     // ── 1. Compute H = AES_encrypt(K, 0^128) ──
     uint8_t H[16];
     uint8_t zero[16] = {};
-    aes_encrypt_block(ctx, zero, H);
+    enc_block(ctx, zero, H);
 
     // ── 2. Compute J0 (same as encrypt) ──
     uint8_t J0[16] = {};
@@ -820,7 +1025,7 @@ bool aes_gcm_decrypt(const aes_context& ctx,
     ghash(H, ghash_input, S);
 
     uint8_t E_J0[16];
-    aes_encrypt_block(ctx, J0, E_J0);
+    enc_block(ctx, J0, E_J0);
     for (int i = 0; i < 16; ++i) S[i] ^= E_J0[i];
 
     // ── 4. Constant-time tag comparison ──
@@ -840,7 +1045,7 @@ bool aes_gcm_decrypt(const aes_context& ctx,
 
     for (size_t i = 0; i < num_ctr_blocks; ++i) {
         inc32(counter);
-        aes_encrypt_block(ctx, counter, keystream.data() + i * 16);
+        enc_block(ctx, counter, keystream.data() + i * 16);
     }
 
     for (size_t i = 0; i < ciphertext.size(); ++i) {
@@ -848,6 +1053,89 @@ bool aes_gcm_decrypt(const aes_context& ctx,
     }
 
     return true;
+}
+
+/// GCM 加密 - 纯标量实现
+void aes_gcm_encrypt_sw(const aes_context& ctx,
+                         const uint8_t* iv, size_t iv_len,
+                         std::span<const uint8_t> plaintext,
+                         std::span<const uint8_t> aad,
+                         std::vector<uint8_t>& ciphertext,
+                         uint8_t* tag, size_t tag_len) {
+    gcm_encrypt_impl(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len,
+                     aes_encrypt_block_sw);
+}
+
+/// GCM 解密 - 纯标量实现
+bool aes_gcm_decrypt_sw(const aes_context& ctx,
+                         const uint8_t* iv, size_t iv_len,
+                         std::span<const uint8_t> ciphertext,
+                         std::span<const uint8_t> aad,
+                         const uint8_t* tag, size_t tag_len,
+                         std::vector<uint8_t>& plaintext) {
+    return gcm_decrypt_impl(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
+                             plaintext, aes_encrypt_block_sw);
+}
+
+/// GCM 加密 - AES-NI 硬件加速
+void aes_gcm_encrypt_aesni(const aes_context& ctx,
+                            const uint8_t* iv, size_t iv_len,
+                            std::span<const uint8_t> plaintext,
+                            std::span<const uint8_t> aad,
+                            std::vector<uint8_t>& ciphertext,
+                            uint8_t* tag, size_t tag_len) {
+#ifdef __x86_64__
+    if (g_use_aesni) {
+        gcm_encrypt_impl(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len,
+                         aesni_enc_block_wrap);
+        return;
+    }
+#endif
+    aes_gcm_encrypt_sw(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
+}
+
+/// GCM 解密 - AES-NI 硬件加速
+bool aes_gcm_decrypt_aesni(const aes_context& ctx,
+                            const uint8_t* iv, size_t iv_len,
+                            std::span<const uint8_t> ciphertext,
+                            std::span<const uint8_t> aad,
+                            const uint8_t* tag, size_t tag_len,
+                            std::vector<uint8_t>& plaintext) {
+#ifdef __x86_64__
+    if (g_use_aesni) {
+        return gcm_decrypt_impl(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
+                                plaintext, aesni_enc_block_wrap);
+    }
+#endif
+    return aes_gcm_decrypt_sw(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
+                             plaintext);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GCM 加密 - 自动分派（AES-NI / 软件）
+// ═══════════════════════════════════════════════════════════════════════
+
+void aes_gcm_encrypt(const aes_context& ctx,
+                     const uint8_t* iv, size_t iv_len,
+                     std::span<const uint8_t> plaintext,
+                     std::span<const uint8_t> aad,
+                     std::vector<uint8_t>& ciphertext,
+                     uint8_t* tag, size_t tag_len) {
+    aes_gcm_encrypt_aesni(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GCM 解密 - 自动分派（AES-NI / 软件）
+// ═══════════════════════════════════════════════════════════════════════
+
+bool aes_gcm_decrypt(const aes_context& ctx,
+                     const uint8_t* iv, size_t iv_len,
+                     std::span<const uint8_t> ciphertext,
+                     std::span<const uint8_t> aad,
+                     const uint8_t* tag, size_t tag_len,
+                     std::vector<uint8_t>& plaintext) {
+    return aes_gcm_decrypt_aesni(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
+                                 plaintext);
 }
 
 } // namespace jpssl
