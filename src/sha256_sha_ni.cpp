@@ -1,6 +1,6 @@
 #include "sha256.hpp"
 #include <cstring>
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
 
 namespace jpssl {
@@ -225,4 +225,4 @@ void sha256_sha_ni(uint8_t digest[32], const uint8_t* data, size_t len) {
 }
 
 } // namespace jpssl
-#endif // __x86_64__
+#endif // __x86_64__ || _M_X64

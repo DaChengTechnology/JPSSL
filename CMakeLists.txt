@@ -122,6 +122,9 @@ set(CPU_SOURCES
     src/sm2.cpp
     src/sm3.cpp
     src/sm4.cpp
+    src/base64.cpp
+    src/ct.cpp
+    src/tls_socket.cpp
     src/sm4_gcm.cpp
     src/sm4_ccm.cpp
     src/sm4_gcm_dispatch.cpp
@@ -176,6 +179,9 @@ if(WIN32)
     # BCrypt (rand_os.cpp 的 BCryptGenRandom)；DLL 导出所有公共符号
     target_link_libraries(jpssl_cpu PUBLIC bcrypt)
     target_link_libraries(jpssl_cpu_shared PUBLIC bcrypt)
+    # Winsock (tls_socket.cpp)
+    target_link_libraries(jpssl_cpu PUBLIC ws2_32)
+    target_link_libraries(jpssl_cpu_shared PUBLIC ws2_32)
     set_target_properties(jpssl_cpu_shared PROPERTIES
         WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
@@ -389,6 +395,9 @@ install(TARGETS jpssl-cert jpssl-crypt
 # ═══════════════════════════════════════════════════════════════════════
 #  单元测试 (CTest)
 add_subdirectory(tests)
+
+# HTTPS + 国际 CT 示例
+add_subdirectory(examples)
 
 if(JP_ENABLE_BENCH)
     add_subdirectory(benchmarks)

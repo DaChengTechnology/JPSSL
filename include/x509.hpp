@@ -147,6 +147,15 @@ struct SubjectAlternativeName {
     std::vector<std::string> ip_addrs;  // IP (not yet implemented)
 };
 
+/// Raw (opaque) X.509 extension, preserved verbatim through parse/encode.
+/// `oid` holds raw DER-encoded OID bytes (same format as the OID_* constants),
+/// `extn_value` holds the contents of the Extension's extnValue OCTET STRING.
+struct RawExtension {
+    std::vector<uint8_t> oid;
+    bool critical = false;
+    std::vector<uint8_t> extn_value;
+};
+
 // ═══════════════════════════════════════════════════════════════════════
 //  X.509 v3 证书
 // ═══════════════════════════════════════════════════════════════════════
@@ -168,6 +177,7 @@ struct x509_cert {
     std::optional<KeyUsage> key_usage;
     std::optional<ExtKeyUsageList> ext_key_usage;
     std::optional<SubjectAlternativeName> subject_alt_name;
+    std::vector<RawExtension> raw_extensions;  // extensions not modeled above
 
     // Signature
     KeyType sign_key_type = KeyType::Ed25519;

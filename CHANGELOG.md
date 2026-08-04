@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.9.4] — 2026-08-05
+
+### Added
+- **国密证书透明（SM2 CT）**：新增 `include/ct.hpp` / `src/ct.cpp`，基于 RFC 6962 框架、以 SM2/SM3 替代 ECDSA/SHA-256（参考 GM/T《证书透明规范》草案）：
+  - SM3 默克尔树：根哈希 / 审计路径 / 一致性证明（验证按 RFC 9162 §2.1.4.2）；
+  - SM2 标准签名（GB/T 32918，默认 ID `1234567812345678` 计算 ZA）；
+  - PreCert / MerkleTreeLeaf / SCT / STH 的 TLS 风格编解码；
+  - X.509 集成：LogID、precert poison / SCT list 扩展、`finalize_precert`；
+  - 内存日志 `sm2_ct_log`：add-pre-chain / add-chain / get-sth / get-proof-by-hash / get-entries / get-sth-consistency。
+- **RFC 4648 base64**：新增 `include/base64.hpp` / `src/base64.cpp` 及单元测试。
+- **X.509 原始扩展保留**：`x509_cert` 新增 `raw_extensions`，未知扩展在解析/编码时原样保留（CT 的 SCT list / poison 扩展依赖此能力）。
+- **TLS socket 封装层**：新增 `include/tls_socket.hpp` / `src/tls_socket.cpp`，在消息级 TLS API 之上提供跨平台（Windows Winsock / Linux POSIX）的 `tls_connection` 与 `tls_listener`：TCP 连接管理、TLS 1.3 客户端/服务端完整握手、record 收发（自动处理半包/粘包）、应用数据加密收发；新增回环测试 `tests/test_tls_socket.cpp`。
+- **国际标准 CT（RFC 6962）**：`ct_log` 通用日志类同时支持国密（SM3+SM2）与国际（SHA-256 + ECDSA P-256）算法；新增 `sha256_leaf_hash`/`sha256_node_hash`、SHA-256 默克尔树（根/审计路径/一致性证明，`CtHashAlg` 参数）、`issue_sct_std`/`verify_sct_std`/`sign_sth_std`/`verify_sth_std`、`compute_log_id_std`；`sm2_ct_log` 保留为兼容别名。
+- **RFC 6962 RSA CT**：新增 `issue_sct_rsa`/`verify_sct_rsa`/`sign_sth_rsa`/`verify_sth_rsa`（SHA-256 + RSA-2048 PKCS#1 v1.5，signature_algorithm=rsa）；`ct_log` 新增 RSA 构造函数（`ct_log(rsa_crt_key, rsa_public_key)`），LogID = SHA-256(RSA SPKI)。
+- **HTTPS + CT 示例**：新增 `examples/https/`（`https_server` + `https_client`）——服务器内嵌国际 CT 日志、签发带 SCT 的 ECDSA 证书并提供 `/`、`/ct/cert`、`/ct/precert`、`/ct/ca`、`/ct/log-key`、`/ct/sth`、`/ct/proof` 端点；客户端完成证书链校验、SCT/STH 签名校验与包含性证明审计。
+
+### Fixed
+- **一致性证明验证条件错误**：`verify_consistency` 的分支条件误写为 `fn == 0 || (fn & 1)`，应为 RFC 9162 §2.1.4.2 的 `(fn & 1) || fn == sn`，导致除少数组合外一致性证明全部验证失败；已修复，全部 (first, second) 组合通过。
+- **`tls13_make_new_session_ticket` 栈溢出**：`rand32` 固定写入 32 字节，原代码写入 4 字节局部变量（MSVC C4789 已静态证明溢出），改为 32 字节缓冲取前 4 字节；修复 test_tls / test_tls_sm / test_tls448 在 Release 下的段错误。
+- **`rsa_bignum::from_bytes` 越界写**：无长度边界检查，RSA-4096 路径传入 512 字节会写穿 256 字节的 `rsa_bignum`，现按类型容量钳制长度。
+- **`encode_tlv` / `encode_bit_string` 空指针 UB**：空数据时对 `nullptr` 做 `+0` 指针运算，增加长度守卫。
+- **SHA-NI 实现 MSVC 下未编译**：`sha256_sha_ni.cpp` 整体被 `#ifdef __x86_64__` 保护，而 MSVC 不定义该宏，导致静态库缺失 `sha256_sha_ni` 符号（bench_hardware_accel 链接失败）；改为 `__x86_64__ || _M_X64`。
+- **`from_der` BasicConstraints 解析偏移错误**：解析 SEQUENCE 后未重置偏移，导致 CA 证书从 DER 解析后 `is_ca()` 恒为 false（证书链验证报 "root not CA"）；已修正。
+
+### Changed
+- CMake 注册 `src/base64.cpp` / `src/ct.cpp` 及 `tests/test_ct.cpp`（CTest 33/33 全部通过）。
+- README 补充国密 CT 能力与缺陷修复说明。
+
 ## [0.9.3] — 2026-08-04
 
 ### Added

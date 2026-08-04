@@ -1745,9 +1745,10 @@ bool tls13_make_new_session_ticket(tls_session& s, std::vector<uint8_t>& ticket_
     s.psk_identity_len = 32;
     s.ticket_issue_time = (uint64_t)time(nullptr);
     {
-        uint32_t r;
-        rand32((uint8_t*)&r);
-        s.ticket_age_add = r;
+        // rand32 always writes 32 bytes; keep a full-size buffer and take 4.
+        uint8_t rbuf[32];
+        rand32(rbuf);
+        memcpy(&s.ticket_age_add, rbuf, 4);
     }
     s.psk_valid = true;
 

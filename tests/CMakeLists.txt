@@ -74,6 +74,14 @@ add_executable(test_x509 test_x509.cpp)
 target_include_directories(test_x509 PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_x509 PRIVATE jpssl_cpu ${MUSA_LIBS})
 
+add_executable(test_ct test_ct.cpp)
+target_include_directories(test_ct PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_ct PRIVATE jpssl_cpu ${MUSA_LIBS})
+
+add_executable(test_tls_socket test_tls_socket.cpp)
+target_include_directories(test_tls_socket PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_tls_socket PRIVATE jpssl_cpu ${MUSA_LIBS})
+
 # ── ECDSA 单元测试 (OpenSSL 对比) ────────────────────────────────────────
 if(OpenSSL_FOUND)
 add_executable(test_ecdsa test_ecdsa.cpp)
@@ -229,6 +237,8 @@ add_test(NAME test_tls448        COMMAND test_tls448)
 endif()
 add_test(NAME test_tls_sm        COMMAND test_tls_sm)
 add_test(NAME test_x509          COMMAND test_x509)
+add_test(NAME test_ct            COMMAND test_ct)
+add_test(NAME test_tls_socket    COMMAND test_tls_socket)
 if(OpenSSL_FOUND)
 add_test(NAME test_ed25519_rfc   COMMAND test_ed25519_rfc)
 add_test(NAME test_ed448_rfc     COMMAND test_ed448_rfc)

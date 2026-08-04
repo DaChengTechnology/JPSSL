@@ -1,0 +1,55 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    name: Build & test (x64 MSVC)
+    runs-on: windows-latest
+    env:
+      # choco 安装的 OpenSSL 默认位于此目录；未找到时 OpenSSL 对比测试自动跳过
+      OPENSSL_ROOT_DIR: C:\Program Files\OpenSSL-Win64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install OpenSSL (optional)
+        shell: pwsh
+        run: |
+          choco install openssl -y --no-progress --accept-license
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::warning::OpenSSL install failed; OpenSSL comparison tests will be skipped"
+          }
+
+      - name: Configure (Visual Studio 2022, x64)
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # 排除计时敏感的 bench_*（在单独 job 中只构建、不运行，避免 CI 负载下的偶发失败）
+      - name: Run tests
+        run: ctest --test-dir build -C Release --output-on-failure -E bench
+
+  bench:
+    name: Build benchmarks (x64 MSVC)
+    runs-on: windows-latest
+    env:
+      OPENSSL_ROOT_DIR: C:\Program Files\OpenSSL-Win64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # benchmarks 无条件链接 OpenSSL::Crypto，构建前必须安装
+      - name: Install OpenSSL
+        shell: pwsh
+        run: choco install openssl -y --no-progress --accept-license
+
+      - name: Configure benchmarks (Visual Studio 2022, x64)
+        run: cmake -S . -B build-bench -G "Visual Studio 17 2022" -A x64 -DJP_ENABLE_BENCH=ON
+
+      - name: Build benchmarks
+        run: cmake --build build-bench --config Release --parallel

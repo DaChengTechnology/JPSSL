@@ -1002,3 +1002,71 @@ cmake -B build -DJP_ENABLE_AVX2=OFF -DJP_ENABLE_AVX512=OFF
 - **OpenSSL** (仅部分测试目标需要，用于与 OpenSSL 结果对比)
 - **MUSA SDK** 4.3.0+ (可选，实验性 GPU 加速，默认关闭，通过 `-DJP_ENABLE_MUSA=ON` 启用)
 - **x86_64** (AES-NI / AVX2 / AVX512, 可选)
+
+## 国密证书透明 (SM2 CT)
+
+`include/ct.hpp` / `src/ct.cpp` 提供基于 RFC 6962 框架、以 SM2/SM3 替代
+ECDSA/SHA-256 的国密证书透明实现（参考 GM/T《证书透明规范》草案）：
+
+- SM3 默克尔树：根哈希 / 审计路径 / 一致性证明（`verify_consistency` 按
+  RFC 9162 §2.1.4.2 实现）；
+- SM2 标准签名（GB/T 32918，默认 ID `1234567812345678` 计算 ZA）；
+- PreCert / MerkleTreeLeaf / SCT / STH 的 TLS 风格编解码；
+- X.509 集成：LogID、precert poison / SCT list 扩展、`finalize_precert`；
+- 内存日志 `sm2_ct_log`：add-pre-chain / add-chain / get-sth /
+  get-proof-by-hash / get-entries / get-sth-consistency。
+
+`include/base64.hpp` / `src/base64.cpp` 提供 RFC 4648 base64 编解码。
+
+> 注：`DigitallySigned` 中的算法字节当前为占位值
+> （`CT_HASH_ALG_SM3 = 0x04`、`CT_SIG_ALG_SM2 = 0x04`），草案未定稿，
+> 与外部国密 CT 日志互操作前需核对字节值。
+
+## TLS socket 封装层
+
+`include/tls_socket.hpp` / `src/tls_socket.cpp` 在消息级 TLS API 之上提供
+跨平台（Windows Winsock / Linux POSIX）的 TLS-over-TCP 封装：
+
+- `tls::tls_connection`：客户端 `connect(host, port, trust_store)` 或服务端
+  `server_handshake(cert_manager)` 完成 TLS 1.3 握手；`send` / `recv`
+  收发加密应用数据。
+- `tls::tls_listener`：`listen(port)` + `accept(conn, cert_manager)`，
+  接受连接并自动完成服务端握手。
+- record 层自动处理半包/粘包、握手消息封装与加密 record 透传。
+
+## 国际证书透明（RFC 6962）+ HTTPS 示例
+
+`ct_log` 支持两种算法组合：
+
+- 国密：`sm2_ct_log(priv, pub)`（SM3 默克尔树 + SM2 签名，GM/T 草案）；
+- 国际标准：`ct_log(CtHashAlg::SHA256, CtSigAlg::ECDSA_P256, priv, pub)`
+  （SHA-256 默克尔树 + ECDSA P-256 签名，LogID = SHA-256(SPKI)，RFC 6962）。
+- RSA：`ct_log(rsa_crt_key, rsa_public_key)`（SHA-256 + RSA-2048 PKCS#1 v1.5，
+  signature_algorithm = rsa），或直接使用 `issue_sct_rsa` / `verify_sct_rsa` /
+  `sign_sth_rsa` / `verify_sth_rsa`。
+
+`examples/https/` 提供 HTTPS 服务器与客户端示例：
+
+```bash
+# 终端 1：启动 HTTPS + CT 服务器（默认 8443）
+./https_server 8443
+
+# 终端 2：客户端执行证书链 / SCT / STH / 包含性证明审计
+./https_client 127.0.0.1 8443
+```
+
+服务器内嵌内存 CT 日志，为 ECDSA 服务器证书签发 SCT 并暴露
+`/ct/cert`、`/ct/precert`、`/ct/ca`、`/ct/log-key`、`/ct/sth`、`/ct/proof`
+等审计端点；客户端通过 TLS 1.3 连接完成全部 CT 校验。
+
+### 修复的缺陷
+
+- `tls13_make_new_session_ticket`：`rand32` 固定写 32 字节，原代码写入
+  4 字节局部变量导致栈溢出（MSVC C4789 已静态证明），改为 32 字节缓冲。
+- `rsa_bignum::from_bytes`：无边界检查，RSA-4096 路径传入 512 字节会写穿
+  256 字节的 `rsa_bignum`，现按类型容量钳制长度。
+- `encode_tlv` / `encode_bit_string`：空数据时对 `nullptr` 做 `+0` 指针
+  运算（UB），增加长度守卫。
+- `sha256_sha_ni.cpp`：实现整体被 `#ifdef __x86_64__` 保护，MSVC 不定义
+  该宏导致静态库缺失 `sha256_sha_ni` 符号（bench_hardware_accel 链接失败），
+  改为 `__x86_64__ || _M_X64`。

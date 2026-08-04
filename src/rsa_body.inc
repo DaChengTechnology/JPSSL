@@ -16,7 +16,7 @@ bool BN::operator<(const BN&o)const{for(int i=K-1;i>=0;--i)if(d[i]!=o.d[i])retur
 bool BN::bit(int p)const{return(d[p/64]>>(p%64))&1;}
 void BN::set_bit(int p){d[p/64]|=(uint64_t)1<<(p%64);}
 BN BN::from_uint64(uint64_t v){BN r;r.d[0]=v;return r;}
-BN BN::from_bytes(const uint8_t*data,size_t len){BN r;r.zero();for(size_t i=0;i<len;++i)r.d[i/8]|=(uint64_t)data[len-1-i]<<((i%8)*8);return r;}
+BN BN::from_bytes(const uint8_t*data,size_t len){BN r;r.zero();if(len>sizeof(r.d))len=sizeof(r.d);for(size_t i=0;i<len;++i)r.d[i/8]|=(uint64_t)data[len-1-i]<<((i%8)*8);return r;}
 void BN::to_bytes(uint8_t*out)const{size_t bl=K*8;memset(out,0,bl);for(size_t i=0;i<bl;++i)out[bl-1-i]=(uint8_t)(d[i/8]>>((i%8)*8));}
 BN BN::random_odd(){BN r;secure_rand_bytes(reinterpret_cast<uint8_t*>(r.d),sizeof(r.d));r.d[K-1]|=(uint64_t)1<<63;r.d[0]|=1;return r;}
 

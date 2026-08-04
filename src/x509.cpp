@@ -37,7 +37,7 @@ std::vector<uint8_t> encode_tlv(ASN1Tag tag, const uint8_t* value, size_t len) {
     std::vector<uint8_t> out;
     out.push_back((uint8_t)tag);
     encode_length(out, len);
-    out.insert(out.end(), value, value + len);
+    if (len > 0) out.insert(out.end(), value, value + len);
     return out;
 }
 
@@ -61,7 +61,7 @@ std::vector<uint8_t> encode_oid(const std::vector<uint8_t>& oid) {
 
 std::vector<uint8_t> encode_bit_string(const uint8_t* data, size_t len, uint8_t unused_bits) {
     std::vector<uint8_t> v; v.push_back(unused_bits);
-    v.insert(v.end(), data, data + len);
+    if (len > 0) v.insert(v.end(), data, data + len);
     return encode_tlv(ASN1Tag::BIT_STRING, v);
 }
 std::vector<uint8_t> encode_octet_string(const uint8_t* data, size_t len) {
@@ -264,6 +264,15 @@ std::vector<uint8_t> encode_extensions(const x509_cert& cert) {
         std::vector<uint8_t> ext;
         append(ext, encode_oid(OID_SUBJECT_ALT_NAME, sizeof(OID_SUBJECT_ALT_NAME)));
         append(ext, encode_octet_string(enc.data(), enc.size()));
+        append(exts, encode_sequence(ext));
+    }
+
+    // Raw (verbatim) extensions
+    for (const auto& raw : cert.raw_extensions) {
+        std::vector<uint8_t> ext;
+        append(ext, encode_oid(raw.oid));
+        if (raw.critical) { ext.push_back(0x01); ext.push_back(0x01); ext.push_back(0xFF); }
+        append(ext, encode_octet_string(raw.extn_value.data(), raw.extn_value.size()));
         append(exts, encode_sequence(ext));
     }
 
@@ -564,8 +573,11 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
                     if (!eoid_tlv || eoid_tlv->tag != ASN1Tag::OID) break;
                     auto eoid = eoid_tlv->value; // raw DER-encoded OID bytes
                     auto next = decode_tlv2(ext->value.data(), ext->value.size(), eioff);
-                    if (next && next->tag == ASN1Tag::BOOLEAN)
+                    bool critical = false;
+                    if (next && next->tag == ASN1Tag::BOOLEAN) {
+                        critical = !next->value.empty() && next->value[0] != 0;
                         next = decode_tlv2(ext->value.data(), ext->value.size(), eioff);
+                    }
                     if (!next || next->tag != ASN1Tag::OCTET_STRING) break;
 
                     if (oid_equal(eoid, OID_BASIC_CONSTRAINTS, sizeof(OID_BASIC_CONSTRAINTS))) {
@@ -573,13 +585,14 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
                         auto bc_seq = decode_tlv2(next->value.data(), next->value.size(), bioff);
                         if (bc_seq) {
                             BasicConstraints bc;
-                            if (bioff < bc_seq->value.size()) {
-                                auto ca_tlv = decode_tlv2(bc_seq->value.data(), bc_seq->value.size(), bioff);
+                            size_t bo = 0; // 相对 SEQUENCE 内容的偏移
+                            if (bo < bc_seq->value.size()) {
+                                auto ca_tlv = decode_tlv2(bc_seq->value.data(), bc_seq->value.size(), bo);
                                 if (ca_tlv && ca_tlv->tag == ASN1Tag::BOOLEAN)
                                     bc.ca = !ca_tlv->value.empty() && ca_tlv->value[0] != 0;
                             }
-                            if (bioff < bc_seq->value.size()) {
-                                auto pl_tlv = decode_tlv2(bc_seq->value.data(), bc_seq->value.size(), bioff);
+                            if (bo < bc_seq->value.size()) {
+                                auto pl_tlv = decode_tlv2(bc_seq->value.data(), bc_seq->value.size(), bo);
                                 if (pl_tlv && pl_tlv->tag == ASN1Tag::INTEGER && !pl_tlv->value.empty())
                                     bc.path_len = (int)pl_tlv->value[0];
                             }
@@ -598,6 +611,12 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
                             }
                             cert.subject_alt_name = san;
                         }
+                    } else {
+                        RawExtension raw;
+                        raw.oid = eoid;
+                        raw.critical = critical;
+                        raw.extn_value = next->value;
+                        cert.raw_extensions.push_back(std::move(raw));
                     }
                 }
             }
