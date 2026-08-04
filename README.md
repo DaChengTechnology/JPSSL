@@ -63,6 +63,7 @@ cmake -DJP_ENABLE_BENCH=ON .. && make bench_rsa_cpu_gpu
 | `bench_sha512` | SHA-512 CPU vs SSE vs OpenSSL |
 | `bench_hardware_accel` | AES-NI/AVX2/AVX512 硬件加速对比 |
 | `bench_cipher_suites` | TLS 密码套件性能 |
+| `bench_sm_ossl` | SM3 吞吐 + SM2 keygen/sign/verify vs OpenSSL |
 
 ## 快速开始
 

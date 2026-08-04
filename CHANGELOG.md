@@ -55,6 +55,11 @@
 - 字段运算改用 u64 原语 + 专用平方 + 窗口化求逆，标量 mod-L 折叠，修复加法/倍点/乘法进位 bug；对比 OpenSSL：keygen 5.7× / sign 6× / verify 2.3× / x448 1.9×，新增基准 `benchmarks/bench_ed448_x448_ossl.cpp`。
 - 新增 radix-2^28 的 4/8 路 SIMD 字段层 `src/fe_448_simd.hpp`，向量化批量验签与 X448 批量阶梯；新增 `x448_scalar_mult_batch` API（AVX512=8 路 / AVX2=4 路 / 标量回退）及测试 `tests/test_x448_batch.cpp`，X448 每签提速约 24%。
 
+#### SM2 / SM3 性能优化
+- **SM2 重写**（`src/sm2.cpp`）：域运算改为 Montgomery（R=2^256）4×64 位表示，CIOS 乘法 + 对称平方（10 次 MULX），MSVC 用 `_umul128/_addcarry_u64` intrinsic；求逆用 Montgomery 快速幂并支持批量仿射化（单次求逆）；标量乘改用宽度-5 wNAF（G 奇倍点表全局预计算，仿射混合加法），验签用 Shamir 双标量同时乘共享倍点；顺带修正 e/x1 规约、坐标规约与签名格式细节。实测（MSVC Release）：keygen 16.2ms → 0.19ms（约 84×）、sign 18.0ms → 0.22ms（约 83×）、verify 30.6ms → 0.23ms（约 135×）；对比 OpenSSL 4.0：keygen 1.31× / sign 1.35× / verify 1.26×，双向签名互操作（OpenSSL 验 jpssl、jpssl 验 OpenSSL）全部通过。
+- **SM3 标量重写**（`src/sm3.cpp`）：压缩函数按 8 轮一组展开，T/FF/GG 全部编译期常量消除分支，W′ = W_j ^ W_{j+4} 轮内即时计算；8 KiB 块吞吐约 356 MB/s，与 OpenSSL 持平。
+- 新增 OpenSSL 对比基准 `benchmarks/bench_sm_ossl.cpp`（SM3 吞吐 + SM2 keygen/sign/verify，含 DER↔原始 r||s 签名互操作自检）。
+
 ### 验证
 - 本机 VS 2026 Build Tools（MSVC 19.51）+ CMake/Ninja 全量构建通过（166 目标，含静态/动态库、3 个命令行工具、38 个测试 exe）。
 - CTest 21 项中 19 项通过：AES/CCM/GCM、SHA-3/SHA-512、TLS 1.2/1.3 全握手与 0-RTT、X.509 DER/证书链、Ed25519/Ed448 RFC 向量、X25519/X448 RFC 向量、SM4-GCM、RSA 2048 keygen/sign/verify、OpenSSL 对比。
