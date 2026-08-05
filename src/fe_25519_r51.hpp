@@ -30,7 +30,7 @@ extern "C" void fe51_sq_adx(uint64_t r[5], const uint64_t a[5]);
 #elif defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__)) && !defined(JP_NO_FE51_ADX_ASM)
 
 // ── GCC/Clang x86-64: MULX + ADCX/ADOX 双进位链内联汇编 ────────────────
-// 与 MSVC 的 fe51_mul_adx.asm / fe51_sq_adx.asm 逐指令等价。
+// 与 MSVC 的 fe51_mul_adx.asm / fe51_sq_adx.asm 逻辑等价。
 //   - MULX (BMI2): 25 次乘法 (sq 用对称性减到 15), 不污染标志位
 //   - ADCX (CF 链) / ADOX (OF 链): 偶数列与奇数列两条进位链交错, 提升 ILP
 //   - 输入 limb 允许 [0, 2^53); 输出每个 limb < 2^51 + eps (与 portable 一致)
@@ -38,7 +38,7 @@ extern "C" void fe51_sq_adx(uint64_t r[5], const uint64_t a[5]);
 // noinline 是必要的: 本函数 clobber 11 个通用寄存器, 若内联进 ladder
 // 调用点, 每次调用都要做全量 save/restore, 反而得不偿失。
 // 函数只读 a/b、通过 r 写回内存, 操作数 %0/%1/%2 由编译器分配到
-// 非 clobber 寄存器 (rcx/rsi/rdi/r14), 内部硬编码寄存器全部列入 clobber。
+// 非 clobber 寄存器 (rcx/rsi/rdi), 内部硬编码寄存器全部列入 clobber。
 __attribute__((noinline))
 static void fe51_mul_adx(uint64_t r[5], const uint64_t a[5], const uint64_t b[5]) {
     __asm__ __volatile__(
@@ -49,9 +49,9 @@ static void fe51_mul_adx(uint64_t r[5], const uint64_t a[5], const uint64_t b[5]
         "mulxq   (%2), %%r9, %%r8\n\t"
         "mulxq   8(%2), %%r11, %%r10\n\t"
         "movq    8(%1), %%rdx\n\t"
-        "mulxq   (%2), %%rbp, %%rbx\n\t"
+        "mulxq   (%2), %%r14, %%rbx\n\t"
         "xorq    %%rax, %%rax\n\t"
-        "adoxq   %%rbp, %%r11\n\t"
+        "adoxq   %%r14, %%r11\n\t"
         "adoxq   %%rbx, %%r10\n\t"
         "movq    %%r9, 0(%%rsp)\n\t"
         "movq    %%r8, 8(%%rsp)\n\t"
@@ -150,36 +150,36 @@ static void fe51_mul_adx(uint64_t r[5], const uint64_t a[5], const uint64_t b[5]
 
         // ---- 折叠: t0 += 19*t5 ; t1 += 19*t6 ; t2 += 19*t7 ; t3 += 19*t8 ----
         "movq    $19, %%rdx\n\t"
-        "mulxq   80(%%rsp), %%rbx, %%rbp\n\t"
+        "mulxq   80(%%rsp), %%rbx, %%r14\n\t"
         "movq    88(%%rsp), %%rax\n\t"
         "imulq   $19, %%rax, %%rax\n\t"
-        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rax, %%r14\n\t"
         "addq    %%rbx, 0(%%rsp)\n\t"
-        "adcq    %%rbp, 8(%%rsp)\n\t"
+        "adcq    %%r14, 8(%%rsp)\n\t"
 
         "movq    $19, %%rdx\n\t"
-        "mulxq   96(%%rsp), %%rbx, %%rbp\n\t"
+        "mulxq   96(%%rsp), %%rbx, %%r14\n\t"
         "movq    104(%%rsp), %%rax\n\t"
         "imulq   $19, %%rax, %%rax\n\t"
-        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rax, %%r14\n\t"
         "addq    %%rbx, 16(%%rsp)\n\t"
-        "adcq    %%rbp, 24(%%rsp)\n\t"
+        "adcq    %%r14, 24(%%rsp)\n\t"
 
         "movq    $19, %%rdx\n\t"
-        "mulxq   112(%%rsp), %%rbx, %%rbp\n\t"
+        "mulxq   112(%%rsp), %%rbx, %%r14\n\t"
         "movq    120(%%rsp), %%rax\n\t"
         "imulq   $19, %%rax, %%rax\n\t"
-        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rax, %%r14\n\t"
         "addq    %%rbx, 32(%%rsp)\n\t"
-        "adcq    %%rbp, 40(%%rsp)\n\t"
+        "adcq    %%r14, 40(%%rsp)\n\t"
 
         "movq    $19, %%rdx\n\t"
-        "mulxq   128(%%rsp), %%rbx, %%rbp\n\t"
+        "mulxq   128(%%rsp), %%rbx, %%r14\n\t"
         "movq    136(%%rsp), %%rax\n\t"
         "imulq   $19, %%rax, %%rax\n\t"
-        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rax, %%r14\n\t"
         "addq    %%rbx, 48(%%rsp)\n\t"
-        "adcq    %%rbp, 56(%%rsp)\n\t"
+        "adcq    %%r14, 56(%%rsp)\n\t"
 
         // ---- 51-bit 进位链 (t0_hi 直接从栈读, 避免占用额外寄存器) ----
         "movq    0(%%rsp), %%rax\n\t"
@@ -188,7 +188,7 @@ static void fe51_mul_adx(uint64_t r[5], const uint64_t a[5], const uint64_t b[5]
         "movq    32(%%rsp), %%r10\n\t"
         "movq    40(%%rsp), %%r11\n\t"
         "movq    48(%%rsp), %%rbx\n\t"
-        "movq    56(%%rsp), %%rbp\n\t"
+        "movq    56(%%rsp), %%r14\n\t"
         "movq    64(%%rsp), %%r12\n\t"
         "movq    72(%%rsp), %%r13\n\t"
 
@@ -225,17 +225,17 @@ static void fe51_mul_adx(uint64_t r[5], const uint64_t a[5], const uint64_t b[5]
         "shrq    $13, %%r10\n\t"
         "xorq    %%r11, %%r11\n\t"
         "addq    %%rdx, %%rbx\n\t"
-        "adcq    $0, %%rbp\n\t"
+        "adcq    $0, %%r14\n\t"
 
         // c = t3>>51; t3 &= MASK51; t4 += c
-        "movq    %%rbp, %%r15\n\t"
+        "movq    %%r14, %%r15\n\t"
         "shlq    $13, %%r15\n\t"
         "movq    %%rbx, %%rdx\n\t"
         "shrq    $51, %%rdx\n\t"
         "orq     %%r15, %%rdx\n\t"
         "shlq    $13, %%rbx\n\t"
         "shrq    $13, %%rbx\n\t"
-        "xorq    %%rbp, %%rbp\n\t"
+        "xorq    %%r14, %%r14\n\t"
         "addq    %%rdx, %%r12\n\t"
         "adcq    $0, %%r13\n\t"
 
@@ -274,7 +274,7 @@ static void fe51_mul_adx(uint64_t r[5], const uint64_t a[5], const uint64_t b[5]
         :                        // 无输出操作数 (通过 %0 写内存)
         : "r"(r), "r"(a), "r"(b)
         : "memory", "cc",
-          "rax", "rbx", "rbp", "rdx",
+          "rax", "rbx", "r14", "rdx",
           "r8", "r9", "r10", "r11", "r12", "r13", "r15");
 }
 
@@ -330,14 +330,14 @@ static void fe51_sq_adx(uint64_t r[5], const uint64_t a[5]) {
         "addq    %%r13, %%r13\n\t"
         "adcq    %%r12, %%r12\n\t"
         "movq    16(%1), %%rdx\n\t"
-        "mulxq   16(%1), %%rbp, %%rbx\n\t"
+        "mulxq   16(%1), %%r14, %%rbx\n\t"
         "mulxq   24(%1), %%rax, %%r15\n\t"
         "addq    %%rax, %%rax\n\t"
         "adcq    %%r15, %%r15\n\t"
         "xorq    %%rdx, %%rdx\n\t"
         "adcxq   %%r13, %%r9\n\t"
         "adcxq   %%r12, %%r8\n\t"
-        "adcxq   %%rbp, %%r9\n\t"
+        "adcxq   %%r14, %%r9\n\t"
         "adcxq   %%rbx, %%r8\n\t"
         "adoxq   %%rax, %%r11\n\t"
         "adoxq   %%r15, %%r10\n\t"
@@ -372,36 +372,36 @@ static void fe51_sq_adx(uint64_t r[5], const uint64_t a[5]) {
 
         // ---- 折叠 (与 mul 完全一致) ----
         "movq    $19, %%rdx\n\t"
-        "mulxq   80(%%rsp), %%rbx, %%rbp\n\t"
+        "mulxq   80(%%rsp), %%rbx, %%r14\n\t"
         "movq    88(%%rsp), %%rax\n\t"
         "imulq   $19, %%rax, %%rax\n\t"
-        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rax, %%r14\n\t"
         "addq    %%rbx, 0(%%rsp)\n\t"
-        "adcq    %%rbp, 8(%%rsp)\n\t"
+        "adcq    %%r14, 8(%%rsp)\n\t"
 
         "movq    $19, %%rdx\n\t"
-        "mulxq   96(%%rsp), %%rbx, %%rbp\n\t"
+        "mulxq   96(%%rsp), %%rbx, %%r14\n\t"
         "movq    104(%%rsp), %%rax\n\t"
         "imulq   $19, %%rax, %%rax\n\t"
-        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rax, %%r14\n\t"
         "addq    %%rbx, 16(%%rsp)\n\t"
-        "adcq    %%rbp, 24(%%rsp)\n\t"
+        "adcq    %%r14, 24(%%rsp)\n\t"
 
         "movq    $19, %%rdx\n\t"
-        "mulxq   112(%%rsp), %%rbx, %%rbp\n\t"
+        "mulxq   112(%%rsp), %%rbx, %%r14\n\t"
         "movq    120(%%rsp), %%rax\n\t"
         "imulq   $19, %%rax, %%rax\n\t"
-        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rax, %%r14\n\t"
         "addq    %%rbx, 32(%%rsp)\n\t"
-        "adcq    %%rbp, 40(%%rsp)\n\t"
+        "adcq    %%r14, 40(%%rsp)\n\t"
 
         "movq    $19, %%rdx\n\t"
-        "mulxq   128(%%rsp), %%rbx, %%rbp\n\t"
+        "mulxq   128(%%rsp), %%rbx, %%r14\n\t"
         "movq    136(%%rsp), %%rax\n\t"
         "imulq   $19, %%rax, %%rax\n\t"
-        "addq    %%rax, %%rbp\n\t"
+        "addq    %%rax, %%r14\n\t"
         "addq    %%rbx, 48(%%rsp)\n\t"
-        "adcq    %%rbp, 56(%%rsp)\n\t"
+        "adcq    %%r14, 56(%%rsp)\n\t"
 
         // ---- 51-bit 进位链 ----
         "movq    0(%%rsp), %%rax\n\t"
@@ -410,7 +410,7 @@ static void fe51_sq_adx(uint64_t r[5], const uint64_t a[5]) {
         "movq    32(%%rsp), %%r10\n\t"
         "movq    40(%%rsp), %%r11\n\t"
         "movq    48(%%rsp), %%rbx\n\t"
-        "movq    56(%%rsp), %%rbp\n\t"
+        "movq    56(%%rsp), %%r14\n\t"
         "movq    64(%%rsp), %%r12\n\t"
         "movq    72(%%rsp), %%r13\n\t"
 
@@ -447,17 +447,17 @@ static void fe51_sq_adx(uint64_t r[5], const uint64_t a[5]) {
         "shrq    $13, %%r10\n\t"
         "xorq    %%r11, %%r11\n\t"
         "addq    %%rdx, %%rbx\n\t"
-        "adcq    $0, %%rbp\n\t"
+        "adcq    $0, %%r14\n\t"
 
         // c = t3>>51; t3 &= MASK51; t4 += c
-        "movq    %%rbp, %%r15\n\t"
+        "movq    %%r14, %%r15\n\t"
         "shlq    $13, %%r15\n\t"
         "movq    %%rbx, %%rdx\n\t"
         "shrq    $51, %%rdx\n\t"
         "orq     %%r15, %%rdx\n\t"
         "shlq    $13, %%rbx\n\t"
         "shrq    $13, %%rbx\n\t"
-        "xorq    %%rbp, %%rbp\n\t"
+        "xorq    %%r14, %%r14\n\t"
         "addq    %%rdx, %%r12\n\t"
         "adcq    $0, %%r13\n\t"
 
@@ -496,7 +496,7 @@ static void fe51_sq_adx(uint64_t r[5], const uint64_t a[5]) {
         :
         : "r"(r), "r"(a)
         : "memory", "cc",
-          "rax", "rbx", "rbp", "rdx",
+          "rax", "rbx", "r14", "rdx",
           "r8", "r9", "r10", "r11", "r12", "r13", "r15");
 }
 #endif

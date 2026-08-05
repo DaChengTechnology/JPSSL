@@ -227,9 +227,11 @@ void key_expansion(const uint8_t* key, AesKeySize ks, uint8_t* rk_buf);
 constexpr size_t MAX_EXPANDED_KEY = expanded_key_bytes(AesKeySize::AES_256); // 240 字节
 
 struct aes_context {
-    std::array<uint8_t, MAX_EXPANDED_KEY> enc_rk{};      // 加密轮密钥
-    std::array<uint8_t, MAX_EXPANDED_KEY> dec_rk{};      // 解密轮密钥（软件格式）
-    std::array<uint8_t, MAX_EXPANDED_KEY> dec_rk_aesni{}; // 解密轮密钥（AES-NI 格式，_mm_aesimc 变换）
+    // 轮密钥缓冲按 16 字节对齐：AES-NI 路径以 __m128i* 访问（movdqa/movaps），
+    // 若不满足对齐会在密钥扩展/加解密时触发 SIGSEGV。
+    alignas(16) std::array<uint8_t, MAX_EXPANDED_KEY> enc_rk{};      // 加密轮密钥
+    alignas(16) std::array<uint8_t, MAX_EXPANDED_KEY> dec_rk{};      // 解密轮密钥（软件格式）
+    alignas(16) std::array<uint8_t, MAX_EXPANDED_KEY> dec_rk_aesni{}; // 解密轮密钥（AES-NI 格式，_mm_aesimc 变换）
     AesKeySize key_size;
     int rounds;
 
