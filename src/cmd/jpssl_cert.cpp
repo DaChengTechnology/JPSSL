@@ -7,6 +7,8 @@
  *   jpssl-cert info   --cert <file.der>
  *   jpssl-cert verify --cert <leaf.der> --ca <root.der>
  *   jpssl-cert chain  --cert <leaf.der> --ca <root.der> [--ca <inter.der> ...]
+ *   jpssl-cert tlsgen --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048] [--days 365]
+ *                     [--out cert.der] [--key-out key.bin]
  */
 
 #include "x509.hpp"
@@ -29,6 +31,9 @@ using namespace jpssl::tls;
 
 // ── helpers ────────────────────────────────────────────────────────────────
 static void die(const char* msg) { std::fprintf(stderr, "ERROR: %s\n", msg); std::exit(1); }
+static void check_days(int days) {
+    if (days < 1) die("有效期天数无效: --days 必须 >= 1");
+}
 static void usage() {
     std::printf(R"(jpssl-cert — X.509 v3 证书工具
 
@@ -39,12 +44,12 @@ static void usage() {
   jpssl-cert verify --cert <leaf.der> --ca <root.der> [--ca <inter.der> ...]
   jpssl-cert chain  --cert <leaf.der> --ca <root.der> [--ca <inter.der> ...]
   jpssl-cert tlsgen --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048]
-                    [--out cert.der] [--key-out key.bin]
+                    [--days 365] [--out cert.der] [--key-out key.bin]
 
 选项:
   --cn, --common-name <name>    Subject Common Name
   --key-type <type>             密钥类型 (默认 ed25519)
-  --days <n>                    有效期天数 (默认 365)
+  --days <n>                    有效期天数 (默认 365, gen/tlsgen 均支持)
   --out, --cert <file>          输出/输入 证书文件 (DER)
   --key-out <file>              私钥输出文件
   --ca <file>                   CA 证书文件 (可多次指定)
@@ -135,6 +140,7 @@ static void cmd_gen(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--key-out"))
             { if (++i < argc) key_file = argv[i]; }
     }
+    check_days(days);
 
     auto kp = gen_keypair(key_type);
     std::printf("生成 %s 密钥对...\n", key_type.c_str());
@@ -230,6 +236,7 @@ static void cmd_verify(int argc, char** argv) {
 
 static void cmd_tlsgen(int argc, char** argv) {
     std::string cn = "localhost", key_type = "ed25519";
+    int days = 365;
     const char* out_file = "cert.der";
     const char* key_file = "key.bin";
 
@@ -238,11 +245,14 @@ static void cmd_tlsgen(int argc, char** argv) {
             { if (++i < argc) cn = argv[i]; }
         else if (!std::strcmp(argv[i], "--key-type"))
             { if (++i < argc) key_type = argv[i]; }
+        else if (!std::strcmp(argv[i], "--days"))
+            { if (++i < argc) days = std::atoi(argv[i]); }
         else if (!std::strcmp(argv[i], "--out"))
             { if (++i < argc) out_file = argv[i]; }
         else if (!std::strcmp(argv[i], "--key-out"))
             { if (++i < argc) key_file = argv[i]; }
     }
+    check_days(days);
 
     auto tls_cert = std::make_unique<tls_certificate>();
     tls_cert->subject_name = cn;
@@ -266,7 +276,7 @@ static void cmd_tlsgen(int argc, char** argv) {
         die("未知密钥类型");
     }
 
-    auto der = tls_make_x509_self_signed(*tls_cert, 365);
+    auto der = tls_make_x509_self_signed(*tls_cert, days);
     write_file(out_file, der);
 
     // Write private key
@@ -285,8 +295,8 @@ static void cmd_tlsgen(int argc, char** argv) {
     }
     write_file(key_file, priv_data);
 
-    std::printf("TLS 证书 (X.509 v3): %s (%zu bytes)\n私钥: %s (%zu bytes)\nCN: %s\n",
-                out_file, der.size(), key_file, priv_data.size(), cn.c_str());
+    std::printf("TLS 证书 (X.509 v3): %s (%zu bytes)\n私钥: %s (%zu bytes)\nCN: %s\n有效期: %d 天\n",
+                out_file, der.size(), key_file, priv_data.size(), cn.c_str(), days);
 }
 
 // ── main ───────────────────────────────────────────────────────────────────

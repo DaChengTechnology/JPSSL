@@ -52,6 +52,15 @@ target_include_directories(test_sha512 PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_sha512 PRIVATE jpssl_cpu OpenSSL::Crypto)
 endif()
 
+# -- SHA-1 unit test (scalar + AVX2/AVX512 multi-buffer, OpenSSL compare) --
+add_executable(test_sha1 test_sha1.cpp)
+target_include_directories(test_sha1 PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_sha1 PRIVATE jpssl_cpu)
+if(OpenSSL_FOUND)
+    target_link_libraries(test_sha1 PRIVATE OpenSSL::Crypto)
+    target_compile_definitions(test_sha1 PRIVATE JPSSL_TEST_OPENSSL)
+endif()
+
 # ── TLS 单元测试 ─────────────────────────────────────────────────────────
 add_executable(test_tls test_tls.cpp)
 target_include_directories(test_tls PRIVATE ${INCLUDE_DIR})
@@ -246,6 +255,7 @@ if(OpenSSL_FOUND)
 add_test(NAME test_sha3          COMMAND test_sha3)
 add_test(NAME test_sha512        COMMAND test_sha512)
 endif()
+add_test(NAME test_sha1          COMMAND test_sha1)
 add_test(NAME test_tls           COMMAND test_tls)
 if(OpenSSL_FOUND)
 add_test(NAME test_tls448        COMMAND test_tls448)

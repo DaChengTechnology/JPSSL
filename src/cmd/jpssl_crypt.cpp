@@ -4,12 +4,16 @@
  * 用法:
  *   jpssl-crypt encrypt  --algo aes256gcm|chacha20 --key <hex> [--in <file>] [--out <file>]
  *   jpssl-crypt decrypt  --algo aes256gcm|chacha20 --key <hex> --in <file> --out <file>
- *   jpssl-crypt hash     --algo sha256|sha512|sha3-256|sha3-512|sm3 [--in <file>]
+ *   jpssl-crypt hash     --algo sha1|sha256|sha512|sha3-256|sha3-512|sm3 [--in <file>]
  *   jpssl-crypt hmac     --algo sha256|sha384|sm3 --key <hex> [--in <file>]
+ *   jpssl-crypt b64encode [--in <file>] [--out <file>]
+ *   jpssl-crypt b64decode [--in <file>] [--out <file>]
  */
 
 #include "aes.hpp"
+#include "base64.hpp"
 #include "chacha20_poly1305.hpp"
+#include "sha1.hpp"
 #include "sha256.hpp"
 #include "sha512.hpp"
 #include "sha3.hpp"
@@ -35,13 +39,16 @@ static void usage() {
                        [--aad <hex>] [--in <file>] [--out <file>]
   jpssl-crypt decrypt  --algo aes256gcm|chacha20 --key <hex-key> [--iv <hex>]
                        [--aad <hex>] --tag <hex> --in <file> --out <file>
-  jpssl-crypt hash     --algo sha256|sha512|sha3-256|sha3-512|sm3 [--in <file>]
+  jpssl-crypt hash     --algo sha1|sha256|sha512|sha3-256|sha3-512|sm3 [--in <file>]
   jpssl-crypt hmac     --algo sha256|sha384|sm3 --key <hex> [--in <file>]
+  jpssl-crypt b64encode [--in <file>] [--out <file>]
+  jpssl-crypt b64decode [--in <file>] [--out <file>]
   jpssl-crypt rand     <bytes>
 
 算法:
   aes256gcm   AES-256-GCM AEAD (32-byte key, 12-byte IV, 16-byte tag)
   chacha20    ChaCha20-Poly1305 AEAD (32-byte key, 12-byte nonce, 16-byte tag)
+  sha1        SHA-1 哈希 (20 bytes)
   sha256      SHA-256 哈希 (32 bytes)
   sha512      SHA-512 哈希 (64 bytes)
   sha3-256    SHA3-256 哈希 (32 bytes)
@@ -259,7 +266,11 @@ static void cmd_hash(int argc, char** argv) {
 
     auto data = read_file(in_file);
 
-    if (algo == "sha256") {
+    if (algo == "sha1") {
+        uint8_t hash[20]; sha1_ctx ctx;
+        sha1_init(&ctx); sha1_update(&ctx, data.data(), data.size()); sha1_final(&ctx, hash);
+        hex_out(std::vector<uint8_t>(hash, hash + 20));
+    } else if (algo == "sha256") {
         uint8_t hash[32]; sha256_ctx ctx;
         sha256_init(&ctx); sha256_update(&ctx, data.data(), data.size()); sha256_final(&ctx, hash);
         hex_out(std::vector<uint8_t>(hash, hash + 32));
@@ -280,7 +291,7 @@ static void cmd_hash(int argc, char** argv) {
         sm3_init(&ctx); sm3_update(&ctx, data.data(), data.size()); sm3_final(&ctx, hash);
         hex_out(std::vector<uint8_t>(hash, hash + 32));
     } else {
-        die("未知哈希算法，支持: sha256, sha512, sha3-256, sha3-512, sm3");
+        die("未知哈希算法，支持: sha1, sha256, sha512, sha3-256, sha3-512, sm3");
     }
 }
 
@@ -323,6 +334,50 @@ static void cmd_rand(int argc, char** argv) {
     hex_out(r);
 }
 
+static void cmd_b64encode(int argc, char** argv) {
+    const char *in_file = nullptr, *out_file = nullptr;
+    for (int i = 0; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--in")) { if (++i < argc) in_file = argv[i]; }
+        else if (!std::strcmp(argv[i], "--out")) { if (++i < argc) out_file = argv[i]; }
+    }
+
+    auto data = read_file(in_file);
+    std::string b64 = base64_encode(data);
+
+    if (out_file && std::strcmp(out_file, "-")) {
+        write_file(out_file, std::vector<uint8_t>(b64.begin(), b64.end()));
+        std::printf("Base64 编码完成: %zu bytes → %zu chars\n", data.size(), b64.size());
+    } else {
+        std::fwrite(b64.data(), 1, b64.size(), stdout);
+        std::fputc('\n', stdout);
+    }
+}
+
+static void cmd_b64decode(int argc, char** argv) {
+    const char *in_file = nullptr, *out_file = nullptr;
+    for (int i = 0; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--in")) { if (++i < argc) in_file = argv[i]; }
+        else if (!std::strcmp(argv[i], "--out")) { if (++i < argc) out_file = argv[i]; }
+    }
+
+    auto data = read_file(in_file);
+
+    // 容忍文本文件中的空白字符（行尾换行、空格、tab 等）
+    std::string text;
+    text.reserve(data.size());
+    for (uint8_t c : data) {
+        if (c != ' ' && c != '\n' && c != '\r' && c != '\t')
+            text.push_back((char)c);
+    }
+
+    auto decoded = base64_decode(text);
+    if (!decoded) die("Base64 解码失败: 非法字符或格式不正确");
+
+    write_file(out_file, *decoded);
+    if (out_file && std::strcmp(out_file, "-"))
+        std::printf("Base64 解码完成: %zu chars → %zu bytes\n", text.size(), decoded->size());
+}
+
 // ── main ───────────────────────────────────────────────────────────────────
 int main(int argc, char** argv) {
     if (argc < 2) { usage(); return 1; }
@@ -332,6 +387,8 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(cmd, "decrypt"))   cmd_decrypt(argc - 2, argv + 2);
     else if (!std::strcmp(cmd, "hash"))      cmd_hash(argc - 2, argv + 2);
     else if (!std::strcmp(cmd, "hmac"))      cmd_hmac(argc - 2, argv + 2);
+    else if (!std::strcmp(cmd, "b64encode")) cmd_b64encode(argc - 2, argv + 2);
+    else if (!std::strcmp(cmd, "b64decode")) cmd_b64decode(argc - 2, argv + 2);
     else if (!std::strcmp(cmd, "rand"))      cmd_rand(argc - 2, argv + 2);
     else if (!std::strcmp(cmd, "-h") || !std::strcmp(cmd, "--help")) usage();
     else { std::fprintf(stderr, "未知命令: %s\n", cmd); usage(); return 1; }

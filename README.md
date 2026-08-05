@@ -26,6 +26,9 @@
 │  ├─ aes_gcm_auto.cpp       GCM 自动分派           │
 │  ├─ chacha20_poly1305.cpp  ChaCha20-Poly1305 AEAD │
 │  ├─ rsa.cpp (+body.inc)    RSA 2048/4096 Montgomery│
+│  ├─ sha1.cpp               SHA-1 哈希            │
+│  ├─ sha1_avx2.cpp          SHA-1 8 路多缓冲 (AVX2) │
+│  ├─ sha1_avx512.cpp        SHA-1 16 路多缓冲 (AVX512) │
 │  ├─ sha256.cpp             SHA-256 哈希           │
 │  ├─ sha3.cpp               SHA3-256/384/512 哈希   │
 │  ├─ sha512_cpu.cpp         SHA-384/512 哈希 (CPU) │
@@ -176,14 +179,16 @@ LD_LIBRARY_PATH=./build ./your_app
 | 工具 | 说明 | 源文件 |
 |------|------|--------|
 | `jpssl-cert` | X.509 v3 证书生成 / 查看 / 验证 | `src/cmd/jpssl_cert.cpp` |
-| `jpssl-crypt` | 加密 / 解密 / 哈希 / HMAC | `src/cmd/jpssl_crypt.cpp` |
+| `jpssl-crypt` | 加密 / 解密 / 哈希 / HMAC / Base64 | `src/cmd/jpssl_crypt.cpp` |
 
 ### jpssl-cert — 证书工具
 
 ```bash
-# 生成自签名 X.509 v3 证书 + 私钥
+# 生成自签名 X.509 v3 证书 + 私钥 (有效期默认 365 天)
 jpssl-cert gen --cn example.com --key-type ed25519 --out cert.der --key-out key.bin
 # 支持的密钥类型: ed25519 | ecdsa | sm2 | rsa2048 | ed448
+# 用 --days 指定有效期 (gen / tlsgen 均支持, 默认 365 天)
+jpssl-cert gen --cn example.com --key-type ed25519 --days 90 --out cert.der --key-out key.bin
 
 # 查看证书信息
 jpssl-cert info --cert cert.der
@@ -195,6 +200,8 @@ jpssl-cert verify --cert leaf.der --ca intermediate.der --ca root.der
 
 # 通过 TLS API 生成证书 (等价于 tls_make_x509_self_signed)
 jpssl-cert tlsgen --cn example.com --key-type ecdsa --out cert.der --key-out key.bin
+# 指定有效期 10 年
+jpssl-cert tlsgen --cn example.com --key-type ecdsa --days 3650 --out cert.der --key-out key.bin
 ```
 
 ### jpssl-crypt — 加密/哈希工具
@@ -210,11 +217,16 @@ jpssl-crypt encrypt --algo chacha20 --key <hex-key> --in plain.txt --out cipher.
 jpssl-crypt decrypt --algo aes256gcm --key <hex-key> --in cipher.bin --out plain.txt
 
 # 哈希
+jpssl-crypt hash --algo sha1   --in file.txt     # SHA-1 (20 bytes)
 jpssl-crypt hash --algo sha256 --in file.txt
 jpssl-crypt hash --algo sm3   --in file.txt     # 国密 SM3
 
 # HMAC
 jpssl-crypt hmac --algo sha256 --key <hex-key> --in file.txt
+
+# Base64 编码 / 解码 (RFC 4648)
+jpssl-crypt b64encode --in file.bin --out file.b64
+jpssl-crypt b64decode --in file.b64 --out file.bin
 
 # 生成随机字节 (十六进制输出)
 jpssl-crypt rand 32
@@ -222,8 +234,9 @@ jpssl-crypt rand 32
 
 支持的算法：
 - **加密**: `aes256gcm`（AES-256-GCM AEAD）、`chacha20`（ChaCha20-Poly1305 AEAD）
-- **哈希**: `sha256`、`sha512`、`sha3-256`、`sha3-512`、`sm3`
+- **哈希**: `sha1`、`sha256`、`sha512`、`sha3-256`、`sha3-512`、`sm3`
 - **HMAC**: `sha256`、`sha384`、`sm3`
+- **Base64**: `b64encode`（二进制 → RFC 4648 文本）、`b64decode`（文本 → 二进制，容忍空白字符）
 
 密钥、IV、Tag 均以十六进制字符串传入，AAD 认证数据可用 `--aad <hex>` 指定。
 
@@ -234,6 +247,7 @@ jpssl-crypt rand 32
 | **AES-128/256** | ECB, CBC+PKCS7, GCM | AES-NI (~5 GB/s), AVX2/AVX512 GCM | ECB kernel (实验性) |
 | **ChaCha20-Poly1305** | 流加密, AEAD | — | Keystream kernel (实验性) |
 | **RSA 2048/4096** | PKCS#1 v1.5 | Montgomery CIOS | 批量模幂 (实验性) |
+| **SHA-1** | 哈希 (FIPS 180-4) | AVX2 8 路 / AVX-512 16 路多缓冲 | — |
 | **SHA-256** | 哈希 | — | — |
 | **SHA-384/512** | 哈希 (FIPS 180-4) | SSE4.1 消息调度 | GPU kernel (实验性) |
 | **SHA3-256/384/512** | 哈希 (FIPS 202, Keccak) | — | — |
@@ -285,9 +299,19 @@ rsa4096_public_key pub4; rsa4096_private_key prv4;
 rsa4096_keygen(pub4, prv4);
 ```
 
-### SHA256 / SHA384/512 / SHA3 / HMAC / HKDF
+### SHA-1 / SHA256 / SHA384/512 / SHA3 / HMAC / HKDF
 
 ```cpp
+#include "sha1.hpp"
+sha1_ctx ctx; sha1_init(&ctx);
+sha1_update(&ctx, data, len);
+uint8_t digest[20]; sha1_final(&ctx, digest);
+
+// 批量哈希（等长消息，运行时按 AVX-512 16 路 > AVX2 8 路 > 标量分派）
+const uint8_t* msgs[8] = {m0, m1, m2, m3, m4, m5, m6, m7};
+uint8_t outs[8][20];
+sha1_multi_avx2(msgs, len, outs);
+
 #include "sha256.hpp"
 sha256_ctx ctx; sha256_init(&ctx);
 sha256_update(&ctx, data, len);
@@ -967,6 +991,7 @@ jpssl/
 │   ├── chacha20_poly1305.hpp    ChaCha20-Poly1305
 │   ├── cpu_features.hpp         CPU 特性检测
 │   ├── rsa.hpp                  RSA 2048/4096
+│   ├── sha1.hpp                 SHA-1
 │   ├── sha256.hpp               SHA-256
 │   ├── sha512.hpp               SHA-384/512
 │   ├── sha3.hpp                 SHA3-256/384/512
@@ -987,6 +1012,7 @@ jpssl/
 │   ├── aes_gcm_avx2.cpp / aes_gcm_avx512.cpp / aes_gcm_auto.cpp
 │   ├── chacha20_poly1305.cpp / chacha20_gpu.mu
 │   ├── rsa.cpp / rsa_body.inc / rsa_musa.cpp / rsa_gpu.mu
+│   ├── sha1.cpp / sha1_avx2.cpp / sha1_avx512.cpp
 │   ├── sha256.cpp / sha3.cpp
 │   ├── hmac.cpp / hkdf.cpp
 │   ├── sha512_cpu.cpp / sha512_opt.cpp / sha512_musa.cpp / sha512_gpu.mu

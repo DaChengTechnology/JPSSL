@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.6] — 2026-08-05
+
+### Added
+- **SHA-1 支持**：新增 `include/sha1.hpp` / `src/sha1.cpp`（标量，FIPS 180-4，`sha1_ctx` 增量接口 + `sha1_hex` + 一次性 `sha1`）；`sha1_batch` 对等长消息按 AVX-512（16 路）> AVX2（8 路）> 标量自动分派。
+- **SHA-1 SIMD 多缓冲**：`src/sha1_avx2.cpp`（8 路并行，YMM 每 lane 一条消息，W 调度与 80 轮全向量化）与 `src/sha1_avx512.cpp`（16 路并行，ZMM），无需跨 lane 洗牌，结构一致；实测 8×4KiB 批量哈希约 2147 MiB/s（vs 标量 597 MiB/s，约 3.6x，MSVC Release，AVX2）。
+- **SHA-1 测试**：`tests/test_sha1.cpp`（NIST/FIPS 向量、100 万 'a'、边界长度 0/55/56/57/63/64/65/119-129、增量/逐字节更新、AVX2/AVX512 与标量交叉验证、batch 分派 1-20 条消息、OpenSSL 对比）。
+- **jpssl-crypt 支持 `hash --algo sha1`**；CLI 暴露 base64：新增 `b64encode` / `b64decode` 子命令（RFC 4648，解码容忍空白字符）。
+
 ## [0.9.5] — 2026-08-05
 
 ### Added

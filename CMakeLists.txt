@@ -96,6 +96,9 @@ set(CPU_SOURCES
     src/sha256.cpp
     src/sha256_sha_ni.cpp
     src/sha3.cpp
+    src/sha1.cpp
+    src/sha1_avx2.cpp
+    src/sha1_avx512.cpp
     src/sha512_cpu.cpp
     src/sha512_opt.cpp
     src/hmac.cpp
@@ -212,6 +215,11 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
             COMPILE_FLAGS "/arch:AVX2")
         set_source_files_properties(src/sha256_sha_ni.cpp PROPERTIES
             COMPILE_FLAGS "/arch:AVX2")
+        # SHA-1 multi-buffer SIMD
+        set_source_files_properties(src/sha1_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
+        set_source_files_properties(src/sha1_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX512")
         # RSA batch AVX2/AVX512: 批量 Montgomery
         set_source_files_properties(src/rsa_batch_avx2.cpp PROPERTIES
             COMPILE_FLAGS "/arch:AVX2")
@@ -264,6 +272,11 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
         # SHA-256 SHA-NI: Intel SHA Extensions accelerated implementation
         set_source_files_properties(src/sha256_sha_ni.cpp PROPERTIES
             COMPILE_FLAGS "-msha")
+        # SHA-1 multi-buffer SIMD
+        set_source_files_properties(src/sha1_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx2")
+        set_source_files_properties(src/sha1_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx512f -mavx512bw")
         # RSA Montgomery asm: 内联 asm 模板为 Intel 语法且含 "m" 内存操作数，
         # 需 -masm=intel 使 GCC 生成与模板一致的 Intel 形式操作数文本
         set_source_files_properties(src/rsa_mont_asm.cpp PROPERTIES
