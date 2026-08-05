@@ -3,6 +3,7 @@
 #include "sha512.hpp"
 #include "sm3.hpp"
 #include "rand_os.hpp"
+#include "cipher_inplace.hpp"   // 内部：零拷贝 AEAD（仅记录层使用）
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
@@ -493,7 +494,7 @@ std::vector<uint8_t> tls_encrypt_handshake(tls_session& s, const uint8_t* hs_msg
         sm4_gcm_encrypt(&s.sm4,nonce,12,inner,std::span<const uint8_t>(),ciphertext,tag,16);
     }else{
         aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
-        aes_gcm_encrypt(ctx,nonce,12,inner,std::span<const uint8_t>(),ciphertext,tag,16);
+        aes_gcm_encrypt_auto(ctx,nonce,12,inner,std::span<const uint8_t>(),ciphertext,tag,16);
     }
 
     std::vector<uint8_t> record;
@@ -531,7 +532,7 @@ static bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_
         ok = sm4_gcm_decrypt(&s.sm4,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(),tag,16,inner);
     }else{
         aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
-        ok = aes_gcm_decrypt(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(),tag,16,inner);
+        ok = aes_gcm_decrypt_auto(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(),tag,16,inner);
     }
     if(!ok) return false;
 
@@ -1473,26 +1474,31 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
 // ═══════════════════════════════════════════════════════════════════════
 //  记录层加密
 // ═══════════════════════════════════════════════════════════════════════
-static std::vector<uint8_t> tls_encrypt_record(tls_session& s, ContentType ct,
-                                               const uint8_t* data, size_t len);
+static void tls_encrypt_record(tls_session& s, ContentType ct,
+                               const uint8_t* data, size_t len,
+                               std::vector<uint8_t>& out);
 
 std::vector<uint8_t> tls_encrypt(tls_session& s, ContentType ct, const uint8_t* data, size_t len){
     // 大消息自动分片：len > TLS_MAX_RECORD_PLAINTEXT 时拆分为多条 record，
     // 拼接后一次性返回（对端可用 tls_decrypt / tls_connection::recv 合并还原）。
     std::vector<uint8_t> out;
+    // 预预留：每条 record ≈ 5 字节头 + 2 内容类型 + 16 tag（TLS 1.2 另有 8 显式 nonce），
+    // 取 len + records*32 上界，避免输出向量反复扩容拷贝
+    size_t records = (len + TLS_MAX_RECORD_PLAINTEXT - 1) / TLS_MAX_RECORD_PLAINTEXT;
+    out.reserve(len + records * 32);
     size_t off = 0;
     do {
         size_t n = std::min(TLS_MAX_RECORD_PLAINTEXT, len - off);
-        auto rec = tls_encrypt_record(s, ct, data + off, n);
-        if (rec.empty()) return {};
-        out.insert(out.end(), rec.begin(), rec.end());
+        tls_encrypt_record(s, ct, data + off, n, out);
+        if (out.empty()) return {};
         off += n;
     } while (off < len);
     return out;
 }
 
 // 加密单条 record（len 必须 <= TLS_MAX_RECORD_PLAINTEXT）
-static std::vector<uint8_t> tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* data, size_t len){
+static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* data, size_t len,
+                               std::vector<uint8_t>& out){
     bool is_svr=s.is_server;
     if(s.ver==TLSVersion::V12){
         uint8_t explicit_nonce[8]={};
@@ -1504,16 +1510,12 @@ static std::vector<uint8_t> tls_encrypt_record(tls_session& s, ContentType ct, c
         const uint8_t* write_key=is_svr?s.server_write_key:s.client_write_key;
         memcpy(nonce,write_iv,4);
         memcpy(nonce+4,explicit_nonce,8);
-        std::vector<uint8_t> inner;inner.push_back((uint8_t)ct);
-        inner.insert(inner.end(),data,data+len);
         uint8_t aad[13];
         for(int i=0;i<8;++i)aad[7-i]=(uint8_t)(seq>>(i*8));
         aad[8]=(uint8_t)ct;
         aad[9]=0x03;aad[10]=0x03;
-        size_t inner_len=inner.size();
+        size_t inner_len=len+1;   // TLS 1.2 inner = type || data（无尾随 type）
         aad[11]=(uint8_t)(inner_len>>8);aad[12]=(uint8_t)inner_len;
-        std::vector<uint8_t> ciphertext;
-        uint8_t tag[16];
         bool is_chacha_tls12 = (s.cipher_suite == CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
                              || s.cipher_suite == CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256);
         if(is_chacha_tls12){
@@ -1521,63 +1523,99 @@ static std::vector<uint8_t> tls_encrypt_record(tls_session& s, ContentType ct, c
             uint8_t cha_nonce[12];
             memcpy(cha_nonce, write_iv, 4);
             memcpy(cha_nonce+4, explicit_nonce, 8);
-            chacha20_poly1305_encrypt(write_key, cha_nonce, inner,
-                                       std::span<const uint8_t>(aad, 13), ciphertext, tag);
+            // 零拷贝：直接构建记录缓冲（显式 nonce + inner 帧 + tag 占位）后就地加密
+            out.push_back((uint8_t)ct);
+            out.push_back(0x03);out.push_back(0x03);
+            size_t inner_len=len+1;
+            size_t rlen=8+inner_len+16;
+            out.push_back((uint8_t)(rlen>>8));out.push_back((uint8_t)rlen);
+            out.insert(out.end(),explicit_nonce,explicit_nonce+8);
+            size_t body=out.size();
+            out.resize(body+inner_len+16);
+            out[body]=(uint8_t)ct;
+            std::memcpy(out.data()+body+1, data, len);
+            chacha20_poly1305_encrypt_inplace(write_key, cha_nonce, out.data()+body,
+                                              inner_len, std::span<const uint8_t>(aad, 13),
+                                              out.data()+body+inner_len);
         }else{
+            // GCM 零拷贝：直接构建记录缓冲并就地加密（无 inner/ciphertext 中间向量）
             aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
-            aes_gcm_encrypt(ctx,nonce,12,inner,std::span<const uint8_t>(aad,13),ciphertext,tag,16);
+            out.push_back((uint8_t)ct);
+            out.push_back(0x03);out.push_back(0x03);
+            size_t rlen=8+inner_len+16;
+            out.push_back((uint8_t)(rlen>>8));out.push_back((uint8_t)rlen);
+            out.insert(out.end(),explicit_nonce,explicit_nonce+8);
+            size_t body=out.size();
+            out.resize(body+inner_len+16);
+            out[body]=(uint8_t)ct;
+            std::memcpy(out.data()+body+1, data, len);
+            aes_gcm_encrypt_inplace(ctx, nonce, 12, out.data()+body, inner_len,
+                                    std::span<const uint8_t>(aad, 13),
+                                    out.data()+body+inner_len, 16);
         }
-        std::vector<uint8_t> record;
-        record.push_back((uint8_t)ct);
-        record.push_back(0x03);record.push_back(0x03);
-        size_t rlen=8+ciphertext.size()+16;
-        record.push_back((uint8_t)(rlen>>8));record.push_back((uint8_t)rlen);
-        record.insert(record.end(),explicit_nonce,explicit_nonce+8);
-        record.insert(record.end(),ciphertext.begin(),ciphertext.end());
-        record.insert(record.end(),tag,tag+16);
-        return record;
+        return;
     }
-    std::vector<uint8_t> inner;inner.push_back((uint8_t)ct);
-    inner.insert(inner.end(),data,data+len);
-    inner.push_back((uint8_t)ct);
     const uint8_t* write_iv=is_svr?s.server_write_iv:s.client_write_iv;
     const uint8_t* write_key=is_svr?s.server_write_key:s.client_write_key;
     uint8_t nonce[12];memcpy(nonce,write_iv,12);
     uint64_t seq=is_svr?s.server_seq:s.client_seq;
     for(int i=0;i<8;++i)nonce[4+i]^=(uint8_t)(seq>>(56-i*8));
     if(is_svr)++s.server_seq;else ++s.client_seq;
-    std::vector<uint8_t> ciphertext;
-    uint8_t tag[16];
     switch(s.cipher_suite){
         case CipherSuite::TLS_AES_128_GCM_SHA256:
         case CipherSuite::TLS_AES_256_GCM_SHA384: {
+            // GCM 零拷贝：直接构建记录缓冲并就地加密（无 inner/ciphertext 中间向量）
             aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
-            aes_gcm_encrypt(ctx,nonce,12,inner,std::span<const uint8_t>(),ciphertext,tag,16);
-            break;
+            size_t inner_len=len+2;
+            size_t rlen=inner_len+16;
+            out.push_back(0x17);out.push_back(0x03);out.push_back(0x03);
+            out.push_back((uint8_t)(rlen>>8));out.push_back((uint8_t)rlen);
+            size_t body=out.size();
+            out.resize(body+inner_len+16);
+            out[body]=(uint8_t)ct;
+            std::memcpy(out.data()+body+1, data, len);
+            out[body+len+1]=(uint8_t)ct;
+            aes_gcm_encrypt_inplace(ctx, nonce, 12, out.data()+body, inner_len,
+                                    std::span<const uint8_t>(),
+                                    out.data()+body+inner_len, 16);
+            return;
         }
-        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
-            chacha20_poly1305_encrypt(write_key, nonce, inner, std::span<const uint8_t>(), ciphertext, tag);
-            break;
-        case CipherSuite::TLS_AES_128_CCM_SHA256: {
-            aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
-            aes_ccm_encrypt(ctx, nonce, 12, inner, std::span<const uint8_t>(), ciphertext, tag, 16);
-            break;
-        }
-        case CipherSuite::TLS_SM4_GCM_SM3:
-        case CipherSuite::TLS_SM4_CCM_SM3: {
-            sm4_ctx_init_from_key(s.sm4, write_key);
-            sm4_gcm_encrypt(&s.sm4,nonce,12,inner,std::span<const uint8_t>(),ciphertext,tag,16);
-            break;
+        default: {
+            // 零拷贝：直接构建记录缓冲（inner 帧 + tag 占位）后就地加密
+            size_t inner_len=len+2;
+            size_t rlen=inner_len+16;
+            out.push_back(0x17);out.push_back(0x03);out.push_back(0x03);
+            out.push_back((uint8_t)(rlen>>8));out.push_back((uint8_t)rlen);
+            size_t body=out.size();
+            out.resize(body+inner_len+16);
+            out[body]=(uint8_t)ct;
+            std::memcpy(out.data()+body+1, data, len);
+            out[body+len+1]=(uint8_t)ct;
+            uint8_t* inner=out.data()+body;
+            uint8_t* tag=out.data()+body+inner_len;
+            switch(s.cipher_suite){
+                case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
+                    chacha20_poly1305_encrypt_inplace(write_key, nonce, inner, inner_len,
+                                                      std::span<const uint8_t>(), tag);
+                    break;
+                case CipherSuite::TLS_AES_128_CCM_SHA256: {
+                    aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
+                    aes_ccm_encrypt_inplace(ctx, nonce, 12, inner, inner_len,
+                                            std::span<const uint8_t>(), tag, 16);
+                    break;
+                }
+                case CipherSuite::TLS_SM4_GCM_SM3:
+                case CipherSuite::TLS_SM4_CCM_SM3: {
+                    sm4_ctx_init_from_key(s.sm4, write_key);
+                    sm4_gcm_encrypt_inplace(&s.sm4, nonce, 12, inner, inner_len,
+                                            std::span<const uint8_t>(), tag, 16);
+                    break;
+                }
+            }
+            return;
         }
     }
-    std::vector<uint8_t> record;
-    record.push_back(0x17);
-    record.push_back(0x03);record.push_back(0x03);
-    size_t rlen=ciphertext.size()+16;
-    record.push_back((uint8_t)(rlen>>8));record.push_back((uint8_t)rlen);
-    record.insert(record.end(),ciphertext.begin(),ciphertext.end());
-    record.insert(record.end(),tag,tag+16);
-    return record;
+    return;
 }
 
 // 解密单条 record（record 缓冲区恰好为一条：5 字节头 + payload）
@@ -1616,7 +1654,7 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
                     std::span<const uint8_t>(aad,13), tag, inner)) return false;
         }else{
             aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
-            if(!aes_gcm_decrypt(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(aad,13),tag,16,inner))
+            if(!aes_gcm_decrypt_auto(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(aad,13),tag,16,inner))
                 return false;
         }
         if(inner.empty())return false;
@@ -1641,7 +1679,7 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
         case CipherSuite::TLS_AES_128_GCM_SHA256:
         case CipherSuite::TLS_AES_256_GCM_SHA384: {
             aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
-            ok = aes_gcm_decrypt(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(),tag,16,inner);
+            ok = aes_gcm_decrypt_auto(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(),tag,16,inner);
             break;
         }
         case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
@@ -1676,6 +1714,7 @@ bool tls_decrypt(tls_session& s, const uint8_t* record, size_t record_len,
                  ContentType& ct, std::vector<uint8_t>& out){
     // 大消息合并：逐条解析 record，明文追加到 out（单条 record 同样支持）
     out.clear();
+    out.reserve(record_len);  // 明文总长 ≤ 密文总长，预预留避免反复扩容
     size_t off = 0;
     bool any = false;
     ContentType first_ct = ContentType::APPLICATION_DATA;
@@ -2078,7 +2117,7 @@ std::vector<uint8_t> tls13_encrypt_early_data(tls_session& s,
         case CipherSuite::TLS_AES_256_GCM_SHA384: {
             aes_context ctx;
             aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
-            aes_gcm_encrypt(ctx, nonce, 12, inner, std::span<const uint8_t>(), ciphertext, tag, 16);
+            aes_gcm_encrypt_auto(ctx, nonce, 12, inner, std::span<const uint8_t>(), ciphertext, tag, 16);
             break;
         }
         case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
@@ -2124,7 +2163,7 @@ bool tls13_decrypt_early_data(tls_session& s, const uint8_t* record, size_t reco
         case CipherSuite::TLS_AES_256_GCM_SHA384: {
             aes_context ctx;
             aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
-            ok = aes_gcm_decrypt(ctx, nonce, 12, std::span<const uint8_t>(ciphertext,ct_len),
+            ok = aes_gcm_decrypt_auto(ctx, nonce, 12, std::span<const uint8_t>(ciphertext,ct_len),
                                  std::span<const uint8_t>(), tag, 16, inner);
             break;
         }

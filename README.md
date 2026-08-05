@@ -1,6 +1,6 @@
 # jpssl — C++20 高性能密码学库（CPU + MUSA GPU）
 
-跨平台密码学库，支持 **AES**、**ChaCha20-Poly1305**、**RSA**、**TLS 1.2/1.3**、**Ed25519**、**ECDSA**、**X.509 v3 证书**（RFC 5280），以及 **SM2/SM3/SM4 国密算法**（GM/T 0002/3/4-2012，RFC 8998 TLS 1.3 国密套件）。提供 CPU 优化（AES-NI/AVX2/Montgomery）和可选的 MUSA GPU 加速（实验性，默认关闭）。同时提供静态库和动态库两种构建方式。
+跨平台密码学库，支持 **AES**、**ChaCha20-Poly1305**、**RSA**、**TLS 1.2/1.3**、**Ed25519**、**ECDSA**、**X.509 v3 证书**（RFC 5280），以及 **SM2/SM3/SM4 国密算法**（GM/T 0002/3/4-2012，RFC 8998 TLS 1.3 国密套件）。提供 CPU 优化（AES-NI/AVX2/VAES/PCLMULQDQ/Montgomery）和可选的 MUSA GPU 加速（实验性，默认关闭）。同时提供静态库和动态库两种构建方式。
 
 ## 架构
 
@@ -73,6 +73,12 @@ cmake -DJP_ENABLE_BENCH=ON .. && make bench_rsa_cpu_gpu
 | `bench_ed25519_ossl` | Ed25519 签名/验证 vs OpenSSL（仅找到 OpenSSL 时构建） |
 | `bench_ed448_x448_ossl` | Ed448 / X448 vs OpenSSL（仅找到 OpenSSL 时构建） |
 | `bench_x25519_ossl` | X25519 ECDH vs OpenSSL（仅找到 OpenSSL 时构建） |
+
+`bench_cipher_suites` 覆盖 TLS 1.3/1.2 的 11 个密码套件（AES-128/256-GCM、ChaCha20-Poly1305、AES-128-CCM/CCM-8、SHA-256/384），默认按 16 KiB TLS 记录分片计时，支持 `--data-mb / --record / --rounds / --target-ms / --no-ossl` 参数：
+
+```bash
+bench_cipher_suites --data-mb 32 --record 16384 --rounds 5
+```
 
 > 所有 GPU 基准段（`bench_sha512` / `bench_hardware_accel` 中的 `musa_*` 调用、`bench_rsa_gpu` 目标）都由 `JP_MUSA` 宏守卫：`JP_ENABLE_MUSA=OFF`（默认）时自动跳过 GPU 段，基准程序仍可正常编译运行。
 
@@ -847,6 +853,21 @@ ed25519_sign(priv, (const uint8_t*)"message", 7, sig);
 
 bool ok = ed25519_verify(pub, (const uint8_t*)"message", 7, sig);
 ```
+
+批量验证多条签名（共享倍点链 + 128 位随机盲化，任一无效即返回 false）：
+
+```cpp
+#include "ed25519_batch.hpp"
+
+bool ok = jpssl::ed25519_batch_verify(
+    pub_ptrs,   // const uint8_t*[]，每条 32 字节
+    msg_ptrs,   // const uint8_t*[]
+    msg_lens,   // size_t[]
+    sig_ptrs,   // const uint8_t*[]，每条 64 字节
+    count);
+```
+
+批量验证按 128 条/块分块，256 条约 10–12 ms（逐条验证约 25 ms），单签名摊销约 41–47 µs。
 
 ### ECDSA P-256
 

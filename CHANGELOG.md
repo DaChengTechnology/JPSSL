@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.9.8] — 2026-08-05
+
+### Added
+- **密码套件基准重构**（`bench_cipher_suites`）：预热 + 自适应迭代 + 多轮取最小（消除频率波动）；jpssl/OpenSSL 输出缓冲均预分配，计时区间无堆分配；默认按 TLS 记录尺寸（16 KiB）分片并逐记录派生 nonce（`base_iv ^ seq`），贴近真实 TLS 记录层，`--record 0` 可退化为整块吞吐；新增 `--data-mb / --record / --rounds / --target-ms / --no-ossl` 参数和统一汇总表（GB/s + 对比倍率）。
+
+### Fixed
+- **AES-GCM GHASH 致命性能 bug**：`aes_gcm_avx2/avx512.cpp` 的 `gcm_ghash_core` 号称 PCLMULQDQ 路径，实际每块把数据落回内存并调用逐位软件 `gf128_mul`（约 85 ns/块），AES-128-GCM 吞吐仅 0.012 GB/s。已改为寄存器内 PCLMULQDQ 乘法 + 4/8 路并行 GHASH（H^1..H^4 / H^1..H^8），并启用 `aes_cpu.cpp` 中被禁用的 PCLMUL 快路径（`gf128_mul` / `ghash`）。
+- **PCLMUL GHASH 正确性**：旧死代码 `gcm_gf128_mul` 的模约简漏掉乘积高 64 位（x^192..x^255），`aes_cpu.cpp` 的版本也有 64 位 lane 顺序错误；已按数学推导重写完整约减，并用 20 万随机输入 + OpenSSL 交叉验证（128/192/256 位、0..65536 字节、含 AAD）。
+- **GHASH 字节序转换**：NIST bit-reflected 字节序到 PCLMUL 自然域的映射是逐字节位反转（且高低半字节位置互换），原实现误用整块 bswap；三处 `gf128_bitrev/gcm_bitrev` 统一修正。
+- **GCM 部分块越界读写**：AVX2/AVX512 GCM 的 4/8 路批量循环把含部分块的最后一组当整组处理（读越界、写脏字节、GHASH 错误），现只对完整 64/128 字节组走批量路径，其余交尾部逐块处理。
+- **AVX2/AVX512 GCM 支持 192/256 位密钥**：去掉仅限 AES-128 的守卫（4/8 路 AES-NI + PCLMUL GHASH 与密钥长度无关）。
+- **VAES GCM 后端**（`src/aes_gcm_vaes.cpp`）：新增 256-bit VAES（VEX.256）加速的 4 块并行 AES-GCM。Alder Lake / Raptor Lake 等 CPU 熔断 AVX512 但仍支持 256-bit VAES + VPCLMULQDQ，该后端让这类机器无需 AVX512 即可使用向量化 AES（每条 vaesenc 处理 2 块 vs AES-NI 1 块）；`aes_gcm_*_auto` 分派优先级改为 AVX512(8路) > VAES-256(4路) > AVX2 > 软件，`bench_hardware_accel` 增加 VAES 路径行。VAES 指令用内联汇编（GCC/Clang `-mvaes`），避免 `-mavx512vl` 令编译器输出 AVX512 指令在无 AVX512 CPU 上 SIGILL（实测 `vpternlogq` 即触发）。
+- **GHASH 改用 256-bit VPCLMULQDQ**（VAES 后端）：4 路并行 GHASH 的四个域乘积打包成两组 2-lane 乘法，一条 `vpclmulqdq ymm` 同时算两个独立的 128-bit 无进位乘法（GCC 的 `_mm256_clmulepi64_epi128` 同样被 `-mavx512vl` 守卫，用内联汇编 + 逐 lane permute/mask 移位实现）；独立微基准 4-way GHASH 快约 1.5x，整条 VAES-GCM 在高频干净测量下比 AVX2 路径快约 16–21%（本机频率波动较大，节流场景下持平）。
+- **AES-CCM 性能优化**（`src/aes_ccm.cpp`）：CTR keystream 改为 4 路并行 AES-NI（4 个计数器块同时加密），解密/加密 XOR 用 128-bit 向量；CBC-MAC 链与 CTR 融合为单遍遍历（读明文 → 串行 MAC + 向量 XOR），不再构建 16MB 的 `mac_input`/`keystream` 中间缓冲；MAC 状态全程留寄存器。计数器对 q ≤ 4（TLS 场景 q=2/3）用 bswap + 大端加法快速递增，q > 4 走通用路径。
+- **TLS 记录层 GCM 改用自动分派 + 减少拷贝**：`src/tls.cpp` 的 10 处 `aes_gcm_encrypt/decrypt`（非分派软件路径，~0.25 GB/s）全部改为 `aes_gcm_encrypt/decrypt_auto`，TLS 记录层从此走 VAES 加速路径；`tls_encrypt` 预预留输出容量、`tls_encrypt_record` 直接追加到输出（去掉中间 record 向量）、`tls_decrypt` 预留合并容量。实测 TLS 1.3 AES-128-GCM 记录加密从约 0.53 → 0.80 GB/s（相对最初软件路径约 3 倍），单条 16 KiB 记录的封装开销从约 10.6µs 降到约 2.8µs。
+- **GCM 就地（in-place）接口 + TLS 记录层零拷贝加密**：新增 `aes_gcm_encrypt/decrypt_inplace`（AVX2/VAES/AVX512 三后端重构为指针输出核心，自动分派；软件回退用临时向量保证正确性），密文直接写回输入缓冲，无中间向量；TLS 1.3/1.2 GCM 记录加密改为直接在输出缓冲中构建记录（头部 + inner 帧 + 标签占位）后就地加密，每记录只剩 1 次明文拷贝（记录缓冲写入本身不可避免）。实测 TLS 1.3 AES-128-GCM 记录加密约 1.7 GB/s（较 0.80 再翻倍，稳定频率下），单条 16 KiB 记录封装开销降至约 0.7–1.1µs，基本达到 GCM 单记录调用的极限；解密侧因输入为 const 指针（需合并到输出），保留原有路径。
+- **全组件零拷贝接口收进内部头文件**（`src/cipher_inplace.hpp`，不随库安装）：AES-GCM、AES-CCM、ChaCha20-Poly1305、SM4-GCM、SM4-CCM 均新增 `*_inplace` 就地加解密（密文/明文直接写回输入缓冲）；公共头文件 `include/*.hpp` 只保留非零拷贝的 vector/span API（从 `aes.hpp` 移除就地声明），零拷贝接口仅供 TLS 记录层使用。TLS 1.3 记录层的 GCM/CCM/ChaCha/SM4-GCM 与 TLS 1.2 的 GCM/ChaCha 加密全部走就地路径。
+- **修复 SM4-CCM 标签 bug**：`sm4_ccm_encrypt` 原实现 tag 直接取 `E(ctr0)`，漏异或 CBC-MAC，与其自身解密（及 NIST SP 800-38C 标准）的验证公式不一致；已改为 `tag = E(ctr0) ^ MAC`。另修复就地解密中 MAC 加密块计数器残留问题（`|= 0x01` 后 `&= 0x07` 清不掉 counter 位）。
+- **测试修复连锁效应**：`test_aes_modes` 从 1200 过 36 挂 → 1236 全过；`test_aes` 100 全过（此前 1 挂）；TLS/AES 相关测试全部通过。
+
+### Performance
+- AES-128-GCM（AVX2，16 MiB、16 KiB 记录）：加密 0.012 → 约 3.8 GB/s（~300x），解密约 7 GB/s（反超 OpenSSL ~1.6x）；整块模式约 2.7 GB/s。
+- AES-256-GCM：加密约 2.3 GB/s、解密约 3.9 GB/s（原 0.01 GB/s，~200x 提升，解密反超 OpenSSL ~1.3x）。
+- 软件/AES-NI GCM 路径（无 AVX2 机器、含 AAD 场景）：PCLMUL GHASH 启用后同样大幅提速。
+- 说明：Raptor Lake 上 AES-NI 与 256-bit VAES 的 AES 吞吐均为 2 块/周期；配合 256-bit VPCLMULQDQ GHASH 后，VAES 路径本机实测比 AVX2 路径快约 16–21%（AES-128/256-GCM 加密约 3.8–4.2 GB/s），瓶颈从 GHASH 转移回 AES。VAES 后端在 Ice Lake+ / Zen 4 等平台收益更大。
+- AES-128-CCM / CCM-8（16 KiB 记录）：加密 0.49 → 1.9–2.4 GB/s（约 4x，与 OpenSSL 持平），解密 0.52 → 1.9–2.4 GB/s（反超 OpenSSL 1.16–1.46x）；剩余上限是 CBC-MAC 串行链（每块一轮 AES 的固有延迟）。
+- TLS 1.3 AES-128-GCM 记录层（64 MiB 大消息）：加密 0.25 → 0.80 GB/s（软件路径 → VAES + 记录层减拷贝）；剩余差距来自 16 KiB 记录粒度下每记录的封装/拷贝（约 3 次 16KB 数据搬移）与 GCM 单记录调用开销，若需进一步追平需给 AEAD 增加“输出到既有缓冲”接口以消除中间拷贝。
+- TLS 1.3 AES-128-GCM 记录层（续）：就地加密落地后 0.80 → 约 1.7 GB/s（记录层开销 ≈ GCM 单记录调用上限），加解密合计约 0.5–0.9 GB/s（受频率影响；解密受 const 输入限制，需一次合并拷贝）。
+
+## [0.9.7] — 2026-08-05
+
+### Added
+- **Ed25519 真·批量验证**：`ed25519_batch_verify` 由“逐条循环”改为随机盲化的多标量乘法——全部签名共享同一条 4-bit 窗口倍点链（每窗口只做一次部分加），各点预计算表用一次批量求逆完成仿射化，并用每签名 128 位随机因子盲化防伪造放大。标量批量大小由 1 提升到 128 条/块，`ed25519_batch_size()` 相应返回 128。
+  - 实测（i7-13700K, GCC -O2）：256 条签名批量验证约 10.5–12 ms（旧实现约 25.6 ms，提速约 2.2–2.4x；对 OpenSSL 逐条循环约 2.3–2.6x）；单签名摊销约 41–47 µs（单条 `ed25519_verify` 约 100 µs）。
+  - 语义不变：全部有效返回 true，任一签名无效（含 s ≥ l、公钥/签名解压失败）返回 false；随机源不可用时自动退化为逐条验证。
+- **Ed25519 内部复用**：`ed25519_body.inc` 公共 API 段增加 `JPSSL_ED25519_NO_PUBLIC_API` 裁剪开关，批量后端可直接复用 r51 点运算，避免链接期重复符号。
+
+### Fixed
+- **`sc_negate` 借位链错误**：`borrow = (__uint128_t)L64[i] - a[i] - borrow; borrow >>= 64` 在 128 位无符号减法下溢时高字为 `2^64-1` 而非 `1`，导致 `l − a mod l` 高位肢体整体错乱。该函数此前为死代码，批量验证启用后暴露；已改为 `d = L64[i] − a[i] − borrow; borrow = (d > L64[i])` 的标准写法。
+
+### Changed
+- `ed25519_batch_dispatch` 不再区分 AVX512 分支：多标量批验证对指令集不敏感，所有机器统一走 CPU 批量后端（AVX512 后端函数保留以兼容 API）。
+
 ## [0.9.6] — 2026-08-05
 
 ### Added

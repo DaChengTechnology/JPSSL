@@ -147,106 +147,64 @@ static void aesni_make_decrypt_keys(__m128i* dec_rk, const __m128i* enc_rk, int 
 //  PCLMULQDQ 加速 GF(2^128) 乘法（用于 GCM GHASH）
 // ═══════════════════════════════════════════════════════════════════════
 
-/// 使用 PCLMULQDQ 计算 GF(2^128) 乘法（无进位乘法 + 模约简）
-/// 不可约多项式：x^128 + x^7 + x^2 + x + 1
-/// Input: a, b in bit-reflected (byte-reversed) representation.
-/// bit-reflected 约简常数：R = 0x87 in low 64 bits.
-///
-/// In bit-reflected domain, the low 64-bit lane holds the original
-/// high-degree terms and the high 64-bit lane holds the original
-/// low-degree terms.  Therefore the 256-bit product composition
-/// swaps the roles of the t0 (=AL*BL) and t1 (=AH*BH) terms
-/// relative to the standard CLMUL schoolbook formula.
-static inline __m128i pclmul_gf128_mul(__m128i a, __m128i b) {
-    __m128i t0 = _mm_clmulepi64_si128(a, b, 0x00);  // AL*BL (orig high*high)
-    __m128i t1 = _mm_clmulepi64_si128(a, b, 0x11);  // AH*BH (orig low*low)
-    __m128i t2 = _mm_clmulepi64_si128(a, b, 0x01);  // AL*BH
-    __m128i t3 = _mm_clmulepi64_si128(a, b, 0x10);  // AH*BL
+/// 逐字节位反转：NIST bit-reflected 字节序 ↔ 自然多项式基
+/// （NIST 约定 byte j bit (7-k) = x^(8j+k)；PCLMULQDQ 需要 byte j bit k = x^(8j+k)）
+/// 注意高低半字节位置互换：bitrev(b) = rev4(高半字节) | rev4(低半字节)<<4
+static inline __m128i gf128_bitrev(__m128i v) {
+    const __m128i rev_lo = _mm_set_epi8(15,7,11,3,13,5,9,1,14,6,10,2,12,4,8,0);
+    const __m128i rev_hi = _mm_set_epi8(0xF0,0x70,0xB0,0x30,0xD0,0x50,0x90,0x10,
+                                        0xE0,0x60,0xA0,0x20,0xC0,0x40,0x80,0x00);
+    __m128i lo = _mm_and_si128(v, _mm_set1_epi8(0x0F));
+    __m128i hi = _mm_and_si128(_mm_srli_epi16(v, 4), _mm_set1_epi8(0x0F));
+    return _mm_or_si128(_mm_shuffle_epi8(rev_lo, hi), _mm_shuffle_epi8(rev_hi, lo));
+}
 
-    // Merge middle terms
+/// 自然域 GF(2^128) 乘法（PCLMULQDQ，完整模约简）
+/// 与软件 gf128_mul 在 20 万随机输入上逐字节一致（经 gf128_bitrev 变换）。
+/// 注意：约简必须同时折叠 t1 的低 64 位（clmul 0x00）与高 64 位
+/// （clmul 0x01 = A高·B低），再处理第二次溢出；旧实现漏掉高 64 位导致结果错误。
+static inline __m128i pclmul_gf128_mul_natural(__m128i a, __m128i b) {
+    __m128i t0 = _mm_clmulepi64_si128(a, b, 0x00);
+    __m128i t1 = _mm_clmulepi64_si128(a, b, 0x11);
+    __m128i t2 = _mm_clmulepi64_si128(a, b, 0x01);
+    __m128i t3 = _mm_clmulepi64_si128(a, b, 0x10);
     t2 = _mm_xor_si128(t2, t3);
-    t3 = _mm_slli_si128(t2, 8);   // low 64 of middle → upper half
-    t2 = _mm_srli_si128(t2, 8);   // high 64 of middle → lower half
+    t3 = _mm_slli_si128(t2, 8);
+    t2 = _mm_srli_si128(t2, 8);
+    t0 = _mm_xor_si128(t0, t3);
+    t1 = _mm_xor_si128(t1, t2);
 
-    // Compose 256-bit product.
-    // In bit-reflected domain:
-    //   AH*BH (t1, orig low*low)  → PL high 64 (bits 64-127)
-    //   AH*BL (t3 before shift)   → PL low 64  (bits 0-63)
-    //   AL*BH + AL*BL (cross)     → PH
-    // Current arrangement: t3 already shifted to high 64, t1 still in low 64.
-    // We need: PL = {t1_lo, t3_lo} after proper shifting.
-    //
-    // Re-derive from raw CLMUL outputs without the earlier merge:
-    // T1_raw = AH*BH  (orig low, goes to PL high 64)
-    // T3_raw = AH*BL  (orig cross low, goes to PL low 64)
-    // Need PL = T3_raw ⊕ (T1_raw << 64)  (low 64 = T3_raw, high 64 = T1_raw)
-    // But T3 was already merged with T2 via t2/t3 shifts.  Reset:
-    __m128i t1_raw = _mm_clmulepi64_si128(a, b, 0x11);  // AH*BH (fresh)
-    __m128i t3_raw = _mm_clmulepi64_si128(a, b, 0x10);  // AH*BL (fresh)
-    __m128i t2_raw = _mm_clmulepi64_si128(a, b, 0x01);  // AL*BH
-
-    // Merge cross terms: M = AL*BH ⊕ AH*BL (full 128-bit)
-    __m128i m = _mm_xor_si128(t2_raw, t3_raw);
-
-    // PL: low 64 = AH*BL_lo, high 64 = AH*BH_lo, plus cross-term low 64 shifted up
-    __m128i t1_hi = _mm_slli_si128(t1_raw, 8);           // AH*BH → high 64
-    __m128i pl = _mm_xor_si128(t3_raw, t1_hi);           // {AH*BH, AH*BL}
-    // Add cross-term contribution to PL: (m << 64) low 64 → PL high 64
-    __m128i m_hi = _mm_slli_si128(m, 8);                  // shift cross up
-    pl = _mm_xor_si128(pl, m_hi);
-
-    // PH: gets AL*BL + (cross >> 64) + carries
-    __m128i ph = _mm_xor_si128(t0, _mm_srli_si128(m, 8)); // AL*BL + cross high 64
-
-    // Reduce ph into pl using bit-reflected polynomial R = 0x87
-    // R = x^7 + x^2 + x + 1  (reflected: x^128 + x^127 + x^126 + x^121 + 1 → 0x87)
     __m128i r = _mm_set_epi64x(0, 0x87);
-
-    // Fold:  ph[1] * R  (high 64 of ph times R)
-    __m128i ph_hi_r = _mm_clmulepi64_si128(ph, r, 0x01);   // ph[1] * r[0]
-    __m128i overflow = _mm_srli_si128(ph_hi_r, 8);          // bits > 63 from ph[1]*R
-
-    // ph[0] * R  +  ph[1]*R << 64
-    __m128i p = _mm_clmulepi64_si128(ph, r, 0x00);          // ph[0] * r[0]
-    __m128i p2 = _mm_slli_si128(ph_hi_r, 8);                // ph[1]*R shifted up
-    p = _mm_xor_si128(p, p2);
-    pl = _mm_xor_si128(pl, p);
-
-    // Reduce the overflow from ph[1]*R
-    p = _mm_clmulepi64_si128(overflow, r, 0x00);
-    __m128i mask = _mm_set_epi64x(0, -1);
-    p = _mm_and_si128(p, mask);
-    pl = _mm_xor_si128(pl, p);
-
-    return pl;
+    __m128i q1 = _mm_clmulepi64_si128(t1, r, 0x01);
+    t0 = _mm_xor_si128(t0, _mm_clmulepi64_si128(t1, r, 0x00));
+    t0 = _mm_xor_si128(t0, _mm_slli_si128(q1, 8));
+    q1 = _mm_srli_si128(q1, 8);
+    t0 = _mm_xor_si128(t0, _mm_clmulepi64_si128(q1, r, 0x00));
+    return t0;
 }
 
 /// PCLMULQDQ 加速的 GHASH（替代软件 gf128_mul 逐位版本）
 static void pclmul_ghash(const uint8_t H[16], std::span<const uint8_t> data, uint8_t out[16]) {
-    __m128i bswap_mask = _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-    __m128i Hv = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)H), bswap_mask);
+    __m128i Hv = gf128_bitrev(_mm_loadu_si128((const __m128i*)H));
     __m128i state = _mm_setzero_si128();
 
     size_t pos = 0;
     size_t len = data.size();
 
     while (pos + 16 <= len) {
-        __m128i block = _mm_shuffle_epi8(
-            _mm_loadu_si128((const __m128i*)(data.data() + pos)), bswap_mask);
-        state = _mm_xor_si128(state, block);
-        state = pclmul_gf128_mul(state, Hv);
+        __m128i block = gf128_bitrev(_mm_loadu_si128((const __m128i*)(data.data() + pos)));
+        state = pclmul_gf128_mul_natural(_mm_xor_si128(state, block), Hv);
         pos += 16;
     }
 
     if (pos < len) {
         uint8_t last[16] = {};
         std::memcpy(last, data.data() + pos, len - pos);
-        __m128i block = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)last), bswap_mask);
-        state = _mm_xor_si128(state, block);
-        state = pclmul_gf128_mul(state, Hv);
+        __m128i block = gf128_bitrev(_mm_loadu_si128((const __m128i*)last));
+        state = pclmul_gf128_mul_natural(_mm_xor_si128(state, block), Hv);
     }
 
-    state = _mm_shuffle_epi8(state, bswap_mask);
+    state = gf128_bitrev(state);
     _mm_storeu_si128((__m128i*)out, state);
 }
 
@@ -795,9 +753,11 @@ void gf128_mul(const uint8_t x[16], const uint8_t y[16], uint8_t out[16]) {
 
 #ifdef __x86_64__
     if (g_use_pclmul) {
-        // NOTE: PCLMULQDQ fast path temporarily disabled.
-        // Falls through to the verified software implementation below.
-        // TODO: re-enable after fixing the 64-bit lane ordering.
+        __m128i ar = gf128_bitrev(_mm_loadu_si128((const __m128i*)x));
+        __m128i br = gf128_bitrev(_mm_loadu_si128((const __m128i*)y));
+        __m128i rr = gf128_bitrev(pclmul_gf128_mul_natural(ar, br));
+        _mm_storeu_si128((__m128i*)out, rr);
+        return;
     }
 #endif
 
@@ -846,9 +806,8 @@ void ghash(const uint8_t H[16], std::span<const uint8_t> data, uint8_t out[16]) 
 
 #ifdef __x86_64__
     if (g_use_pclmul) {
-        // NOTE: PCLMULQDQ fast path temporarily disabled.
-        // Falls through to verified software GHASH below.
-        // TODO: re-enable after fixing pclmul_gf128_mul.
+        pclmul_ghash(H, data, out);
+        return;
     }
 #endif
 

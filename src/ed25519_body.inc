@@ -301,11 +301,14 @@ static void sc_mul_add(uint8_t* out, const uint8_t* a, const uint8_t* b, const u
 static void sc_negate(uint8_t r[32], const uint8_t a[32]) {
     uint64_t a_l[4];
     sc_load_64(a_l, a);
-    __uint128_t borrow = 0;
+    uint64_t borrow = 0;
     for (int i = 0; i < 4; i++) {
-        borrow = (__uint128_t)L64[i] - a_l[i] - borrow;
-        a_l[i] = (uint64_t)borrow;
-        borrow >>= 64;
+        // 无符号减法下溢时 d 回绕为巨大值，d > L64[i] 即借位。
+        // 注意不能写 borrow = (__uint128_t)L64[i] - ... 再 >> 64：
+        // 128 位无符号下溢的高字是 2^64-1 而不是 1，借位链会整体错乱。
+        uint64_t d = L64[i] - a_l[i] - borrow;
+        borrow = (d > L64[i]) ? 1 : 0;
+        a_l[i] = d;
     }
     sc_store_64(r, a_l);
 }
@@ -966,6 +969,7 @@ static void double_scalar_mult_mixed(ge_p3& R,
         ge_p1p1_to_p3(&R, &tmp);
     }
 }
+#ifndef JPSSL_ED25519_NO_PUBLIC_API
 void ed25519_keygen(uint8_t pub[32], uint8_t priv[64]) {
     static std::random_device rd;
     static std::mt19937_64 gen(rd());
@@ -1076,3 +1080,4 @@ bool ed25519_verify(const uint8_t pub[32], const uint8_t* msg, size_t msg_len, c
     if (memcmp(lhs_y, rhs_y, sizeof(fe)) != 0) return false;
     return true;
 }
+#endif // JPSSL_ED25519_NO_PUBLIC_API

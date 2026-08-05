@@ -7,6 +7,7 @@
  */
 
 #include "chacha20_poly1305.hpp"
+#include "cipher_inplace.hpp"   // 内部：零拷贝 AEAD 声明（TLS 记录层专用）
 #include "cpu_features.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -672,6 +673,65 @@ bool chacha20_poly1305_decrypt(
     plaintext.resize(ciphertext.size());
     chacha20_crypt(key, 1, nonce, ciphertext, plaintext);
 
+    return true;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+//  就地（zero-copy）接口：仅供 TLS 记录层使用（内部，不对外发布）
+// ──────────────────────────────────────────────────────────────────────────
+
+void chacha20_poly1305_encrypt_inplace(const uint8_t key[32], const uint8_t nonce[12],
+                                       uint8_t* buf, size_t data_len,
+                                       std::span<const uint8_t> aad,
+                                       uint8_t tag[16]) {
+    uint8_t poly_key[64];
+    chacha20_block(key, 0, nonce, poly_key);
+
+    // 边加密边累计 Poly1305（单遍；in/out/ct 同指 buf，分块读后写安全）
+    Poly1305State64 st;
+    poly1305_init64(st, poly_key);
+    poly1305_feed64(st, aad.data(), aad.size());
+    chacha20_crypt_feed_poly(key, nonce,
+                             std::span<const uint8_t>(buf, data_len),
+                             std::span<uint8_t>(buf, data_len),
+                             std::span<const uint8_t>(buf, data_len), st);
+
+    uint8_t lenblock[16];
+    poly_store64(lenblock, (uint64_t)aad.size());
+    poly_store64(lenblock + 8, (uint64_t)data_len);
+    poly1305_feed64(st, lenblock, 16);
+    poly1305_sync_scalar(st);
+    poly1305_finish3(st.h0, st.h1, st.h2, poly_key, tag);
+}
+
+bool chacha20_poly1305_decrypt_inplace(const uint8_t key[32], const uint8_t nonce[12],
+                                       uint8_t* buf, size_t data_len,
+                                       std::span<const uint8_t> aad,
+                                       const uint8_t tag[16]) {
+    uint8_t poly_key[64];
+    chacha20_block(key, 0, nonce, poly_key);
+
+    // 先验签再解密：失败时不改动 buf
+    uint8_t expected_tag[16];
+    Poly1305State64 st;
+    poly1305_init64(st, poly_key);
+    poly1305_feed64(st, aad.data(), aad.size());
+    poly1305_feed64(st, buf, data_len);
+    uint8_t lenblock[16];
+    poly_store64(lenblock, (uint64_t)aad.size());
+    poly_store64(lenblock + 8, (uint64_t)data_len);
+    poly1305_feed64(st, lenblock, 16);
+    poly1305_sync_scalar(st);
+    poly1305_finish3(st.h0, st.h1, st.h2, poly_key, expected_tag);
+
+    uint8_t diff = 0;
+    for (int i = 0; i < 16; ++i) diff |= tag[i] ^ expected_tag[i];
+    if (diff != 0) return false;
+
+    // 就地解密（先验签后 XOR，安全）
+    chacha20_crypt(key, 1, nonce,
+                   std::span<const uint8_t>(buf, data_len),
+                   std::span<uint8_t>(buf, data_len));
     return true;
 }
 

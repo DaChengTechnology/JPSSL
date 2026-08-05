@@ -84,6 +84,7 @@ static void bench_aes128_gcm_paths() {
 
     double sw_enc = 0, sw_dec = 0;
     double avx2_enc = 0, avx2_dec = 0;
+    double vaes_enc = 0, vaes_dec = 0;
     double auto_enc = 0, auto_dec = 0;
     double ossl_enc = 0, ossl_dec = 0;
 
@@ -113,6 +114,20 @@ static void bench_aes128_gcm_paths() {
             ok = aes_gcm_decrypt_avx2(ctx, iv, 12, ct, std::span<const uint8_t>(), tag, 16, pt);
         });
         TEST("AES-128-GCM AVX2 round-trip", ok);
+    }
+
+    // ── VAES 路径 (256-bit VAES，2×YMM 4 块并行 + PCLMULQDQ) ──
+    {
+        std::vector<uint8_t> ct; uint8_t tag[16];
+        vaes_enc = measure_ms([&]{
+            aes_gcm_encrypt_vaes(ctx, iv, 12, plain, std::span<const uint8_t>(), ct, tag, 16);
+        });
+        bool ok = false;
+        vaes_dec = measure_ms([&]{
+            std::vector<uint8_t> pt;
+            ok = aes_gcm_decrypt_vaes(ctx, iv, 12, ct, std::span<const uint8_t>(), tag, 16, pt);
+        });
+        TEST("AES-128-GCM VAES round-trip", ok);
     }
 
     // ── Auto 分派 ──
@@ -165,6 +180,7 @@ static void bench_aes128_gcm_paths() {
     Path paths[] = {
         {"Software",   sw_enc,   sw_dec},
         {"AVX2",       avx2_enc, avx2_dec},
+        {"VAES",       vaes_enc, vaes_dec},
         {"Auto",       auto_enc, auto_dec},
         {"OpenSSL",    ossl_enc, ossl_dec},
     };
@@ -182,12 +198,12 @@ static void bench_aes128_gcm_paths() {
 }
 
 // ========================================================================
-//  2. AES-256-GCM 路径对比 (仅 software/auto, AVX2 不支持 256-bit)
+//  2. AES-256-GCM 路径对比 (software / VAES / auto，AVX2/VAES 均支持 256-bit)
 // ========================================================================
 
 static void bench_aes256_gcm_paths() {
     std::printf("\n  ── AES-256-GCM 硬件加速路径对比 ──\n");
-    std::printf("    Note: AVX2/AVX512 GCM 仅支持 AES-128, 256-bit 回退到软件\n");
+    std::printf("    Note: AVX2/AVX512/VAES GCM 支持 128/192/256-bit\n");
 
     uint8_t key[32], iv[12];
     RAND_bytes(key, 32);

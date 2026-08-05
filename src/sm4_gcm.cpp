@@ -6,6 +6,7 @@
  *  input buffer.  NIST SP 800-38D.
  */
 #include "sm4_gcm.hpp"
+#include "cipher_inplace.hpp"   // 内部：零拷贝 AEAD 声明（TLS 记录层专用）
 #include "aes.hpp"        // gf128_mul, ghash (GF(2^128) software fallback)
 #include "cpu_features.hpp"
 #include <cstring>
@@ -288,6 +289,92 @@ bool sm4_gcm_decrypt(const sm4_ctx* ctx,
     plaintext.resize(ciphertext.size());
     sm4_ctr_xor(ctx, ctr, ciphertext.data(), plaintext.data(), ciphertext.size());
 
+    return true;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+//  就地（zero-copy）接口：仅供 TLS 记录层使用（内部，不对外发布）
+// ──────────────────────────────────────────────────────────────────────────
+
+void sm4_gcm_encrypt_inplace(const sm4_ctx* ctx,
+                             const uint8_t* iv, size_t iv_len,
+                             uint8_t* buf, size_t data_len,
+                             std::span<const uint8_t> aad,
+                             uint8_t* tag, size_t tag_len) {
+    uint8_t zero[16] = {};
+    uint8_t H[16];
+    sm4_encrypt_block(ctx, zero, H);
+
+    uint8_t j0[16];
+    sm4_gcm_make_j0(H, iv, iv_len, j0);
+
+    // CTR 就地加密（sm4_ctr_xor 逐字节读 input 写 output，同缓冲安全）
+    uint8_t ctr[16];
+    std::memcpy(ctr, j0, 16);
+    if (iv_len == 12) {
+        uint32_t* lw = (uint32_t*)(ctr + 12);
+        uint32_t val = __builtin_bswap32(*lw);
+        val++;
+        *lw = __builtin_bswap32(val);
+    } else {
+        for (int i = 15; i >= 0; --i) {
+            if (++ctr[i] != 0) break;
+        }
+    }
+    sm4_ctr_xor(ctx, ctr, buf, buf, data_len);
+
+    // GHASH：AAD || pad || C || pad || len(A)_64 || len(C)_64
+    uint8_t gh_result[16];
+    sm4_gcm_ghash(H, aad.data(), aad.size(), buf, data_len, gh_result);
+
+    uint8_t enc_j0[16];
+    sm4_encrypt_block(ctx, j0, enc_j0);
+    for (size_t i = 0; i < tag_len; ++i)
+        tag[i] = gh_result[i] ^ enc_j0[i];
+}
+
+bool sm4_gcm_decrypt_inplace(const sm4_ctx* ctx,
+                             const uint8_t* iv, size_t iv_len,
+                             uint8_t* buf, size_t data_len,
+                             std::span<const uint8_t> aad,
+                             const uint8_t* tag, size_t tag_len) {
+    uint8_t zero[16] = {};
+    uint8_t H[16];
+    sm4_encrypt_block(ctx, zero, H);
+
+    uint8_t j0[16];
+    sm4_gcm_make_j0(H, iv, iv_len, j0);
+
+    // 先验签（GHASH 覆盖 AAD + 密文 + 长度）
+    uint8_t gh_result[16];
+    sm4_gcm_ghash(H, aad.data(), aad.size(), buf, data_len, gh_result);
+
+    uint8_t enc_j0[16];
+    sm4_encrypt_block(ctx, j0, enc_j0);
+
+    uint8_t expected_tag[16];
+    for (size_t i = 0; i < tag_len; ++i)
+        expected_tag[i] = gh_result[i] ^ enc_j0[i];
+
+    uint8_t diff = 0;
+    for (size_t i = 0; i < tag_len; ++i)
+        diff |= expected_tag[i] ^ tag[i];
+    if (diff != 0) return false;
+
+    // 就地解密
+    uint8_t ctr[16];
+    std::memcpy(ctr, j0, 16);
+    if (iv_len == 12) {
+        uint32_t* lw = (uint32_t*)(ctr + 12);
+        uint32_t val = __builtin_bswap32(*lw);
+        val++;
+        *lw = __builtin_bswap32(val);
+    } else {
+        for (int i = 15; i >= 0; --i) {
+            if (++ctr[i] != 0) break;
+        }
+    }
+    sm4_ctr_xor(ctx, ctr, buf, buf, data_len);
     return true;
 }
 

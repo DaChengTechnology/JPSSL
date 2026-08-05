@@ -87,6 +87,7 @@ set(CPU_SOURCES
     src/rand_os.cpp
     src/aes_gcm_avx2.cpp
     src/aes_gcm_avx512.cpp
+    src/aes_gcm_vaes.cpp
     src/aes_gcm_auto.cpp
     src/chacha20_poly1305.cpp
     src/chacha20_avx2.cpp
@@ -266,6 +267,10 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
         # AVX512 GCM: 需要 AVX512F + AVX512VL + VAES + VPCLMULQDQ + PCLMUL
         set_source_files_properties(src/aes_gcm_avx512.cpp PROPERTIES
             COMPILE_FLAGS "-mavx512f -mavx512vl -mvaes -mvpclmulqdq -mpclmul")
+        # VAES GCM: VEX.256 VAES + VPCLMULQDQ（均不引入 AVX512）；
+        # 另需 AVX2（YMM 操作）、AES-NI 与 128-bit PCLMULQDQ（GHASH 尾部）
+        set_source_files_properties(src/aes_gcm_vaes.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx2 -maes -mpclmul -mvaes -mvpclmulqdq")
         # SHA-512 OPT: SHA-NI + SSE4.1 for message schedule acceleration
         set_source_files_properties(src/sha512_opt.cpp PROPERTIES
             COMPILE_FLAGS "-msse4.1 -msha")
