@@ -99,6 +99,22 @@ inline bool cpu_has_avx512() {
 #endif
 }
 
+/// Checks for AVX512BW (byte-wise shuffle / maddubs, required by the base64 SIMD path).
+inline bool cpu_has_avx512bw() {
+#if defined(__x86_64__) || defined(_M_X64)
+#if defined(_MSC_VER)
+    if (!detail_cpu::os_avx_supported()) return false;
+    int r[4];
+    detail_cpu::cpuid(7, 0, r);
+    return (r[1] & (1u << 30)) != 0;  // AVX512BW
+#else
+    return __builtin_cpu_supports("avx512bw");
+#endif
+#else
+    return false;
+#endif
+}
+
 /// 检查 VAES + VPCLMULQDQ 是否可用（AVX2/AVX512 向量化 AES/CLMUL）
 inline bool cpu_has_vpclmulqdq_vaes() {
 #if defined(__x86_64__) || defined(_M_X64)

@@ -123,6 +123,8 @@ set(CPU_SOURCES
     src/sm3.cpp
     src/sm4.cpp
     src/base64.cpp
+    src/base64_avx2.cpp
+    src/base64_avx512.cpp
     src/ct.cpp
     src/tls_socket.cpp
     src/sm4_gcm.cpp
@@ -236,6 +238,11 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
             COMPILE_FLAGS "/arch:AVX2")
         set_source_files_properties(src/ed448_avx512.cpp src/x448_avx512.cpp PROPERTIES
             COMPILE_FLAGS "/arch:AVX512")
+        # Base64 SIMD
+        set_source_files_properties(src/base64_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
+        set_source_files_properties(src/base64_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX512")
     else()
         target_compile_options(jpssl_cpu PRIVATE -maes -mavx2 -madx)
         target_compile_options(jpssl_cpu_shared PRIVATE -maes -mavx2 -madx)
@@ -289,6 +296,13 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
         set_source_files_properties(
             src/ed448_avx512.cpp src/x448_avx512.cpp PROPERTIES
             COMPILE_FLAGS "-mavx512f -mavx512dq")
+        # Base64 SIMD
+        set_source_files_properties(
+            src/base64_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx2")
+        set_source_files_properties(
+            src/base64_avx512.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx512f -mavx512bw")
     endif()
 endif()
 

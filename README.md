@@ -65,6 +65,7 @@ cmake -DJP_ENABLE_BENCH=ON .. && make bench_rsa_cpu_gpu
 | `bench_hardware_accel` | AES / ChaCha20-Poly1305 / SHA-512 硬件加速路径对比（GPU 段仅 MUSA 构建） |
 | `bench_cipher_suites` | TLS 密码套件性能 |
 | `bench_sm4` | SM4 (ECB/GCM) vs OpenSSL |
+| `bench_base64` | base64 编解码：标量 vs AVX2 vs AVX512 vs 自动分发 |
 | `bench_sm_ossl` | SM3 吞吐 + SM2 keygen/sign/verify vs OpenSSL |
 | `bench_ed25519_ossl` | Ed25519 签名/验证 vs OpenSSL（仅找到 OpenSSL 时构建） |
 | `bench_ed448_x448_ossl` | Ed448 / X448 vs OpenSSL（仅找到 OpenSSL 时构建） |
@@ -112,6 +113,7 @@ ctest --test-dir build-win --output-on-failure
 - **128 位整数**：MSVC 不提供 GCC 的 `__uint128_t`，Windows 构建通过 `/FI` 强制包含 `include/jpssl_platform.hpp` 提供等价的 `jp_uint128` 兼容层（基于 `_umul128`/`_addcarry_u64`/`_udiv128`，全部内联）。**不要求**业务代码改动；GCC/Clang 仍使用原生类型。
 - **随机数**：统一走 `include/rand_os.hpp`（`jpssl::os_rand_bytes`）——Windows 用 `BCryptGenRandom`，Linux 用 `/dev/urandom`。MSVC 的 `std::random_device` 是确定性的，不用于密钥/签名 nonce。
 - **CPU 特性检测**：`include/cpu_features.hpp` 在 MSVC 下改用 `__cpuidex`/`_xgetbv` 运行时检测 AES-NI/AVX2/AVX512/SHA-NI，硬件加速分派在 Windows 上同样生效。
+- **Base64 SIMD 加速**：RFC 4648 base64 编解码新增 AVX2（24B→32B/次）与 AVX-512（48B→64B/次）路径（`src/base64_avx2.cpp` / `src/base64_avx512.cpp`），运行时按 AVX-512 > AVX2 > 标量自动分派，尾部与 `=` 填充仍走标量。AVX2 实测编码约 21–22 GB/s、解码约 17 GB/s（i7-13700K，vs 标量编码约 3 GB/s、解码约 0.2 GB/s）。
 - **RSA Montgomery 汇编加速**：RSA-2048/4096 的 CIOS Montgomery 乘法在 Windows 走手写 MASM 汇编（`src/rsa_mont_asm_win.asm`，MULX 加速，K=32/64），Linux 走 GCC 内联汇编（`src/rsa_mont_asm.cpp`）。运行时不支持 BMI2/ADX 的 CPU 自动回退到标量 `_umul128` 实现；CPUID 检测结果进程内缓存。
 - **CRT 半尺寸汇编加速**：CRT 私钥解密的 p/q 模幂使用半尺寸 Montgomery 乘法 `mont_mul_half_`（只处理前 K/2 个 limb），同样接入汇编快速路径（`mont_mul_half_asm`，HK=16/32，MASM 宏生成双实例 + GCC 动态 HK 单实例），核心吞吐提升约 1.3–1.45×。
 - **CRT 解密默认双线程 OpenMP**：`rsa_decrypt`/`rsa_crt_decrypt`（dec_fn + RSADP/RSADP4096）的两路独立模幂 m1/m2 用 `#pragma omp parallel sections num_threads(2)` 并行（`-DJP_ENABLE_OPENMP=OFF` 或非 OpenMP 编译器自动回退串行），2048/4096 解密实测提速 1.5–1.7×；RSADP 与 dec_fn 统一走半尺寸路径。

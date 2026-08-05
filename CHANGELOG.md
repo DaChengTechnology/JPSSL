@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.5] — 2026-08-05
+
+### Added
+- **Base64 AVX2 / AVX-512 加速**：`src/base64_avx2.cpp`（24B→32B/迭代）与 `src/base64_avx512.cpp`（48B→64B/迭代），采用 pshufb 查表 + 乘法解包的经典 SIMD 方案；`base64_encode`/`base64_decode` 运行时按 AVX-512（含 BW）> AVX2 > 标量自动分派，尾部与 `=` 填充仍走标量，语义与原有 API 完全一致。
+- **CPU 特性检测**：`cpu_features.hpp` 新增 `cpu_has_avx512bw()`。
+- **测试与基准**：新增 `tests/test_base64.cpp`（RFC 4648 向量、全长度随机往返、SIMD 直接交叉验证、非法输入，484 断言）与 `benchmarks/bench_base64.cpp`（标量/AVX2/AVX512/自动分发对比）。
+
+### Changed
+- CMake 注册 `src/base64_avx2.cpp` / `src/base64_avx512.cpp`，按源文件设置 `/arch:AVX2`、`/arch:AVX512`（MSVC）或 `-mavx2`、`-mavx512f -mavx512bw`（GCC/Clang）。
+
 ## [0.9.4] — 2026-08-05
 
 ### Added
