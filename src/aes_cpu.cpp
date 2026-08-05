@@ -831,6 +831,91 @@ void ghash(const uint8_t H[16], std::span<const uint8_t> data, uint8_t out[16]) 
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  增量 GHASH（流式）与 GCM 完整认证哈希
+// ═══════════════════════════════════════════════════════════════════════
+
+void ghash_init(ghash_ctx* ctx, const uint8_t H[16]) {
+    std::memcpy(ctx->H, H, 16);
+    std::memset(ctx->state, 0, 16);
+    ctx->buf_len = 0;
+}
+
+void ghash_update(ghash_ctx* ctx, const uint8_t* data, size_t len) {
+    // 先补满暂存块
+    if (ctx->buf_len) {
+        size_t take = std::min<size_t>(len, 16 - ctx->buf_len);
+        std::memcpy(ctx->buf + ctx->buf_len, data, take);
+        ctx->buf_len += take;
+        data += take;
+        len -= take;
+        if (ctx->buf_len == 16) {
+            uint8_t tmp[16];
+            xor128(ctx->state, ctx->buf);
+            gf128_mul(ctx->state, ctx->H, tmp);
+            std::memcpy(ctx->state, tmp, 16);
+            ctx->buf_len = 0;
+        }
+        if (len == 0) return;
+    }
+    // 整块处理（PCLMULQDQ 加速的 gf128_mul）
+    while (len >= 16) {
+        uint8_t tmp[16];
+        xor128(ctx->state, data);
+        gf128_mul(ctx->state, ctx->H, tmp);
+        std::memcpy(ctx->state, tmp, 16);
+        data += 16;
+        len -= 16;
+    }
+    // 剩余不足一块的暂存
+    if (len) {
+        std::memcpy(ctx->buf, data, len);
+        ctx->buf_len = len;
+    }
+}
+
+void ghash_final(ghash_ctx* ctx, uint8_t out[16]) {
+    if (ctx->buf_len) {
+        std::memset(ctx->buf + ctx->buf_len, 0, 16 - ctx->buf_len);
+        uint8_t tmp[16];
+        xor128(ctx->state, ctx->buf);
+        gf128_mul(ctx->state, ctx->H, tmp);
+        std::memcpy(ctx->state, tmp, 16);
+        ctx->buf_len = 0;
+    }
+    std::memcpy(out, ctx->state, 16);
+}
+
+void gcm_ghash(const uint8_t H[16],
+               std::span<const uint8_t> aad, std::span<const uint8_t> data,
+               uint8_t out[16]) {
+    ghash_ctx ctx;
+    ghash_init(&ctx, H);
+
+    ghash_update(&ctx, aad.data(), aad.size());
+    if (aad.size() % 16) {
+        static const uint8_t zero[16] = {};
+        ghash_update(&ctx, zero, 16 - aad.size() % 16);
+    }
+
+    ghash_update(&ctx, data.data(), data.size());
+    if (data.size() % 16) {
+        static const uint8_t zero[16] = {};
+        ghash_update(&ctx, zero, 16 - data.size() % 16);
+    }
+
+    uint8_t lenblock[16] = {};
+    uint64_t la = (uint64_t)aad.size() * 8, lc = (uint64_t)data.size() * 8;
+    for (int i = 7; i >= 0; --i) {
+        lenblock[i] = (uint8_t)(la & 0xFF);
+        la >>= 8;
+        lenblock[8 + i] = (uint8_t)(lc & 0xFF);
+        lc >>= 8;
+    }
+    ghash_update(&ctx, lenblock, 16);
+    ghash_final(&ctx, out);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  GCM 辅助：递增 32-bit counter（高 32 位，大端序）
 // ═══════════════════════════════════════════════════════════════════════
 

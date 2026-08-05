@@ -251,6 +251,7 @@ jpssl-crypt rand 32
 | 算法 | 模式 | CPU 加速 | GPU 加速 |
 |------|------|----------|----------|
 | **AES-128/256** | ECB, CBC+PKCS7, GCM | AES-NI (~5 GB/s), AVX2/AVX512 GCM | ECB kernel (实验性) |
+| **GHASH / GF(2^128)** | GCM 认证原语（一次性/增量/GCM 完整哈希） | PCLMULQDQ | — |
 | **ChaCha20-Poly1305** | 流加密, AEAD | — | Keystream kernel (实验性) |
 | **RSA 2048/4096** | PKCS#1 v1.5 | Montgomery CIOS | 批量模幂 (实验性) |
 | **SHA-1** | 哈希 (FIPS 180-4) | AVX2 8 路 / AVX-512 16 路多缓冲 | — |
@@ -280,6 +281,28 @@ aes_context ctx; ctx.init(std::span<const uint8_t,16>(key));
 aes_cbc_encrypt(ctx, iv, plaintext, ciphertext);
 aes_gcm_encrypt(ctx, iv, 12, plaintext, aad, ct, tag);
 ```
+
+GHASH / GF(2^128) 通用接口（GCM 认证核心，可单独使用）：
+
+```cpp
+uint8_t H[16], S[16];              // H = AES_encrypt(K, 0^128)
+
+// 一次性 GHASH（末尾块自动补零）
+ghash(H, data, S);
+
+// 增量 GHASH（流式，分块喂入）
+ghash_ctx g;
+ghash_init(&g, H);
+ghash_update(&g, aad.data(), aad.size());
+ghash_update(&g, ciphertext.data(), ciphertext.size());
+ghash_final(&g, S);
+
+// 完整 GCM 认证哈希（含 AAD/密文分段补零与长度块，输出 GCM 的 S 值）
+gcm_ghash(H, aad, ciphertext, S);
+// 完整 GCM 标签：tag = S ^ AES_encrypt(K, J0)，J0 = IV || 0^31 || 1
+```
+
+底层原语 `gf128_mul`（PCLMULQDQ 加速的 GF(2^128) 乘法，NIST 大端序约定）同样公开，可用于自定义认证构造。
 
 ### ChaCha20-Poly1305
 

@@ -451,6 +451,37 @@ void gf128_mul(const uint8_t x[16], const uint8_t y[16], uint8_t out[16]);
 /// @param out  GHASH 输出（128-bit，大端序）
 void ghash(const uint8_t H[16], std::span<const uint8_t> data, uint8_t out[16]);
 
+/// GHASH 增量（流式）计算上下文
+/// 与一次性 ghash 语义一致：data 分块喂入，末尾不足 16 字节的块在
+/// ghash_final 时补零。注意：GCM 中 AAD 与密文是**分别**补零的，
+/// 直接用于 GCM 请用 gcm_ghash（已处理长度块与分段补零）。
+struct ghash_ctx {
+    uint8_t H[16];      ///< hash subkey = AES_encrypt(K, 0^128)
+    uint8_t state[16];  ///< 当前 GHASH 状态 Y_i
+    uint8_t buf[16];    ///< 未满块暂存
+    size_t buf_len;     ///< buf 中有效字节数
+};
+
+/// 初始化增量 GHASH 上下文
+void ghash_init(ghash_ctx* ctx, const uint8_t H[16]);
+
+/// 追加数据（任意长度，可多次调用）
+void ghash_update(ghash_ctx* ctx, const uint8_t* data, size_t len);
+
+/// 结束并输出 GHASH（末尾不足块补零）
+void ghash_final(ghash_ctx* ctx, uint8_t out[16]);
+
+/// GCM 完整认证哈希：GHASH_H(AAD || 0-pad || data || 0-pad || [len(A)]_64 || [len(C)]_64)
+/// 等价于 GCM 加密/解密中的 S 值（不含 E(K, J0) 异或），可用于构建
+/// 自定义 GCM 兼容认证、或对照验证测试向量。
+/// @param H    hash subkey
+/// @param aad  附加认证数据（可为空）
+/// @param data 密文（或明文）
+/// @param out  GHASH 输出（128-bit）
+void gcm_ghash(const uint8_t H[16],
+               std::span<const uint8_t> aad, std::span<const uint8_t> data,
+               uint8_t out[16]);
+
 /// GCM 加密（带 AAD + 认证标签）
 /// @param iv        初始化向量（推荐 12 字节）
 /// @param iv_len    IV 长度

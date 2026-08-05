@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.9.9] — 2026-08-05
+
+### Added
+- **GHASH / GF(2^128) 公共接口**：`include/aes.hpp` 新增增量 GHASH（`ghash_ctx` / `ghash_init` / `ghash_update` / `ghash_final`，流式分块、末尾补零）与完整 GCM 认证哈希 `gcm_ghash(H, aad, data, out)`（含 AAD/密文分段补零与长度块，输出 GCM 的 S 值）；`gf128_mul`（PCLMULQDQ 加速）与一次性 `ghash` 保持公开。README 增加用法说明与算法总览行。
+
 ## [0.9.8] — 2026-08-05
 
 ### Added
