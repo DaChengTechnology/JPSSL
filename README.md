@@ -108,6 +108,35 @@ cmake --build build-win
 ctest --test-dir build-win --output-on-failure
 ```
 
+## TLS 稳定性测试
+
+`tests/test_tls_stability.cpp`（CTest 目标 `test_tls_stability`）在单次运行内反复执行
+TLS 1.3（Ed25519 / ECDSA P-256 / RSA-2048 证书轮换）、TLS 1.2 (RSA)、
+0-RTT/PSK 会话恢复、TLS-over-TCP socket 端到端握手与分块数据传输，
+并统计各阶段耗时、失败次数与进程内存增长（泄漏启发式检测）。
+
+```bash
+# 默认参数（约 10s，适合 CTest）
+ctest --test-dir build-win -R test_tls_stability --output-on-failure
+
+# 长稳压测：2000 轮 TLS 1.3 + 4 个并发 worker，每 worker 100 轮 socket 握手
+./build-win/tests/test_tls_stability --iters 2000 --socket-iters 100 --threads 4
+```
+
+迭代次数可用 `--iters` / `--tls12-iters` / `--psk-iters` / `--socket-iters` /
+`--threads` / `--leak-mb` 等参数控制，也支持 `JPSSL_STRESS_*` 环境变量。
+
+## TLS 大消息自动分片与合并
+
+- 记录层（`tls_encrypt` / `tls_decrypt`）：明文 > 16KiB（`TLS_MAX_RECORD_PLAINTEXT`）
+  自动拆分为多条 ≤16KiB 的 record（TLS 1.2 / 1.3 均支持），解密时逐条解析并自动
+  合并还原，单次调用即可收发任意大小的消息。
+- socket 层（`tls_connection::send` / `recv`）：一次 `send(大缓冲)` 自动分片写出；
+  `recv()` 会把同一突发到达的多条 record 合并后一次返回，大消息无需循环读取。
+  消息边界由应用层协议负责（如 HTTP Content-Length）。
+- 测试 `test_tls_large_msg`：覆盖 16KiB 边界、64KiB 长度字段边界、256KiB、
+  TLS 1.2 以及 socket 端到端 128KiB 单次 send / 单次 recv。
+
 平台适配说明：
 
 - **128 位整数**：MSVC 不提供 GCC 的 `__uint128_t`，Windows 构建通过 `/FI` 强制包含 `include/jpssl_platform.hpp` 提供等价的 `jp_uint128` 兼容层（基于 `_umul128`/`_addcarry_u64`/`_udiv128`，全部内联）。**不要求**业务代码改动；GCC/Clang 仍使用原生类型。

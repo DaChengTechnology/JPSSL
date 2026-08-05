@@ -88,11 +88,12 @@ public:
     bool server_handshake(const tls_certificate_manager& cert_manager,
                           std::string* error = nullptr);
 
-    /// 发送应用数据（加密为一条 TLS record 后写入 socket）
+    /// 发送应用数据（自动按 <=16KiB 分片为多条 TLS record 后写入 socket，
+    /// 对端 recv 会自动合并为完整消息返回）
     bool send(const uint8_t* data, size_t len, std::string* error = nullptr);
     bool send(const std::string& data, std::string* error = nullptr);
 
-    /// 读取下一条应用数据记录明文。
+    /// 读取应用数据：一次 send() 拆分出的多条 record 会自动合并返回。
     /// 对端关闭 / 致命错误 / 收到 alert 时返回 false。
     bool recv(std::vector<uint8_t>& out, std::string* error = nullptr);
 
@@ -114,6 +115,8 @@ private:
     bool read_bytes(uint8_t* out, size_t n, std::string* error);
     /// 读取一条完整 TLS record；payload 不含 5 字节 record 头。
     bool read_record(uint8_t& type, std::vector<uint8_t>& payload, std::string* error);
+    /// 检查 socket / 内部缓冲区是否还有已到达的数据（用于 recv 合并多条 record）
+    bool more_data_pending() const;
 
     void set_tcp_nodelay();
 

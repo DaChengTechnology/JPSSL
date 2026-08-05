@@ -5,6 +5,7 @@
 #include "rand_os.hpp"
 #include <cstring>
 #include <cstdio>
+#include <algorithm>
 namespace jpssl::tls {
 
 static const uint8_t RSA_SHA256_DIGEST_INFO[] = {
@@ -431,7 +432,9 @@ static std::vector<uint8_t> tls13_make_certificate(const tls_certificate& cert){
 static std::vector<uint8_t> tls13_make_cert_verify(const tls_certificate& cert, tls_session& s){
     tls_transcript_finalize(s);
     size_t hl=tls_hash_len(s.cipher_suite);
-    uint8_t sig[128];size_t sig_len=0;
+    // RSA-2048 PKCS#1 签名为 256 字节；缓冲区按最大签名 (512B) 预留，
+    // 避免 RSA 证书在 TLS 1.3 CertificateVerify 中发生栈溢出。
+    uint8_t sig[512];size_t sig_len=0;
     if(!cert.sign(s.transcript_hash,hl,sig,sig_len))return {};
 
     std::vector<uint8_t> msg;
@@ -1470,7 +1473,26 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
 // ═══════════════════════════════════════════════════════════════════════
 //  记录层加密
 // ═══════════════════════════════════════════════════════════════════════
+static std::vector<uint8_t> tls_encrypt_record(tls_session& s, ContentType ct,
+                                               const uint8_t* data, size_t len);
+
 std::vector<uint8_t> tls_encrypt(tls_session& s, ContentType ct, const uint8_t* data, size_t len){
+    // 大消息自动分片：len > TLS_MAX_RECORD_PLAINTEXT 时拆分为多条 record，
+    // 拼接后一次性返回（对端可用 tls_decrypt / tls_connection::recv 合并还原）。
+    std::vector<uint8_t> out;
+    size_t off = 0;
+    do {
+        size_t n = std::min(TLS_MAX_RECORD_PLAINTEXT, len - off);
+        auto rec = tls_encrypt_record(s, ct, data + off, n);
+        if (rec.empty()) return {};
+        out.insert(out.end(), rec.begin(), rec.end());
+        off += n;
+    } while (off < len);
+    return out;
+}
+
+// 加密单条 record（len 必须 <= TLS_MAX_RECORD_PLAINTEXT）
+static std::vector<uint8_t> tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* data, size_t len){
     bool is_svr=s.is_server;
     if(s.ver==TLSVersion::V12){
         uint8_t explicit_nonce[8]={};
@@ -1558,7 +1580,9 @@ std::vector<uint8_t> tls_encrypt(tls_session& s, ContentType ct, const uint8_t* 
     return record;
 }
 
-bool tls_decrypt(tls_session& s, const uint8_t* record, size_t record_len, ContentType& ct, std::vector<uint8_t>& out){
+// 解密单条 record（record 缓冲区恰好为一条：5 字节头 + payload）
+static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record_len,
+                            ContentType& ct, std::vector<uint8_t>& out){
     bool is_svr=s.is_server;
     if(record_len<5)return false;
     if(s.ver==TLSVersion::V12){
@@ -1646,6 +1670,29 @@ bool tls_decrypt(tls_session& s, const uint8_t* record, size_t record_len, Conte
     ct=(ContentType)inner[0];
     out.assign(inner.begin()+1,inner.end()-1);
     return true;
+}
+
+bool tls_decrypt(tls_session& s, const uint8_t* record, size_t record_len,
+                 ContentType& ct, std::vector<uint8_t>& out){
+    // 大消息合并：逐条解析 record，明文追加到 out（单条 record 同样支持）
+    out.clear();
+    size_t off = 0;
+    bool any = false;
+    ContentType first_ct = ContentType::APPLICATION_DATA;
+    while (off < record_len) {
+        if (record_len - off < 5) return false;  // 尾部残留不完整 record
+        size_t rlen = ((size_t)record[off + 3] << 8) | record[off + 4];
+        if (rlen < 16 || 5 + rlen > record_len - off) return false;
+        ContentType rec_ct;
+        std::vector<uint8_t> plain;
+        if (!tls_decrypt_one(s, record + off, 5 + rlen, rec_ct, plain)) return false;
+        if (!any) first_ct = rec_ct;
+        any = true;
+        out.insert(out.end(), plain.begin(), plain.end());
+        off += 5 + rlen;
+    }
+    ct = first_ct;
+    return any;
 }
 
 

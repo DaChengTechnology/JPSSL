@@ -41,6 +41,11 @@ enum class SignatureAlgorithm { RSA_PKCS1_SHA256=0x0401, ECDSA_SECP256R1_SHA256=
 // TLS 1.3 NamedGroup (RFC 8446 §4.2.7, RFC 8998 §4.2.1)
 enum class NamedGroup : uint16_t { X25519=0x001d, X448=0x001e, curveSM2=0x0029 };
 
+/// TLS 单条 record 明文上限（RFC 5246 / RFC 8446：2^14 字节）。
+/// 大于该值的长消息由 tls_encrypt / tls_connection::send 自动分片为多条 record，
+/// 由 tls_decrypt / tls_connection::recv 自动合并还原。
+inline constexpr size_t TLS_MAX_RECORD_PLAINTEXT = 16384;
+
 // TLS 1.3 CipherSuite (RFC 8446 §B.4, RFC 8998 §4.1)
 enum class CipherSuite : uint16_t {
     // TLS 1.2
@@ -304,7 +309,12 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
 // ═══════════════════════════════════════════════════════════════════════
 //  记录层加密/解密
 // ═══════════════════════════════════════════════════════════════════════
+/// 加密应用数据。len > TLS_MAX_RECORD_PLAINTEXT 时自动拆分为多条
+/// <=16KiB 的 record，返回拼接后的完整字节流（可直接写入对端）。
 std::vector<uint8_t> tls_encrypt(tls_session& s, ContentType ct, const uint8_t* data, size_t len);
+
+/// 解密 tls_encrypt 产生的字节流：内部逐条解析 record 并把明文合并到 out。
+/// 单条 record 与拼接的多条 record 均支持；解析失败返回 false。
 bool tls_decrypt(tls_session& s, const uint8_t* record, size_t len, ContentType& ct, std::vector<uint8_t>& out);
 
 // 加密握手消息（TLS 1.3 内部使用）

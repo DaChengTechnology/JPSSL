@@ -15,6 +15,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <sys/ioctl.h>
 #endif
 
 namespace jpssl::tls {
@@ -181,6 +183,18 @@ bool tls_connection::read_record(uint8_t& type, std::vector<uint8_t>& payload, s
     return true;
 }
 
+bool tls_connection::more_data_pending() const {
+    // 内部缓冲（半包）尚有未消费字节，或内核接收队列非空，都视为“仍有已到达数据”
+    if (rbuf_.size() - rbuf_off_ > 0) return true;
+#ifdef _WIN32
+    u_long n = 0;
+    return ioctlsocket(sock_, FIONREAD, &n) == 0 && n > 0;
+#else
+    int n = 0;
+    return ioctl(sock_, FIONREAD, &n) == 0 && n > 0;
+#endif
+}
+
 bool tls_connection::connect(const std::string& host, uint16_t port,
                              const tls_certificate_manager* trust_store,
                              std::string* error) {
@@ -343,6 +357,7 @@ bool tls_connection::send(const uint8_t* data, size_t len, std::string* error) {
         set_err(error, "connection not open");
         return false;
     }
+    // tls_encrypt 内部按 <=16KiB 自动分片为多条 record，这里一次性写出
     auto rec = tls_encrypt(session_, ContentType::APPLICATION_DATA, data, len);
     if (rec.empty()) {
         set_err(error, "tls_encrypt failed");
@@ -360,6 +375,8 @@ bool tls_connection::recv(std::vector<uint8_t>& out, std::string* error) {
         set_err(error, "connection not open");
         return false;
     }
+    out.clear();
+    bool got_app = false;
     while (true) {
         uint8_t rtype = 0;
         std::vector<uint8_t> payload;
@@ -382,9 +399,13 @@ bool tls_connection::recv(std::vector<uint8_t>& out, std::string* error) {
             set_err(error, "unexpected content type in application record");
             return false;
         }
-        out = std::move(plain);
-        return true;
+        out.insert(out.end(), plain.begin(), plain.end());
+        got_app = true;
+        // 大消息合并：若仍有已到达的 record 数据（同一次 send 拆分出的后续 record），
+        // 继续读取并追加，使一次 send() 的大消息能在一次 recv() 中合并还原。
+        if (!more_data_pending()) break;
     }
+    return got_app;
 }
 
 // ============================================================================
