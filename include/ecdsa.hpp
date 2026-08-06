@@ -24,4 +24,12 @@ void ecdsa_p521_keygen(uint8_t pub[132],uint8_t priv[66]);
 void ecdsa_p521_sign(const uint8_t priv[66],const uint8_t* msg,size_t msg_len,uint8_t sig[132]);
 bool ecdsa_p521_verify(const uint8_t pub[132],const uint8_t* msg,size_t msg_len,const uint8_t sig[132]);
 
+// ── ECDHE 共享密钥（TLS key exchange 用）──
+// shared = X(priv * pub)，pub 为大端 x||y（无 0x04 前缀），
+// 共享密钥为大端 X 坐标（RFC 8446 §4.2.8.2 / 传统 ECDHE 定义）。
+/// P-256：shared 32 字节，priv 32 字节，pub 64 字节（x||y）
+bool ecdsa_p256_ecdh(uint8_t shared[32], const uint8_t priv[32], const uint8_t pub[64]);
+/// P-384：shared 48 字节，priv 48 字节，pub 96 字节（x||y）
+bool ecdsa_p384_ecdh(uint8_t shared[48], const uint8_t priv[48], const uint8_t pub[96]);
+
 }

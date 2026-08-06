@@ -698,6 +698,113 @@ void test_tls13_full_handshake_rsa_pss() {
          tls_decrypt(server, enc.data(), enc.size(), ct, dec) && dec.size() == sizeof(data) - 1);
 }
 
+// ECDSA P-521 证书的 TLS 1.3 完整握手（签名算法 0x0603，SHA-512）
+void test_tls13_full_handshake_ecdsa_p521() {
+    tls_certificate_manager cert_mgr;
+    auto server_cert = std::make_unique<tls_certificate>();
+    server_cert->subject_name = "localhost";
+    server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP521R1_SHA512;
+    ecdsa_p521_keygen(server_cert->pub.ecdsa_p521, server_cert->priv.ecdsa_p521);
+    cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+    tls_session client; client.server_name = "localhost";
+    std::vector<uint8_t> client_hello;
+    TEST("TLS 1.3 (P-521) make CH", tls13_make_client_hello(client, client_hello));
+
+    tls_session server;
+    std::vector<uint8_t> server_flight;
+    bool sh_ok = tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                          server_flight, cert_mgr);
+    TEST("TLS 1.3 (P-521) server flight", sh_ok);
+    TEST("TLS 1.3 (P-521) negotiated ecdsa_secp521r1_sha512",
+         server.selected_sig_alg == (uint16_t)SignatureAlgorithm::ECDSA_SECP521R1_SHA512);
+
+    std::vector<uint8_t> client_finished;
+    bool cf_ok = tls13_process_server_flight(client, server_flight.data(), server_flight.size(),
+                                             client_finished, &cert_mgr);
+    TEST("TLS 1.3 (P-521) client process", cf_ok);
+    bool fin = tls13_process_client_finished(server, client_finished.data(), client_finished.size());
+    TEST("TLS 1.3 (P-521) finished", fin);
+
+    const uint8_t data[] = "P-521 ECDSA TLS 1.3";
+    auto enc = tls_encrypt(client, ContentType::APPLICATION_DATA, data, sizeof(data) - 1);
+    ContentType ct; std::vector<uint8_t> dec;
+    TEST("TLS 1.3 (P-521) record round-trip",
+         tls_decrypt(server, enc.data(), enc.size(), ct, dec) && dec.size() == sizeof(data) - 1);
+}
+
+// TLS 1.3 完整握手：ECDSA P-256 证书 + secp256r1 ECDHE 密钥交换
+void test_tls13_full_handshake_ecdsa_p256_ecdh() {
+    tls_certificate_manager cert_mgr;
+    auto server_cert = std::make_unique<tls_certificate>();
+    server_cert->subject_name = "localhost";
+    server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
+    ecdsa_p256_keygen(server_cert->pub.ecdsa_p256, server_cert->priv.ecdsa_p256);
+    cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+    tls_session client; client.server_name = "localhost";
+    client.ks_group = NamedGroup::secp256r1;
+    std::vector<uint8_t> client_hello;
+    TEST("TLS 1.3 (P-256 ECDHE) make CH", tls13_make_client_hello(client, client_hello));
+
+    tls_session server;
+    std::vector<uint8_t> server_flight;
+    bool sh_ok = tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                          server_flight, cert_mgr);
+    TEST("TLS 1.3 (P-256 ECDHE) server flight", sh_ok);
+    TEST("TLS 1.3 (P-256 ECDHE) group secp256r1", server.ks_group == NamedGroup::secp256r1);
+
+    std::vector<uint8_t> client_finished;
+    bool cf_ok = tls13_process_server_flight(client, server_flight.data(), server_flight.size(),
+                                             client_finished, &cert_mgr);
+    TEST("TLS 1.3 (P-256 ECDHE) client process", cf_ok);
+    TEST("TLS 1.3 (P-256 ECDHE) client group secp256r1", client.ks_group == NamedGroup::secp256r1);
+    bool fin = tls13_process_client_finished(server, client_finished.data(), client_finished.size());
+    TEST("TLS 1.3 (P-256 ECDHE) finished", fin);
+
+    const uint8_t data[] = "P-256 ECDHE TLS 1.3";
+    auto enc = tls_encrypt(client, ContentType::APPLICATION_DATA, data, sizeof(data) - 1);
+    ContentType ct; std::vector<uint8_t> dec;
+    TEST("TLS 1.3 (P-256 ECDHE) record round-trip",
+         tls_decrypt(server, enc.data(), enc.size(), ct, dec) && dec.size() == sizeof(data) - 1);
+}
+
+// TLS 1.3 完整握手：ECDSA P-384 证书 + secp384r1 ECDHE 密钥交换
+void test_tls13_full_handshake_ecdsa_p384_ecdh() {
+    tls_certificate_manager cert_mgr;
+    auto server_cert = std::make_unique<tls_certificate>();
+    server_cert->subject_name = "localhost";
+    server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP384R1_SHA384;
+    ecdsa_p384_keygen(server_cert->pub.ecdsa_p384, server_cert->priv.ecdsa_p384);
+    cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+    tls_session client; client.server_name = "localhost";
+    client.ks_group = NamedGroup::secp384r1;
+    std::vector<uint8_t> client_hello;
+    TEST("TLS 1.3 (P-384 ECDHE) make CH", tls13_make_client_hello(client, client_hello));
+
+    tls_session server;
+    std::vector<uint8_t> server_flight;
+    bool sh_ok = tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                          server_flight, cert_mgr);
+    TEST("TLS 1.3 (P-384 ECDHE) server flight", sh_ok);
+    TEST("TLS 1.3 (P-384 ECDHE) group secp384r1", server.ks_group == NamedGroup::secp384r1);
+
+    std::vector<uint8_t> client_finished;
+    bool cf_ok = tls13_process_server_flight(client, server_flight.data(), server_flight.size(),
+                                             client_finished, &cert_mgr);
+    TEST("TLS 1.3 (P-384 ECDHE) client process", cf_ok);
+    TEST("TLS 1.3 (P-384 ECDHE) client group secp384r1", client.ks_group == NamedGroup::secp384r1);
+    bool fin = tls13_process_client_finished(server, client_finished.data(), client_finished.size());
+    TEST("TLS 1.3 (P-384 ECDHE) finished", fin);
+
+    const uint8_t data[] = "P-384 ECDHE TLS 1.3";
+    auto enc = tls_encrypt(client, ContentType::APPLICATION_DATA, data, sizeof(data) - 1);
+    ContentType ct; std::vector<uint8_t> dec;
+    TEST("TLS 1.3 (P-384 ECDHE) record round-trip",
+         tls_decrypt(server, enc.data(), enc.size(), ct, dec) && dec.size() == sizeof(data) - 1);
+}
+
 // RSA-PKCS1 证书在 TLS 1.3 中必须改用 PSS 做 CertificateVerify（RFC 8446）
 void test_tls13_rsa_pkcs1_cert_uses_pss() {
     tls_certificate_manager cert_mgr;
@@ -1005,6 +1112,9 @@ int main(int argc, char** argv) {
     RUN_TEST(test_tls13_0rtt);
     RUN_TEST(test_signature_algorithm_extensions);
     RUN_TEST(test_tls13_full_handshake_ecdsa_p384);
+    RUN_TEST(test_tls13_full_handshake_ecdsa_p521);
+    RUN_TEST(test_tls13_full_handshake_ecdsa_p256_ecdh);
+    RUN_TEST(test_tls13_full_handshake_ecdsa_p384_ecdh);
     RUN_TEST(test_tls13_full_handshake_rsa_pss);
     RUN_TEST(test_tls13_rsa_pkcs1_cert_uses_pss);
     RUN_TEST(test_tls13_rejects_unadvertised_scheme);

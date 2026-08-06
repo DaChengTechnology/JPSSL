@@ -155,6 +155,7 @@ if(MSVC)
     list(APPEND CPU_SOURCES src/rsa_mont_asm_win.asm)
     list(APPEND CPU_SOURCES src/fe51_mul_adx.asm)
     list(APPEND CPU_SOURCES src/fe51_sq_adx.asm)
+    list(APPEND CPU_SOURCES src/ecdsa_p256_adx.asm)
     list(APPEND CPU_SOURCES src/sm2_mont_asm_win.asm)
     # SM3 标量压缩汇编
     list(APPEND CPU_SOURCES src/sm3_win.asm)
