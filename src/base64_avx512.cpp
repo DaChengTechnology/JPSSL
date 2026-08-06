@@ -101,30 +101,48 @@ inline __m512i pack_values(__m512i values) {
 } // namespace
 
 size_t base64_encode_avx512(const uint8_t* data, size_t len, char* out) {
-    // 16 dwords in, each 128-bit lane holding one 12-byte triplet laid out as
-    // 4 dwords with the middle dword duplicated; later shifts/merges fold the
-    // three input bytes back into the low 24 bits of each dword.
+    // 输入按两个 32 字节加载拼成 512 位：dword[0..7] = 字节 [0..32)，
+    // dword[8..15] = 字节 [16..48)（低半部分与 dword[4..7] 重叠）。
+    // perm 把每个 12 字节子块（4 组 × 3 字节）的 3 个 dword 排进各自的
+    // 128 位 lane（第 4 个 dword 为占位，VPSHUFB 不会读取它）。
+    // 随后 VPSHUFB 在 lane 内构造与 base64_avx2 完全一致的逐 dword 布局
+    // [b1, b0, b2, b1]（字节 0/1/2/3 = 输入第 1/0/2/1 字节），
+    // 再走同一套 encode_indices / encode_chars。
+    // 注意：不能照抄 OpenSSL/WojciechMuła 单次 64 字节加载版本的
+    // perm+shift+merge（其 dword[8..15] = 字节 [32..64)，与此处布局不同）。
     static const __m512i perm = _mm512_set_epi32(
-        11, 10, 10, 9,  8, 7, 7, 6,
-         5,  4,  4, 3,  2, 1, 1, 0);
+        0, 15, 14, 13, 0, 12, 7, 6,
+        0,  5,  4,  3, 0,  2, 1, 0);
+
+    static const __m512i shuf = _mm512_setr_epi8(
+         1,  0,  2,  1,
+         4,  3,  5,  4,
+         7,  6,  8,  7,
+        10,  9, 11, 10,
+
+         1,  0,  2,  1,
+         4,  3,  5,  4,
+         7,  6,  8,  7,
+        10,  9, 11, 10,
+
+         1,  0,  2,  1,
+         4,  3,  5,  4,
+         7,  6,  8,  7,
+        10,  9, 11, 10,
+
+         1,  0,  2,  1,
+         4,  3,  5,  4,
+         7,  6,  8,  7,
+        10,  9, 11, 10);
 
     size_t i = 0;
     for (; i + 48 <= len; i += 48) {
-        // Two 32-byte loads cover bytes [i, i+48) exactly (overlap at 16..32),
-        // so no read ever goes past the chunk -- unlike a single 64-byte load.
         const __m256i lo = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
         const __m256i hi = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 16));
-        __m512i tmp1 = _mm512_inserti64x4(_mm512_castsi256_si512(lo), hi, 1);
-
-        const __m512i tmp2 = _mm512_permutexvar_epi32(perm, tmp1);
-        const __m512i tmp3 = _mm512_mask_srli_epi64(tmp2, 0xaa, tmp2, 16);
-        const __m512i tmp4 = _mm512_slli_epi64(tmp3, 8);
-        // Merge: low 3 bytes of each dword from tmp3, high byte from tmp4
-        // (bit-merge constant 0xac selects tmp4 when the 0x00ffffff mask is 0).
-        const __m512i tmp5 = _mm512_ternarylogic_epi64(
-            _mm512_set1_epi64(0x00ffffff), tmp4, tmp3, 0xac);
-
-        const __m512i chars = encode_chars(encode_indices(tmp5));
+        __m512i tmp = _mm512_inserti64x4(_mm512_castsi256_si512(lo), hi, 1);
+        tmp = _mm512_permutexvar_epi32(perm, tmp);
+        const __m512i tri = _mm512_shuffle_epi8(tmp, shuf);
+        const __m512i chars = encode_chars(encode_indices(tri));
         _mm512_storeu_si512(reinterpret_cast<void*>(out + (i / 3) * 4), chars);
     }
     return i;

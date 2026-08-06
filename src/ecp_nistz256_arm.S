@@ -5,7 +5,12 @@
 // Copyright The OpenSSL Project Authors. All Rights Reserved.
 // Licensed under the Apache License 2.0.
 
+// 只读数据段：Apple Mach-O 用 __TEXT,__const；ELF (Linux/FreeBSD) 用 .rodata
+#if defined(__APPLE__)
 .section __TEXT,__const
+#else
+.section .rodata
+#endif
 Lpoly:
 .quad	0xffffffffffffffff,0x00000000ffffffff,0x0000000000000000,0xffffffff00000001
 LRR:
@@ -1571,7 +1576,11 @@ _ecp_nistz256_gather_w7:
 .align	4
 // NIST P-256 生成元预计算表（37 行 × 64 仿射点，7 位窗口 Booth 编码）
 // 数据来自 OpenSSL 3.6.3 ecp_nistz256-armv8.pl（Apache-2.0）
+#if defined(__APPLE__)
 .section __TEXT,__const
+#else
+.section .rodata
+#endif
 .align 12
 .globl _ecp_nistz256_precomputed
 _ecp_nistz256_precomputed:
@@ -3945,3 +3954,13 @@ _ecp_nistz256_precomputed:
 .byte	0x0a,0x3c,0x73,0x17,0x50,0x88,0x03,0x25,0x4a,0xe3,0x13,0x55,0x8b,0x7e,0x50,0x38,0xfc,0x14,0x0b,0x04,0x8e,0xa8,0x5b,0xd6,0x72,0x20,0x60,0xe9,0xaa,0x22,0x82,0x11,0xc6,0xc4,0xd7,0xb9,0xc8,0x0c,0x7e,0x05,0xfb,0x90,0xe4,0x9c,0x28,0x89,0x29,0x99,0x63,0x4d,0xec,0x7b,0x50,0xbd,0xd8,0xa3,0x5b,0x50,0x77,0x19,0x81,0x92,0xce,0x82
 
 .text
+
+// ELF (Linux/FreeBSD) 不自动为 C 符号加下划线（Apple Mach-O 会），
+// 因此为 C++ 使用的 ecp_nistz256_mul_mont / ecp_nistz256_sqr_mont
+// 提供指向 _ 前缀实现的别名，保证链接成功。
+#if !defined(__APPLE__)
+.globl	ecp_nistz256_mul_mont
+.globl	ecp_nistz256_sqr_mont
+.set	ecp_nistz256_mul_mont, _ecp_nistz256_mul_mont
+.set	ecp_nistz256_sqr_mont, _ecp_nistz256_sqr_mont
+#endif

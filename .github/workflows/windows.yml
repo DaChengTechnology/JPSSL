@@ -24,15 +24,21 @@ jobs:
             Write-Host "::warning::OpenSSL install failed; OpenSSL comparison tests will be skipped"
           }
 
-      - name: Configure (Visual Studio 2022, x64)
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+      # 不用 "Visual Studio 17 2022" 生成器（windows-latest 镜像的 VS 实例发现
+      # 不稳定会导致 "could not find any instance of Visual Studio"），改用
+      # msvc-dev-cmd 注入 MSVC 环境 + Ninja 生成器，与 VS 版本/检测解耦。
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure (Ninja, x64)
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --parallel
 
       # 排除计时敏感的 bench_*（在单独 job 中只构建、不运行，避免 CI 负载下的偶发失败）
       - name: Run tests
-        run: ctest --test-dir build -C Release --output-on-failure -E bench
+        run: ctest --test-dir build --output-on-failure -E bench
 
   bench:
     name: Build benchmarks (x64 MSVC)
@@ -48,8 +54,11 @@ jobs:
         shell: pwsh
         run: choco install openssl -y --no-progress --accept-license
 
-      - name: Configure benchmarks (Visual Studio 2022, x64)
-        run: cmake -S . -B build-bench -G "Visual Studio 17 2022" -A x64 -DJP_ENABLE_BENCH=ON
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure benchmarks (Ninja, x64)
+        run: cmake -S . -B build-bench -G Ninja -DCMAKE_BUILD_TYPE=Release -DJP_ENABLE_BENCH=ON
 
       - name: Build benchmarks
-        run: cmake --build build-bench --config Release --parallel
+        run: cmake --build build-bench --parallel
