@@ -896,11 +896,16 @@ x509_cert x509_builder::build_and_sign(KeyType sign_key_type,
             ecdsa_p521_sign(sign_priv_data, tbs_data, tbs_len, sig_buf); sig_len = 132; break;
         }
         case KeyType::SM2: {
-            // SM2 证书签名：e = SM3(ZA || M)，ZA 基于用户 ID。
-            // 与 OpenSSL 3.0 x509 生成行为保持一致：使用空用户 ID（实测 3.0.13）。
-            // 也兼容国密标准默认 ID（"1234567812345678"）验证（verify_signature 双 ZA 尝试）。
+            // SM2 证书签名：e = SM3(ZA || M)，ZA 基于用户 ID（空 ID，与 OpenSSL
+            // 3.0 x509 生成行为一致，实测 3.0.13；验证端双 ZA 尝试兼容国密标准
+            // 默认 ID "1234567812345678"）。
+            // 注意：ZA 必须基于**签名者（CA）的公钥**（GB/T 32918.5 / GM/T 0015）。
+            // 自签名证书 subject==issuer，误用被签证书公钥会碰巧一致；
+            // CA 签发他人证书时，若误用被签证书公钥，验证方（用 CA 公钥）必然失败。
+            uint8_t ca_pub[SM2_PUB_SIZE];
+            sm2_pub_from_priv(sign_priv_data, ca_pub);
             uint8_t za[32];
-            sm2_compute_za(nullptr, 0, cert.public_key.data(), cert.public_key.data() + 32, za);
+            sm2_compute_za(nullptr, 0, ca_pub, ca_pub + 32, za);
             sm2_sign(sign_priv_data, tbs_data, tbs_len, sig_buf, za); sig_len = 64; break;
         }
     }

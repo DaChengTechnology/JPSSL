@@ -300,22 +300,21 @@ bool sign_tbs(const std::vector<uint8_t>& tbs, x509::KeyType kt,
             out_len = 114;
             return true;
         case x509::KeyType::ECDSA_P256: {
-            uint8_t hash[32];
-            sha256_ctx ctx;
-            sha256_init(&ctx);
-            sha256_update(&ctx, tbs.data(), tbs.size());
-            sha256_final(&ctx, hash);
-            ecdsa_p256_sign(priv, hash, 32, out);
+            // ecdsa_p256_sign 内部自带 SHA-256（与 verify_signature 一致），
+            // 直接传 TBS；对 TBS 预哈希会造成双层哈希导致验证失败。
+            ecdsa_p256_sign(priv, tbs.data(), tbs.size(), out);
             out_len = 64;
             return true;
         }
         case x509::KeyType::SM2: {
-            uint8_t hash[32];
-            sm3_ctx ctx;
-            sm3_init(&ctx);
-            sm3_update(&ctx, tbs.data(), tbs.size());
-            sm3_final(&ctx, hash);
-            sm2_sign(priv, hash, 32, out, nullptr);
+            // SM2 证书签名：单层哈希 e = SM3(ZA || TBS)，ZA 基于签名者（CA）
+            // 的公钥 + 空用户 ID，与 build_and_sign / verify_signature 一致；
+            // 预哈希 SM3(TBS) 再签名会造成双层哈希导致验证失败。
+            uint8_t ca_pub[SM2_PUB_SIZE];
+            sm2_pub_from_priv(priv, ca_pub);
+            uint8_t za[32];
+            sm2_compute_za(nullptr, 0, ca_pub, ca_pub + 32, za);
+            sm2_sign(priv, tbs.data(), tbs.size(), out, za);
             out_len = 64;
             return true;
         }
