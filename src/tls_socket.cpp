@@ -232,8 +232,14 @@ bool tls_co_executor::run_once(int timeout_ms) {
 
     std::vector<pollfd> pfds;
     pfds.reserve(waiters_.size());
-    for (const auto& w : waiters_)
-        pfds.push_back({w.fd, (short)(w.for_write ? POLLOUT : POLLIN), 0});
+    for (const auto& w : waiters_) {
+        // 成员赋值而非列表初始化：winsock2.h 的 pollfd.fd 是 SOCKET，直接窄化会触发 C2397
+        pollfd pfd{};
+        pfd.fd = w.fd;
+        pfd.events = (short)(w.for_write ? POLLOUT : POLLIN);
+        pfd.revents = 0;
+        pfds.push_back(pfd);
+    }
 
     int rc = poll_multi(pfds, timeout_ms);
     if (rc <= 0) return false;

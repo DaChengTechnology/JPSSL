@@ -130,7 +130,12 @@ struct tls_co_task {
     }
     T await_resume() {
         T v = std::move(h_.promise().value);
-        if (h_) h_.destroy();
+        if (h_) {
+            // 销毁后必须置空：临时任务对象（co_await 全表达式结束）的析构还会检查 h_，
+            // 不置空会对已销毁的协程帧二次 destroy（double-free / 堆损坏）。
+            h_.destroy();
+            h_ = nullptr;
+        }
         return v;
     }
 };
@@ -180,7 +185,10 @@ struct tls_co_task<void> {
         return std::noop_coroutine();
     }
     void await_resume() {
-        if (h_) h_.destroy();
+        if (h_) {
+            h_.destroy();
+            h_ = nullptr;  // 同模板版：防临时任务对象析构二次 destroy
+        }
     }
 };
 
