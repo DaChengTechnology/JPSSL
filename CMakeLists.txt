@@ -273,14 +273,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_include_directories(jpssl_cpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ios/bridge)
     target_include_directories(jpssl_cpu_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ios/bridge)
 endif()
-# threadpool submodule（协程线程池，header-only）：tls_co_executor 可选绑定
-# 子项目模式（JPSSL_USE_EXTERNAL_THREADPOOL=ON）下由父项目提供 threadpool 头文件路径，
-# 不重复 add_subdirectory，避免与父项目的 threadpool/logger target 冲突。
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/threadpool/CMakeLists.txt AND NOT JPSSL_USE_EXTERNAL_THREADPOOL)
-    add_subdirectory(threadpool)
-    target_link_libraries(jpssl_cpu PRIVATE threadpool)
-    target_link_libraries(jpssl_cpu_shared PRIVATE threadpool)
-endif()
 set_target_properties(jpssl_cpu_shared PROPERTIES
     OUTPUT_NAME jpssl_cpu
     VERSION ${PROJECT_VERSION}
