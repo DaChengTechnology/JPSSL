@@ -48,7 +48,9 @@ enum class SignatureAlgorithm : uint16_t {
     SM2_SM3=0x0708
 };
 // TLS 1.3 NamedGroup (RFC 8446 §4.2.7, RFC 8998 §4.2.1)
-enum class NamedGroup : uint16_t { X25519=0x001d, X448=0x001e, curveSM2=0x0029 };
+enum class NamedGroup : uint16_t {
+    secp256r1=0x0017, secp384r1=0x0018, X25519=0x001d, X448=0x001e, curveSM2=0x0029
+};
 
 /// TLS 单条 record 明文上限（RFC 5246 / RFC 8446：2^14 字节）。
 /// 大于该值的长消息由 tls_encrypt / tls_connection::send 自动分片为多条 record，
@@ -114,8 +116,12 @@ struct tls_session {
     uint8_t transcript_hash[48]; // 已计算的 transcript 哈希 (32 for SHA-256, 48 for SHA-384)
     bool transcript_ready = false;
     NamedGroup ks_group = NamedGroup::X25519;
-    uint8_t ks_priv[56];
-    uint8_t ks_pub[56];
+    uint8_t ks_priv[56];       // curveSM2(32) / X448(56) / X25519(32) / secp256r1(32) / secp384r1(48)
+    uint8_t ks_pub[96];        // secp384r1(96) / curveSM2(64) / X448(56) / X25519(32) / secp256r1(64)
+    // SM 套件客户端额外生成的 X25519 兜底临时对（RFC 8998 要求 curveSM2
+    // 必须出现，但非 SM 服务器可能回落到 X25519）
+    uint8_t ks_priv_x25519[32];
+    uint8_t ks_pub_x25519[32];
 
     // 0-RTT / PSK 支持
     bool psk_valid = false;                // 客户端: 是否有可用 PSK
@@ -249,9 +255,11 @@ struct tls_certificate {
 
     // 按指定 TLS 签名方案签名/验签（客户端验证对端 CertificateVerify 时使用）
     bool sign_scheme(uint16_t scheme, const uint8_t* data, size_t data_len,
-                     uint8_t* sig, size_t& sig_len) const;
+                     uint8_t* sig, size_t& sig_len,
+                     const uint8_t za[32] = nullptr) const;
     bool verify_scheme(uint16_t scheme, const uint8_t* data, size_t data_len,
-                       const uint8_t* sig, size_t sig_len) const;
+                       const uint8_t* sig, size_t sig_len,
+                       const uint8_t za[32] = nullptr) const;
 };
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -62,4 +62,15 @@ void sm2_compute_za(const uint8_t* id, size_t id_len,
 void sm2_pub_from_priv(const uint8_t priv[SM2_KEY_SIZE],
                        uint8_t pub[SM2_PUB_SIZE]);
 
+/// SM2 ECDH 共享密钥算法（TLS 1.3 / RFC 8998 使用）
+/// 对任意公钥点做标量乘，取结果 X 坐标作为共享密钥（32 字节）
+/// @param shared 输出：32 字节共享密钥 (X 坐标, 大端)
+/// @param priv   32 字节私钥 (大端，必须满足 0 < d < n)
+/// @param peer_pub 对端公钥，支持 64 字节 (x||y) 或 65 字节 (0x04||x||y)
+/// @param peer_pub_len 对端公钥长度 (64 或 65)
+/// @return true 成功；私钥越界或公钥不在曲线上时返回 false
+bool sm2_ecdh(uint8_t shared[SM2_KEY_SIZE],
+              const uint8_t priv[SM2_KEY_SIZE],
+              const uint8_t* peer_pub, size_t peer_pub_len);
+
 } // namespace jpssl

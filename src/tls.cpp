@@ -391,7 +391,8 @@ static bool rsa_pss_verify(const rsa_public_key& pub, uint16_t scheme,
 //  证书签名/验证
 // ═══════════════════════════════════════════════════════════════════════
 bool tls_certificate::sign_scheme(uint16_t scheme, const uint8_t* data, size_t data_len,
-                                   uint8_t* sig, size_t& sig_len) const {
+                                   uint8_t* sig, size_t& sig_len,
+                                   const uint8_t za[32]) const {
     switch ((SignatureAlgorithm)scheme) {
         case SignatureAlgorithm::ED25519:
             sig_len = 64; ed25519_sign(priv.ed25519, data, data_len, sig); return true;
@@ -404,7 +405,7 @@ bool tls_certificate::sign_scheme(uint16_t scheme, const uint8_t* data, size_t d
         case SignatureAlgorithm::ECDSA_SECP521R1_SHA512:
             sig_len = 132; ecdsa_p521_sign(priv.ecdsa_p521, data, data_len, sig); return true;
         case SignatureAlgorithm::SM2_SM3:
-            sig_len = 64; sm2_sign(priv.sm2, data, data_len, sig, nullptr); return true;
+            sig_len = 64; sm2_sign(priv.sm2, data, data_len, sig, za); return true;
         case SignatureAlgorithm::RSA_PKCS1_SHA256:
         case SignatureAlgorithm::RSA_PKCS1_SHA384:
         case SignatureAlgorithm::RSA_PKCS1_SHA512:
@@ -423,7 +424,8 @@ bool tls_certificate::sign(const uint8_t* data, size_t data_len, uint8_t* sig, s
 }
 
 bool tls_certificate::verify_scheme(uint16_t scheme, const uint8_t* data, size_t data_len,
-                                    const uint8_t* sig, size_t sig_len) const {
+                                    const uint8_t* sig, size_t sig_len,
+                                    const uint8_t za[32]) const {
     if (sig_key_family((SignatureAlgorithm)scheme) != sig_key_family(sig_alg)) return false;
     switch ((SignatureAlgorithm)scheme) {
         case SignatureAlgorithm::ED25519:
@@ -443,7 +445,7 @@ bool tls_certificate::verify_scheme(uint16_t scheme, const uint8_t* data, size_t
             return ecdsa_p521_verify(pub.ecdsa_p521, data, data_len, sig);
         case SignatureAlgorithm::SM2_SM3:
             if (sig_len != 64) return false;
-            return sm2_verify(pub.sm2, data, data_len, sig, nullptr);
+            return sm2_verify(pub.sm2, data, data_len, sig, za);
         case SignatureAlgorithm::RSA_PKCS1_SHA256:
         case SignatureAlgorithm::RSA_PKCS1_SHA384:
         case SignatureAlgorithm::RSA_PKCS1_SHA512: {
@@ -747,7 +749,16 @@ static std::vector<uint8_t> tls13_make_cert_verify(const tls_certificate& cert, 
     // 避免 RSA 证书在 TLS 1.3 CertificateVerify 中发生栈溢出。
     uint8_t sig[512];size_t sig_len=0;
     std::vector<uint8_t> content = tls13_cert_verify_content(s, true);
-    if(!cert.sign_scheme(s.selected_sig_alg, content.data(), content.size(), sig, sig_len)) return {};
+    // RFC 8998 3.2.1: handshake signature uses SM2 id "TLSv1.3+GM+Cipher+Suite"
+    uint8_t za[32] = {};
+    const uint8_t* za_ptr = nullptr;
+    if (s.selected_sig_alg == (uint16_t)SignatureAlgorithm::SM2_SM3) {
+        static const char kSm2TlsId[] = "TLSv1.3+GM+Cipher+Suite";
+        sm2_compute_za((const uint8_t*)kSm2TlsId, sizeof(kSm2TlsId) - 1,
+                       cert.pub.sm2, cert.pub.sm2 + 32, za);
+        za_ptr = za;
+    }
+    if(!cert.sign_scheme(s.selected_sig_alg, content.data(), content.size(), sig, sig_len, za_ptr)) return {};
 
     std::vector<uint8_t> msg;
     msg.push_back((uint8_t)HandshakeType::CERT_VERIFY);
@@ -769,7 +780,16 @@ static bool tls13_verify_cert_verify(const tls_certificate& cert, tls_session& s
     uint16_t sig_len=(hs_msg[6]<<8)|hs_msg[7];
     if(4+2+2+sig_len!=hs_len)return false;
     std::vector<uint8_t> content = tls13_cert_verify_content(s, true);
-    return cert.verify_scheme(alg, content.data(), content.size(), hs_msg+8, sig_len);
+    // RFC 8998 3.2.1: handshake signature uses SM2 id "TLSv1.3+GM+Cipher+Suite"
+    uint8_t za[32] = {};
+    const uint8_t* za_ptr = nullptr;
+    if (alg == (uint16_t)SignatureAlgorithm::SM2_SM3) {
+        static const char kSm2TlsId[] = "TLSv1.3+GM+Cipher+Suite";
+        sm2_compute_za((const uint8_t*)kSm2TlsId, sizeof(kSm2TlsId) - 1,
+                       cert.pub.sm2, cert.pub.sm2 + 32, za);
+        za_ptr = za;
+    }
+    return cert.verify_scheme(alg, content.data(), content.size(), hs_msg+8, sig_len, za_ptr);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -894,9 +914,18 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
     // supported_groups: 根据会话配置提供 X25519 和/或 X448
     {
         std::vector<uint16_t> groups;
-        // 总是包含 X25519，如果会话要求 X448 则也列出 X448
-        if (s.ks_group == NamedGroup::X448) {
+        // SM 套件必须包含 curveSM2（RFC 8998 3.3.1.1）；同时保留 X25519 兜底
+        if (tls_use_sm3(s.cipher_suite)) {
+            groups.push_back((uint16_t)NamedGroup::curveSM2);
+            groups.push_back((uint16_t)NamedGroup::X25519);
+        } else if (s.ks_group == NamedGroup::X448) {
             groups.push_back((uint16_t)NamedGroup::X448);
+            groups.push_back((uint16_t)NamedGroup::X25519);
+        } else if (s.ks_group == NamedGroup::secp256r1) {
+            groups.push_back((uint16_t)NamedGroup::secp256r1);
+            groups.push_back((uint16_t)NamedGroup::X25519);
+        } else if (s.ks_group == NamedGroup::secp384r1) {
+            groups.push_back((uint16_t)NamedGroup::secp384r1);
             groups.push_back((uint16_t)NamedGroup::X25519);
         } else {
             groups.push_back((uint16_t)NamedGroup::X25519);
@@ -922,27 +951,83 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         append_sig_alg_extension(ext, 0x0032, cert_filtered);
     }
     // key_share: 根据 ks_group 生成对应密钥对
-    if (s.ks_group == NamedGroup::X448) {
+    if (tls_use_sm3(s.cipher_suite)) {
+        // curveSM2（RFC 8998 3.3.1.1 必须提供，key_exchange 为 SEC1 非压缩 65 字节）
+        uint8_t sm2_pub[SM2_PUB_SIZE], sm2_priv[SM2_KEY_SIZE];
+        sm2_keygen(sm2_pub, sm2_priv);
+        memcpy(s.ks_priv, sm2_priv, SM2_KEY_SIZE);
+        memcpy(s.ks_pub, sm2_pub, SM2_PUB_SIZE);
+        s.ks_group = NamedGroup::curveSM2;
+        // X25519 兜底临时对（服务器不支持 curveSM2 时回退）
+        uint8_t x_priv[32], x_pub[32];
+        x25519_generate_keypair(x_pub, x_priv);
+        memcpy(s.ks_priv_x25519, x_priv, 32);
+        memcpy(s.ks_pub_x25519, x_pub, 32);
+
+        std::vector<uint8_t> shares;
+        // curveSM2 entry: group(2) + key_len(2) + 0x04 + x||y
+        shares.push_back(0x00);shares.push_back(0x29);
+        shares.push_back(0x00);shares.push_back(0x41); // 65
+        shares.push_back(0x04);
+        shares.insert(shares.end(), sm2_pub, sm2_pub + SM2_PUB_SIZE);
+        // X25519 entry
+        shares.push_back(0x00);shares.push_back(0x1d);
+        shares.push_back(0x00);shares.push_back(0x20);
+        shares.insert(shares.end(), x_pub, x_pub + 32);
+        // key_share 扩展：RFC 8446 4.2.8，client_shares 为带 2 字节长度的向量
+        ext.push_back(0x00);ext.push_back(0x33);
+        uint16_t ks_ext_len = (uint16_t)(shares.size() + 2);
+        ext.push_back((uint8_t)(ks_ext_len >> 8));ext.push_back((uint8_t)ks_ext_len);
+        ext.push_back((uint8_t)(shares.size() >> 8));ext.push_back((uint8_t)shares.size());
+        ext.insert(ext.end(), shares.begin(), shares.end());
+    } else if (s.ks_group == NamedGroup::X448) {
         // X448
         uint8_t client_priv[56], client_pub[56];
         x448_generate_keypair(client_pub, client_priv);
         memcpy(s.ks_priv, client_priv, 56);
         memcpy(s.ks_pub, client_pub, 56);
-        uint16_t ks_entry_len = 4 + 56; // group(2) + key_len(2) + key(56)
+        uint16_t ks_ext_len = 2 + 2 + 2 + 56; // 向量长度(2) + group(2) + key_len(2) + key(56)
         ext.push_back(0x00);ext.push_back(0x33); // key_share
-        ext.push_back((uint8_t)(ks_entry_len>>8));ext.push_back((uint8_t)ks_entry_len);
+        ext.push_back((uint8_t)(ks_ext_len>>8));ext.push_back((uint8_t)ks_ext_len);
+        ext.push_back(0x00);ext.push_back(0x3c); // client_shares 向量长度 = 60
         ext.push_back(0x00);ext.push_back(0x1e); // X448
         ext.push_back(0x00);ext.push_back(0x38); // 56
         ext.insert(ext.end(), client_pub, client_pub + 56);
         // 暂存私钥到 client_write_key（仅前 32 字节不够，改用 ks_priv）
         // 注意：后续 derive_keys 时使用 ks_priv
+    } else if (s.ks_group == NamedGroup::secp256r1) {
+        // secp256r1 (P-256) ECDHE：key_exchange = x||y 裸 64 字节（RFC 8446 4.2.8.2）
+        uint8_t ecdh_pub[64], ecdh_priv[32];
+        ecdsa_p256_keygen(ecdh_pub, ecdh_priv);
+        memcpy(s.ks_priv, ecdh_priv, 32);
+        memcpy(s.ks_pub, ecdh_pub, 64);
+        ext.push_back(0x00);ext.push_back(0x33); // key_share
+        ext.push_back(0x00);ext.push_back(0x46); // 70 = 2 + 68
+        ext.push_back(0x00);ext.push_back(0x44); // client_shares 68
+        ext.push_back(0x00);ext.push_back(0x17); // secp256r1
+        ext.push_back(0x00);ext.push_back(0x40); // 64
+        ext.insert(ext.end(), ecdh_pub, ecdh_pub + 64);
+    } else if (s.ks_group == NamedGroup::secp384r1) {
+        // secp384r1 (P-384) ECDHE：key_exchange = x||y 裸 96 字节
+        uint8_t ecdh_pub[96], ecdh_priv[48];
+        ecdsa_p384_keygen(ecdh_pub, ecdh_priv);
+        memcpy(s.ks_priv, ecdh_priv, 48);
+        memcpy(s.ks_pub, ecdh_pub, 96);
+        ext.push_back(0x00);ext.push_back(0x33); // key_share
+        ext.push_back(0x00);ext.push_back(0x66); // 102 = 2 + 100
+        ext.push_back(0x00);ext.push_back(0x64); // client_shares 100
+        ext.push_back(0x00);ext.push_back(0x18); // secp384r1
+        ext.push_back(0x00);ext.push_back(0x60); // 96
+        ext.insert(ext.end(), ecdh_pub, ecdh_pub + 96);
     } else {
         // X25519 (默认)
         uint8_t client_priv[32],client_pub[32];
         x25519_generate_keypair(client_pub,client_priv);
         memcpy(s.ks_priv, client_priv, 32);
         memcpy(s.ks_pub, client_pub, 32);
-        ext.push_back(0x00);ext.push_back(0x33);ext.push_back(0x00);ext.push_back(0x24);ext.push_back(0x00);ext.push_back(0x1d);ext.push_back(0x00);ext.push_back(0x20);
+        ext.push_back(0x00);ext.push_back(0x33);ext.push_back(0x00);ext.push_back(0x26); // 38 = 2 + 2 + 2 + 32
+        ext.push_back(0x00);ext.push_back(0x24); // client_shares 向量长度 = 36
+        ext.push_back(0x00);ext.push_back(0x1d);ext.push_back(0x00);ext.push_back(0x20);
         ext.insert(ext.end(),client_pub,client_pub+32);
     }
 
@@ -980,13 +1065,18 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
 
     tls_transcript_update(s,data+sh_start,4+sh_len);
 
-    // 提取 server_pub 从 key_share（支持 X25519 和 X448）
+    // 提取 server_pub 从 key_share（支持 X25519、X448 和 curveSM2）
     size_t ext_start=sh_start+4+2+32+1+2+1;
     uint16_t ext_total=(data[ext_start]<<8)|data[ext_start+1];
     size_t ext_off=ext_start+2;
     uint8_t server_pub_x25519[32];
     uint8_t server_pub_x448[56];
-    bool found_ks_x25519=false, found_ks_x448=false;
+    uint8_t server_pub_sm2[65];
+    size_t server_pub_sm2_len = 0;
+    bool found_ks_x25519=false, found_ks_x448=false, found_ks_sm2=false;
+    uint8_t server_pub_p256[64];
+    uint8_t server_pub_p384[96];
+    bool found_ks_p256=false, found_ks_p384=false;
     while(ext_off+4<=ext_start+2+ext_total){
         uint16_t etype=(data[ext_off]<<8)|data[ext_off+1];
         uint16_t elen=(data[ext_off+2]<<8)|data[ext_off+3];
@@ -997,12 +1087,28 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
                 memcpy(server_pub_x25519,data+ext_off+8,32);found_ks_x25519=true;
             } else if(group==(uint16_t)NamedGroup::X448 && key_len==56 && elen>=4+56){
                 memcpy(server_pub_x448,data+ext_off+8,56);found_ks_x448=true;
+            } else if(group==(uint16_t)NamedGroup::curveSM2 && elen>=4+64){
+                // curveSM2 采用 SEC1 非压缩 65 字节；兼容部分实现裸 64 字节 x||y
+                if(key_len==65 && data[ext_off+8]==0x04){
+                    memcpy(server_pub_sm2,data+ext_off+8,65);
+                    server_pub_sm2_len=65;
+                    found_ks_sm2=true;
+                } else if(key_len==64){
+                    server_pub_sm2[0]=0x04;
+                    memcpy(server_pub_sm2+1,data+ext_off+8,64);
+                    server_pub_sm2_len=65;
+                    found_ks_sm2=true;
+                }
+            } else if(group==(uint16_t)NamedGroup::secp256r1 && key_len==64 && elen>=4+64){
+                memcpy(server_pub_p256,data+ext_off+8,64);found_ks_p256=true;
+            } else if(group==(uint16_t)NamedGroup::secp384r1 && key_len==96 && elen>=4+96){
+                memcpy(server_pub_p384,data+ext_off+8,96);found_ks_p384=true;
             }
         }
         ext_off+=4+elen;
     }
     // 默认回退到偏移 50（旧 API 兼容）：X25519 情况下
-    if(!found_ks_x25519 && !found_ks_x448){
+    if(!found_ks_x25519 && !found_ks_x448 && !found_ks_sm2 && !found_ks_p256 && !found_ks_p384){
         memcpy(server_pub_x25519,data+sh_start+50,32);
         found_ks_x25519=true;
     }
@@ -1010,7 +1116,23 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
     // 计算共享密钥（根据会话配置或找到的组选择算法）
     uint8_t shared_secret[56];  // X448 输出 56 字节；但 TLS 1.3 HKDF 使用 32 字节
     size_t shared_len = 32;
-    if (found_ks_x448 && s.ks_group == NamedGroup::X448) {
+    if (found_ks_sm2 && s.ks_group == NamedGroup::curveSM2) {
+        // curveSM2 ECDH：共享密钥 = 32 字节 X 坐标（RFC 8998 3.4）
+        if (!sm2_ecdh(shared_secret, s.ks_priv, server_pub_sm2, server_pub_sm2_len))
+            return false;
+        shared_len = 32;
+        s.ks_group = NamedGroup::curveSM2;
+    } else if (found_ks_p256 && s.ks_group == NamedGroup::secp256r1) {
+        if (!ecdsa_p256_ecdh(shared_secret, s.ks_priv, server_pub_p256))
+            return false;
+        shared_len = 32;
+        s.ks_group = NamedGroup::secp256r1;
+    } else if (found_ks_p384 && s.ks_group == NamedGroup::secp384r1) {
+        if (!ecdsa_p384_ecdh(shared_secret, s.ks_priv, server_pub_p384))
+            return false;
+        shared_len = 48;
+        s.ks_group = NamedGroup::secp384r1;
+    } else if (found_ks_x448 && s.ks_group == NamedGroup::X448) {
         // 使用 X448 计算
         uint8_t client_priv[56]; memcpy(client_priv, s.ks_priv, 56);
         x448_scalar_mult(shared_secret, client_priv, server_pub_x448);
@@ -1022,6 +1144,9 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
         if (s.ks_group == NamedGroup::X448) {
             // 客户端请求 X448 但服务端只支持 X25519，回退
             memcpy(client_priv, s.client_write_key, 32);  // 旧 API 路径
+        } else if (s.ks_group == NamedGroup::curveSM2) {
+            // 客户端请求 SM 套件但服务端回退 X25519，使用兜底临时私钥
+            memcpy(client_priv, s.ks_priv_x25519, 32);
         } else {
             memcpy(client_priv, s.ks_priv, 32);
         }
@@ -1161,10 +1286,16 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
     if(!cert)return false;
 
-    // 提取 client_pub（支持 X25519 和 X448）和 supported_groups
+    // 提取 client_pub（支持 X25519、X448 和 curveSM2）和 supported_groups
     uint8_t client_pub_x25519[32]; bool found_x25519=false;
     uint8_t client_pub_x448[56]; bool found_x448=false;
-    bool client_supports_x448=false;  // 客户端 supported_groups 列表中是否包含 X448
+    uint8_t client_pub_sm2[65]; size_t client_pub_sm2_len=0; bool found_sm2=false;
+    uint8_t client_pub_p256[64]; bool found_p256=false;
+    uint8_t client_pub_p384[96]; bool found_p384=false;
+    bool client_supports_x448=false;    // 客户端 supported_groups 列表中是否包含 X448
+    bool client_supports_curveSM2=false;
+    bool client_supports_p256=false;
+    bool client_supports_p384=false;
     std::vector<uint16_t> client_sig_algs, client_sig_algs_cert;
     size_t eo=ext_offset+2;
     while(eo+4<=ext_offset+2+ext_len_total){
@@ -1177,16 +1308,41 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
             for(size_t gi=0;gi+2<=gl && goff+2<=eo+4+elen;gi+=2){
                 uint16_t g=(client_hello[goff]<<8)|client_hello[goff+1];
                 if(g==(uint16_t)NamedGroup::X448) client_supports_x448=true;
+                if(g==(uint16_t)NamedGroup::curveSM2) client_supports_curveSM2=true;
+                if(g==(uint16_t)NamedGroup::secp256r1) client_supports_p256=true;
+                if(g==(uint16_t)NamedGroup::secp384r1) client_supports_p384=true;
                 goff+=2;
             }
         }
-        else if(etype==0x33 && elen>=4){
-            uint16_t group=(client_hello[eo+4]<<8)|client_hello[eo+5];
-            uint16_t key_len=(client_hello[eo+6]<<8)|client_hello[eo+7];
-            if(group==(uint16_t)NamedGroup::X25519 && key_len==32 && elen>=4+32){
-                memcpy(client_pub_x25519,client_hello+eo+8,32);found_x25519=true;
-            } else if(group==(uint16_t)NamedGroup::X448 && key_len==56 && elen>=4+56){
-                memcpy(client_pub_x448,client_hello+eo+8,56);found_x448=true;
+        else if(etype==0x33 && elen>=6){
+            // RFC 8446 4.2.8：client_shares 为带 2 字节长度的向量，逐个扫描条目
+            uint16_t ks_list_len=(client_hello[eo+4]<<8)|client_hello[eo+5];
+            size_t ks_end = eo + 6 + ks_list_len;
+            if (ks_end > eo + 4 + (size_t)elen) ks_end = eo + 4 + (size_t)elen;
+            size_t kq = eo + 6;
+            while (kq + 4 <= ks_end) {
+                uint16_t group=(client_hello[kq]<<8)|client_hello[kq+1];
+                uint16_t key_len=(client_hello[kq+2]<<8)|client_hello[kq+3];
+                if(group==(uint16_t)NamedGroup::X25519 && key_len==32 && kq+4+32<=ks_end){
+                    memcpy(client_pub_x25519,client_hello+kq+4,32);found_x25519=true;
+                } else if(group==(uint16_t)NamedGroup::X448 && key_len==56 && kq+4+56<=ks_end){
+                    memcpy(client_pub_x448,client_hello+kq+4,56);found_x448=true;
+                } else if(group==(uint16_t)NamedGroup::curveSM2 && kq+4+64<=ks_end){
+                    // curveSM2 采用 SEC1 非压缩 65 字节；兼容裸 64 字节 x||y
+                    if(key_len==65 && client_hello[kq+4]==0x04){
+                        memcpy(client_pub_sm2,client_hello+kq+4,65);
+                        client_pub_sm2_len=65;found_sm2=true;
+                    } else if(key_len==64){
+                        client_pub_sm2[0]=0x04;
+                        memcpy(client_pub_sm2+1,client_hello+kq+4,64);
+                        client_pub_sm2_len=65;found_sm2=true;
+                    }
+                } else if(group==(uint16_t)NamedGroup::secp256r1 && key_len==64 && kq+4+64<=ks_end){
+                    memcpy(client_pub_p256,client_hello+kq+4,64);found_p256=true;
+                } else if(group==(uint16_t)NamedGroup::secp384r1 && key_len==96 && kq+4+96<=ks_end){
+                    memcpy(client_pub_p384,client_hello+kq+4,96);found_p384=true;
+                }
+                kq += 4 + key_len;
             }
         }
         else if(etype==0x000d){
@@ -1199,7 +1355,9 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         }
         eo+=4+elen;
     }
-    if(!found_x25519 && !found_x448){memcpy(client_pub_x25519,client_hello+50,32);found_x25519=true;}
+    if(!found_x25519 && !found_x448 && !found_sm2 && !found_p256 && !found_p384){
+        memcpy(client_pub_x25519,client_hello+50,32);found_x25519=true;
+    }
 
     // signature_algorithms 协商（RFC 8446 §4.2.3）
     if (client_sig_algs.empty()) return false;   // 客户端必须携带该扩展
@@ -1215,8 +1373,14 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         if (chain_scheme == 0 || !scheme_in_list(client_sig_algs_cert, chain_scheme)) return false;
     }
 
-    // 选择密钥交换组：优先 X448（如果客户端提供了 X448 key_share）
-    bool use_x448 = found_x448 && client_supports_x448;
+    // RFC 8998 3.3.1.1：SM 套件要求 supported_groups 含 curveSM2 且必须提供其 key_share
+    if (tls_use_sm3(s.cipher_suite) && (!found_sm2 || !client_supports_curveSM2)) return false;
+
+    // 选择密钥交换组：SM 套件优先 curveSM2，其次 X448（如果客户端提供了 key_share）
+    bool use_sm2  = tls_use_sm3(s.cipher_suite) && found_sm2 && client_supports_curveSM2;
+    bool use_p256 = !use_sm2 && found_p256 && client_supports_p256;
+    bool use_p384 = !use_sm2 && !use_p256 && found_p384 && client_supports_p384;
+    bool use_x448 = !use_sm2 && !use_p256 && !use_p384 && found_x448 && client_supports_x448;
     uint8_t shared_secret[56];
     size_t shared_len;
 
@@ -1230,7 +1394,64 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     server_flight.push_back((uint8_t)(sel_cs>>8));server_flight.push_back((uint8_t)sel_cs);
     server_flight.push_back(0x00);
 
-    if (use_x448) {
+    if (use_sm2) {
+        // curveSM2 密钥交换（RFC 8998 3.4：标准 ECDHE，共享密钥 = X 坐标 32 字节）
+        uint8_t server_priv[SM2_KEY_SIZE], server_pub[SM2_PUB_SIZE];
+        sm2_keygen(server_pub, server_priv);
+        if (!sm2_ecdh(shared_secret, server_priv, client_pub_sm2, client_pub_sm2_len))
+            return false;
+        shared_len = 32;
+        s.ks_group = NamedGroup::curveSM2;
+
+        // ext_len = 6 (supported_versions) + 73 (key_share: 4 + 2 + 2 + 65)
+        uint16_t ext_total = 6 + 73;
+        server_flight.push_back((uint8_t)(ext_total>>8));server_flight.push_back((uint8_t)ext_total);
+        // supported_versions
+        server_flight.push_back(0x00);server_flight.push_back(0x2b);server_flight.push_back(0x00);server_flight.push_back(0x02);server_flight.push_back(0x03);server_flight.push_back(0x04);
+        // key_share curveSM2（SEC1 非压缩 65 字节）
+        server_flight.push_back(0x00);server_flight.push_back(0x33);
+        server_flight.push_back(0x00);server_flight.push_back(0x45); // 69 = 2 + 2 + 65
+        server_flight.push_back(0x00);server_flight.push_back(0x29); // curveSM2
+        server_flight.push_back(0x00);server_flight.push_back(0x41); // 65
+        server_flight.push_back(0x04);
+        server_flight.insert(server_flight.end(), server_pub, server_pub + SM2_PUB_SIZE);
+    } else if (use_p256) {
+        // secp256r1 (P-256) ECDHE：key_exchange = x||y 裸 64 字节
+        uint8_t server_priv[32], server_pub[64];
+        ecdsa_p256_keygen(server_pub, server_priv);
+        if (!ecdsa_p256_ecdh(shared_secret, server_priv, client_pub_p256))
+            return false;
+        shared_len = 32;
+        s.ks_group = NamedGroup::secp256r1;
+
+        uint16_t ext_total = 6 + 72; // supported_versions(6) + key_share(2+2+4+64)
+        server_flight.push_back((uint8_t)(ext_total>>8));server_flight.push_back((uint8_t)ext_total);
+        server_flight.push_back(0x00);server_flight.push_back(0x2b);server_flight.push_back(0x00);
+        server_flight.push_back(0x02);server_flight.push_back(0x03);server_flight.push_back(0x04);
+        server_flight.push_back(0x00);server_flight.push_back(0x33);
+        server_flight.push_back(0x00);server_flight.push_back(0x44); // 68 = 2 + 2 + 64
+        server_flight.push_back(0x00);server_flight.push_back(0x17); // secp256r1
+        server_flight.push_back(0x00);server_flight.push_back(0x40); // 64
+        server_flight.insert(server_flight.end(), server_pub, server_pub + 64);
+    } else if (use_p384) {
+        // secp384r1 (P-384) ECDHE：key_exchange = x||y 裸 96 字节
+        uint8_t server_priv[48], server_pub[96];
+        ecdsa_p384_keygen(server_pub, server_priv);
+        if (!ecdsa_p384_ecdh(shared_secret, server_priv, client_pub_p384))
+            return false;
+        shared_len = 48;
+        s.ks_group = NamedGroup::secp384r1;
+
+        uint16_t ext_total = 6 + 104; // supported_versions(6) + key_share(2+2+4+96)
+        server_flight.push_back((uint8_t)(ext_total>>8));server_flight.push_back((uint8_t)ext_total);
+        server_flight.push_back(0x00);server_flight.push_back(0x2b);server_flight.push_back(0x00);
+        server_flight.push_back(0x02);server_flight.push_back(0x03);server_flight.push_back(0x04);
+        server_flight.push_back(0x00);server_flight.push_back(0x33);
+        server_flight.push_back(0x00);server_flight.push_back(0x64); // 100 = 2 + 2 + 96
+        server_flight.push_back(0x00);server_flight.push_back(0x18); // secp384r1
+        server_flight.push_back(0x00);server_flight.push_back(0x60); // 96
+        server_flight.insert(server_flight.end(), server_pub, server_pub + 96);
+    } else if (use_x448) {
         // X448 密钥交换
         uint8_t server_priv[56], server_pub[56];
         x448_generate_keypair(server_pub, server_priv);
@@ -1238,14 +1459,14 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         shared_len = 56;
         s.ks_group = NamedGroup::X448;
 
-        // ext_len = 6 (supported_versions) + 62 (key_share: 4+2+2+56)
-        uint16_t ext_total = 6 + 62;
+        // ext_len = 6 (supported_versions) + 64 (key_share: 4 + 2 + 2 + 56)
+        uint16_t ext_total = 6 + 64;
         server_flight.push_back((uint8_t)(ext_total>>8));server_flight.push_back((uint8_t)ext_total);
         // supported_versions
         server_flight.push_back(0x00);server_flight.push_back(0x2b);server_flight.push_back(0x00);server_flight.push_back(0x02);server_flight.push_back(0x03);server_flight.push_back(0x04);
         // key_share X448
         server_flight.push_back(0x00);server_flight.push_back(0x33);
-        server_flight.push_back(0x00);server_flight.push_back(0x3e); // 62 = 4 + 2 + 2 + 56
+        server_flight.push_back(0x00);server_flight.push_back(0x3c); // 60 = 2 + 2 + 56
         server_flight.push_back(0x00);server_flight.push_back(0x1e); // X448
         server_flight.push_back(0x00);server_flight.push_back(0x38); // 56
         server_flight.insert(server_flight.end(), server_pub, server_pub+56);
@@ -2375,7 +2596,8 @@ bool tls13_make_psk_client_hello(tls_session& s, std::vector<uint8_t>& client_he
         uint8_t cpriv[32],cpub[32];
         x25519_generate_keypair(cpub,cpriv);
         memcpy(s.ks_priv, cpriv, 32);
-        all_ext.push_back(0x00);all_ext.push_back(0x33);all_ext.push_back(0x00);all_ext.push_back(0x24);
+        all_ext.push_back(0x00);all_ext.push_back(0x33);all_ext.push_back(0x00);all_ext.push_back(0x26);
+        all_ext.push_back(0x00);all_ext.push_back(0x24);
         all_ext.push_back(0x00);all_ext.push_back(0x1d);all_ext.push_back(0x00);all_ext.push_back(0x20);
         all_ext.insert(all_ext.end(),cpub,cpub+32);
     }

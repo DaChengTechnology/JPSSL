@@ -91,6 +91,7 @@ static void test_sm4_gcm_empty() {
 
 static void test_tls13_sm_handshake() {
     std::printf("\n=== RFC 8998 TLS 1.3 SM Handshake ===\n");
+    std::fflush(stdout);
 
     // 创建 SM2 服务端证书
     tls_certificate_manager cert_mgr;
@@ -108,6 +109,41 @@ static void test_tls13_sm_handshake() {
     bool ch_ok = tls13_make_client_hello(client, client_hello);
     TEST("SM Handshake: ClientHello generated", ch_ok);
     TEST("SM Handshake: ClientHello non-empty", !client_hello.empty());
+    // RFC 8998 3.3.1.1：ClientHello 必须携带 curveSM2 supported_groups 和 key_share
+    bool ch_has_curveSM2_group = false, ch_has_curveSM2_share = false;
+    {
+        size_t ch_ext = 4 + 2 + 32;
+        ch_ext += 1 + client_hello[ch_ext];                     // session_id
+        uint16_t cs_len = (client_hello[ch_ext] << 8) | client_hello[ch_ext + 1];
+        ch_ext += 2 + cs_len;                                   // cipher_suites
+        ch_ext += 1 + client_hello[ch_ext];                     // compression_methods
+        uint16_t ext_total = (client_hello[ch_ext] << 8) | client_hello[ch_ext + 1];
+        size_t p = ch_ext + 2, end = p + ext_total;
+        while (p + 4 <= end) {
+            uint16_t etype = (client_hello[p] << 8) | client_hello[p + 1];
+            uint16_t elen = (client_hello[p + 2] << 8) | client_hello[p + 3];
+            if (etype == 0x000a && elen >= 4) {
+                uint16_t gl = (client_hello[p + 4] << 8) | client_hello[p + 5];
+                for (size_t q = p + 6; q + 2 <= p + 6 + gl; q += 2) {
+                    uint16_t g = (client_hello[q] << 8) | client_hello[q + 1];
+                    if (g == (uint16_t)NamedGroup::curveSM2) ch_has_curveSM2_group = true;
+                }
+            } else if (etype == 0x0033 && elen >= 4) {
+                uint16_t gl = (client_hello[p + 4] << 8) | client_hello[p + 5];
+                for (size_t q = p + 6; q + 4 <= p + 6 + gl; ) {
+                    uint16_t g = (client_hello[q] << 8) | client_hello[q + 1];
+                    uint16_t kl = (client_hello[q + 2] << 8) | client_hello[q + 3];
+                    if (g == (uint16_t)NamedGroup::curveSM2 && kl == 65 && client_hello[q + 4] == 0x04)
+                        ch_has_curveSM2_share = true;
+                    q += 4 + kl;
+                }
+            }
+            p += 4 + elen;
+        }
+    }
+    TEST("SM Handshake: ClientHello advertises curveSM2 group", ch_has_curveSM2_group);
+    TEST("SM Handshake: ClientHello sends curveSM2 key_share (SEC1 65B)", ch_has_curveSM2_share);
+    TEST("SM Handshake: Client stored curveSM2 priv/pub", client.ks_group == NamedGroup::curveSM2);
 
     // 服务端处理
     tls_session server;
@@ -117,6 +153,26 @@ static void test_tls13_sm_handshake() {
     TEST("SM Handshake: ServerFlight generated", sh_ok);
     TEST("SM Handshake: Server cipher suite is SM4-GCM-SM3",
          server.cipher_suite == CipherSuite::TLS_SM4_GCM_SM3);
+    TEST("SM Handshake: Server selected curveSM2", server.ks_group == NamedGroup::curveSM2);
+    // ServerHello key_share 必须包含 curveSM2 条目
+    bool sh_has_curveSM2_share = false;
+    {
+        size_t p = 4 + 2 + 32 + 1 + 2 + 1;  // ServerHello 固定部分后即 extensions
+        uint16_t ext_total = (server_flight[p] << 8) | server_flight[p + 1];
+        size_t q = p + 2, end = q + ext_total;
+        while (q + 4 <= end) {
+            uint16_t etype = (server_flight[q] << 8) | server_flight[q + 1];
+            uint16_t elen = (server_flight[q + 2] << 8) | server_flight[q + 3];
+            if (etype == 0x0033 && elen >= 4) {
+                uint16_t g = (server_flight[q + 4] << 8) | server_flight[q + 5];
+                uint16_t kl = (server_flight[q + 6] << 8) | server_flight[q + 7];
+                if (g == (uint16_t)NamedGroup::curveSM2 && kl == 65 && server_flight[q + 8] == 0x04)
+                    sh_has_curveSM2_share = true;
+            }
+            q += 4 + elen;
+        }
+    }
+    TEST("SM Handshake: ServerHello sends curveSM2 key_share", sh_has_curveSM2_share);
 
     // 客户端处理 ServerFlight
     std::vector<uint8_t> client_finished;

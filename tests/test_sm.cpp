@@ -3,6 +3,7 @@
 #include "sm3.hpp"
 #include "sm4.hpp"
 #include "sm4_gcm.hpp"
+#include "sm2_mont_asm.hpp"
 #include <openssl/evp.h>
 #include <openssl/ec.h>
 #include <openssl/obj_mac.h>
@@ -12,6 +13,7 @@
 #include <cassert>
 #include <vector>
 #include <string>
+#include <random>
 
 #define ASSERT(cond, msg) do { \
     if (!(cond)) { std::fprintf(stderr, "FAIL: %s\n", msg); std::exit(1); } \
@@ -310,6 +312,205 @@ static void test_sm4_gcm_ossl() {
 //  SM2 测试（与 OpenSSL 对比）
 // ═══════════════════════════════════════════════════════════════════════
 
+// ===========================================================================
+//  SM2 Montgomery ADX asm: 汇编 vs 可移植 CIOS 参考实现
+// ===========================================================================
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#pragma intrinsic(_umul128, _addcarry_u64, _subborrow_u64)
+#endif
+
+static inline uint64_t ref_mul64(uint64_t a, uint64_t b, uint64_t* hi) {
+#if defined(_MSC_VER)
+    return _umul128(a, b, hi);
+#else
+    __uint128_t t = (__uint128_t)a * b;
+    *hi = (uint64_t)(t >> 64);
+    return (uint64_t)t;
+#endif
+}
+
+static inline uint64_t ref_addc(uint64_t a, uint64_t b, uint64_t cin, uint64_t* out) {
+#if defined(_MSC_VER)
+    return (uint64_t)_addcarry_u64((unsigned char)cin, a, b, out);
+#else
+    __uint128_t t = (__uint128_t)a + b + cin;
+    *out = (uint64_t)t;
+    return (uint64_t)(t >> 64);
+#endif
+}
+
+static inline uint64_t ref_subb(uint64_t a, uint64_t b, uint64_t bin, uint64_t* out) {
+#if defined(_MSC_VER)
+    return (uint64_t)_subborrow_u64((unsigned char)bin, a, b, out);
+#else
+    __uint128_t t = (__uint128_t)a - b - bin;
+    *out = (uint64_t)t;
+    return (uint64_t)(t >> 64) & 1u;
+#endif
+}
+
+// 与 sm2.cpp 可移植路径相同的 schoolbook 累加 + Montgomery 归约
+static uint64_t ref_acc(uint64_t* t, int pos, uint64_t lo, uint64_t hi, uint64_t cin) {
+    uint64_t out;
+    uint64_t cf1 = ref_addc(lo, t[pos], 0, &out);
+    uint64_t cf2 = ref_addc(out, cin, 0, &out);
+    t[pos] = out;
+    uint64_t old = hi;
+    hi = old + cf1 + cf2;
+    if (hi < old) {
+        for (int k = pos + 2; k < 10; ++k) {
+            uint64_t s2 = t[k] + 1;
+            t[k] = s2;
+            if (s2) break;
+        }
+    }
+    return hi;
+}
+
+static void ref_mul512(uint64_t t[10], const uint64_t a[4], const uint64_t b[4]) {
+    for (int k = 0; k < 10; ++k) t[k] = 0;
+    for (int i = 0; i < 4; ++i) {
+        uint64_t ca = 0;
+        for (int j = 0; j < 4; ++j) {
+            uint64_t hi, lo = ref_mul64(a[i], b[j], &hi);
+            ca = ref_acc(t, i + j, lo, hi, ca);
+        }
+        if (ca) {
+            for (int k = i + 4; ca && k < 10; ++k) {
+                uint64_t s2 = t[k] + ca;
+                t[k] = s2;
+                ca = (s2 < ca) ? 1 : 0;
+            }
+        }
+    }
+}
+
+static bool ref_ge(const uint64_t a[4], const uint64_t b[4]) {
+    for (int i = 3; i >= 0; --i) {
+        if (a[i] > b[i]) return true;
+        if (a[i] < b[i]) return false;
+    }
+    return true;
+}
+
+static bool ref_eq(const uint64_t a[4], const uint64_t b[4]) {
+    return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
+}
+
+static void ref_mont_mul(uint64_t r[4], const uint64_t a[4], const uint64_t b[4],
+                         const uint64_t m[4], uint64_t mp) {
+    uint64_t t[10];
+    ref_mul512(t, a, b);
+    for (int i = 0; i < 4; ++i) {
+        uint64_t u = t[i] * mp;
+        uint64_t ca = 0;
+        for (int j = 0; j < 4; ++j) {
+            uint64_t hi, lo = ref_mul64(u, m[j], &hi);
+            ca = ref_acc(t, i + j, lo, hi, ca);
+        }
+        if (ca) {
+            for (int k = i + 4; ca && k < 10; ++k) {
+                uint64_t s2 = t[k] + ca;
+                t[k] = s2;
+                ca = (s2 < ca) ? 1 : 0;
+            }
+        }
+    }
+    for (int i = 0; i < 4; ++i) r[i] = t[i + 4];
+    if (t[8] || ref_ge(r, m)) {
+        uint64_t bo = 0;
+        for (int i = 0; i < 4; ++i) bo = ref_subb(r[i], m[i], bo, &r[i]);
+    }
+}
+
+static uint64_t ref_mont_mp(const uint64_t m[4]) {
+    uint64_t x = 1;
+    for (int i = 0; i < 63; ++i) x = x * (2 - m[0] * x);
+    return (uint64_t)(-(int64_t)x);
+}
+
+static void test_sm2_mont_asm() {
+    std::printf("\n=== SM2 Montgomery ADX asm ===\n");
+    if (!jpssl::sm2_mont_asm_available()) {
+        std::printf("  SKIP: BMI2/ADX not available, sm2.cpp keeps C path\n");
+        return;
+    }
+    std::printf("  BMI2+ADX detected; asm path is active\n");
+
+    static const uint64_t P[4] = {
+        0xffffffffffffffffULL, 0xffffffff00000000ULL,
+        0xffffffffffffffffULL, 0xfffffffeffffffffULL
+    };
+    static const uint64_t N[4] = {
+        0x53bbf40939d54123ULL, 0x7203df6b21c6052bULL,
+        0xffffffffffffffffULL, 0xfffffffeffffffffULL
+    };
+    const uint64_t* mods[2] = { P, N };
+    const char* names[2] = { "SM2 prime p", "SM2 order n" };
+
+    std::mt19937_64 rng(0x5EED1234u);
+    int total = 0;
+
+    for (int mi = 0; mi < 2; ++mi) {
+        const uint64_t* m = mods[mi];
+        const uint64_t mp = ref_mont_mp(m);
+
+        for (int it = 0; it < 20000; ++it) {
+            uint64_t a[4], b[4];
+            do { for (int j = 0; j < 4; ++j) a[j] = rng(); } while (ref_ge(a, m));
+            do { for (int j = 0; j < 4; ++j) b[j] = rng(); } while (ref_ge(b, m));
+
+            uint64_t got[4], want[4];
+            jpssl::sm2_mont_mul(got, a, b, m, mp);
+            ref_mont_mul(want, a, b, m, mp);
+            if (!ref_eq(got, want) || ref_ge(got, m)) {
+                std::fprintf(stderr, "FAIL: %s random mul it=%d\n", names[mi], it);
+                std::exit(1);
+            }
+            ++total;
+
+            if ((it & 63) == 0) {
+                jpssl::sm2_mont_sqr(got, a, m, mp);
+                ref_mont_mul(want, a, a, m, mp);
+                if (!ref_eq(got, want) || ref_ge(got, m)) {
+                    std::fprintf(stderr, "FAIL: %s sqr it=%d\n", names[mi], it);
+                    std::exit(1);
+                }
+            }
+        }
+
+        // 边界值
+        uint64_t zero[4] = {0, 0, 0, 0};
+        uint64_t one[4]  = {1, 0, 0, 0};
+        uint64_t mm1[4], mm2[4], got[4], want[4];
+        uint64_t bo = ref_subb(m[0], 1, 0, &mm1[0]);
+        for (int j = 1; j < 4; ++j) bo = ref_subb(m[j], 0, bo, &mm1[j]);
+        bo = ref_subb(m[0], 2, 0, &mm2[0]);
+        for (int j = 1; j < 4; ++j) bo = ref_subb(m[j], 0, bo, &mm2[j]);
+
+        struct { const uint64_t* a; const uint64_t* b; const char* label; } edges[] = {
+            { zero, zero, "0*0" },
+            { one,  one,  "1*1" },
+            { mm1,  mm1,  "(m-1)^2" },
+            { mm2,  one,  "(m-2)*1" },
+            { mm1,  mm2,  "(m-1)*(m-2)" },
+        };
+        for (auto& e : edges) {
+            jpssl::sm2_mont_mul(got, e.a, e.b, m, mp);
+            ref_mont_mul(want, e.a, e.b, m, mp);
+            if (!ref_eq(got, want) || ref_ge(got, m)) {
+                std::fprintf(stderr, "FAIL: %s edge %s\n", names[mi], e.label);
+                std::exit(1);
+            }
+            ++total;
+        }
+        std::printf("  %s: 20000 random mul + edge cases OK\n", names[mi]);
+    }
+    std::printf("  asm vs portable CIOS: %d checks OK\n", total);
+}
+
 static void test_sm2() {
     std::printf("\n=== SM2 测试 ===\n");
 
@@ -443,6 +644,63 @@ static void test_sm2() {
     }
 }
 
+static void test_sm2_ecdh() {
+    std::printf("\n=== SM2 ECDH (TLS 1.3 / RFC 8998) ===\n");
+
+    // 双方密钥对
+    uint8_t pubA[64], privA[32], pubB[64], privB[32];
+    jpssl::sm2_keygen(pubA, privA);
+    jpssl::sm2_keygen(pubB, privB);
+
+    uint8_t sharedA[32], sharedB[32], sharedA65[32];
+    bool okA = jpssl::sm2_ecdh(sharedA, privA, pubB, 64);
+    bool okB = jpssl::sm2_ecdh(sharedB, privB, pubA, 64);
+    ASSERT(okA && okB, "SM2 ECDH both sides succeed");
+    ASSERT(std::memcmp(sharedA, sharedB, 32) == 0, "SM2 ECDH shared secret agrees");
+
+    // 65 字节 SEC1 非压缩输入与 64 字节裸输入结果一致
+    uint8_t pubB65[65];
+    pubB65[0] = 0x04;
+    std::memcpy(pubB65 + 1, pubB, 64);
+    bool okA65 = jpssl::sm2_ecdh(sharedA65, privA, pubB65, 65);
+    ASSERT(okA65, "SM2 ECDH accepts SEC1 65-byte public key");
+    ASSERT(std::memcmp(sharedA, sharedA65, 32) == 0, "SM2 ECDH 64B == 65B input");
+
+    // 已知答案：ecdh(d, G) 应等于 d*G 公钥的 X 坐标
+    static const uint8_t G_PUB[65] = {
+        0x04,
+        0x32,0xc4,0xae,0x2c,0x1f,0x19,0x81,0x19,0x5f,0x99,0x04,0x46,0x6a,0x39,0xc9,0x94,
+        0x8f,0xe3,0x0b,0xbf,0xf2,0x66,0x0b,0xe1,0x71,0x5a,0x45,0x89,0x33,0x4c,0x74,0xc7,
+        0xbc,0x37,0x36,0xa2,0xf4,0xf6,0x77,0x9c,0x59,0xbd,0xce,0xe3,0x6b,0x69,0x21,0x53,
+        0xd0,0xa9,0x87,0x7c,0xc6,0x2a,0x47,0x40,0x02,0xdf,0x32,0xe5,0x21,0x39,0xf0,0xa0
+    };
+    uint8_t sharedG[32], pubFromPriv[64];
+    jpssl::sm2_pub_from_priv(privA, pubFromPriv);
+    bool okG = jpssl::sm2_ecdh(sharedG, privA, G_PUB, 65);
+    ASSERT(okG, "SM2 ECDH with generator succeeds");
+    ASSERT(std::memcmp(sharedG, pubFromPriv, 32) == 0, "SM2 ECDH(d,G) == X(d*G)");
+
+    // 负例：非法私钥 / 非法公钥 / 非法长度
+    uint8_t zero_priv[32] = {};
+    uint8_t n_priv[32] = {
+        0xff,0xff,0xff,0xfe,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+        0x72,0x03,0xdf,0x6b,0x21,0xc6,0x05,0x2b,0x53,0xbb,0xf4,0x09,0x39,0xd5,0x41,0x23
+    };
+    uint8_t out[32];
+    ASSERT(!jpssl::sm2_ecdh(out, zero_priv, pubB, 64), "SM2 ECDH rejects d=0");
+    ASSERT(!jpssl::sm2_ecdh(out, n_priv, pubB, 64), "SM2 ECDH rejects d=n");
+    uint8_t bad_pub[64] = {};
+    ASSERT(!jpssl::sm2_ecdh(out, privA, bad_pub, 64), "SM2 ECDH rejects off-curve point");
+    ASSERT(!jpssl::sm2_ecdh(out, privA, pubB, 63), "SM2 ECDH rejects bad length");
+    uint8_t truncated33[33];
+    truncated33[0] = 0x04;
+    std::memcpy(truncated33 + 1, pubB, 32);
+    ASSERT(!jpssl::sm2_ecdh(out, privA, truncated33, 33), "SM2 ECDH rejects 0x04||X only");
+    uint8_t bad_priv[32];
+    std::memset(bad_priv, 0xff, 32);
+    ASSERT(!jpssl::sm2_ecdh(out, bad_priv, pubB, 64), "SM2 ECDH rejects d >= n");
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  Main
 // ═══════════════════════════════════════════════════════════════════════
@@ -454,7 +712,9 @@ int main() {
     test_sm3();
     test_sm4();
     test_sm4_gcm_ossl();
+    test_sm2_mont_asm();
     test_sm2();
+    test_sm2_ecdh();
 
     std::printf("\n=== ALL TESTS PASSED ===\n");
     return 0;

@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.9.13] — 2026-08-06
+
+### Added
+- **SM2 ECDH 公共接口**（`sm2_ecdh`，RFC 8998 / TLS 1.3）：对任意 SM2 公钥点做标量乘并输出 32 字节 X 坐标共享密钥；私钥校验 `0 < d < n`，公钥校验坐标范围与曲线方程（防无效曲线攻击），兼容 64 字节 `x||y` 与 65 字节 SEC1 `0x04||x||y` 输入。
+- **TLS 1.3 curveSM2 key_share（RFC 8998 §3.3）**：SM 套件客户端在 `supported_groups` 广告 `curveSM2`(0x0029) 并发送 65 字节 SEC1 非压缩 key_share（同时保留 X25519 兜底临时对）；服务端在 SM 套件下优先选择 curveSM2 并在 ServerHello 回发自身 SM2 key_share；ECDHE 共享密钥（X 坐标）按标准 TLS 1.3 HKDF 派生命密钥。客户端/服务端解析均兼容 64 字节裸点格式的第三方实现。
+- **RFC 8998 §3.2.1 SM2 ZA 合规**：TLS 1.3 CertificateVerify 的 SM2 签名/验签改用标识符 `"TLSv1.3+GM+Cipher+Suite"` 计算 ZA（`sign_scheme`/`verify_scheme` 新增可选 ZA 参数），与证书链签名使用的默认标识 `"1234567812345678"` 区分。
+
+### Fixed
+- **ClientHello key_share 线格式修正（RFC 8446 §4.2.8）**：`client_shares` 现在带 2 字节向量长度前缀（X25519/X448/SM2/PSK 路径统一修正），此前缺失向量长度、仅靠两端解析器自洽；修正后可与标准 TLS 1.3 实现互操作。
+- **X448 ServerHello key_share 扩展长度修正**：扩展长度 60、扩展总长 70（此前写为 62/68，差 2）。
+
+### Tests
+- `test_sm` 新增 SM2 ECDH：双方共享密钥一致、64/65 字节输入等价、`ecdh(d,G) == X(d*G)` 已知答案、非法私钥/曲线外点/错误长度全部拒绝。
+- `test_tls_sm` 新增线级断言：ClientHello 携带 curveSM2 组与 65 字节 key_share、ServerHello 回发 curveSM2、握手与记录层往返全部通过；`test_tls` 默认签名方案数量断言修正为 12（含 sm2_sm3）。
+- 回归：`test_sm`、`test_tls_sm`、`test_tls`（136 断言）、`test_tls448`、`test_tls_large_msg`、`test_tls_stability`、`test_tls_socket`、`test_x509` 全部通过。
+
+## [0.9.12] — 2026-08-06
+
+### Added
+- **SM2 域运算 ADX 汇编加速**：新增 `src/sm2_mont_asm_win.asm`（MSVC/MASM）与 `src/sm2_mont_asm.cpp`（GCC/Clang 内联汇编），4-limb 全展开 CIOS Montgomery 乘法，MULX (BMI2) + ADCX/ADOX 双进位链；运行时 CPUID 检测 BMI2+ADX 后由 `sm2.cpp` 自动分派，否则回退原 C 路径。实测 SM2 keygen/sign/verify 约 2.0–2.2×（约 105 µs/op，C 版约 194–232 µs）。
+
+### Tests
+- `test_sm` 新增 SM2 Montgomery asm 与可移植 CIOS 随机对拍：mod p / mod n 各 20000 组随机乘 + 边界值（0、1、m-1、m-2 等），汇编与参考实现完全一致且输出 < m；SM2 签名/验签与 TLS 国密套件（RFC 8998）回归全部通过。
+
 ## [0.9.11] — 2026-08-06
 
 ### Added

@@ -12,6 +12,7 @@
 #include "sm2.hpp"
 #include "sm3.hpp"
 #include "rand_os.hpp"
+#include "sm2_mont_asm.hpp"
 #include <cstring>
 #include <random>
 
@@ -285,12 +286,20 @@ static void mont_reduce(bn256* r, uint64_t t[10], const mod_ctx& M) {
 }
 
 static void mont_mul(bn256* r, const bn256* a, const bn256* b, const mod_ctx& M) {
+    if (sm2_mont_asm_available()) {
+        sm2_mont_mul(r->v, a->v, b->v, M.m->v, M.mp);
+        return;
+    }
     uint64_t t[10];
     mul_512(t, a, b);
     mont_reduce(r, t, M);
 }
 
 static void mont_sqr(bn256* r, const bn256* a, const mod_ctx& M) {
+    if (sm2_mont_asm_available()) {
+        sm2_mont_sqr(r->v, a->v, M.m->v, M.mp);
+        return;
+    }
     uint64_t t[10];
     sqr_512(t, a);
     mont_reduce(r, t, M);
@@ -655,6 +664,72 @@ void sm2_pub_from_priv(const uint8_t priv[SM2_KEY_SIZE],
                        uint8_t pub[SM2_PUB_SIZE]) {
     sm2_init_params();
     pub_from_priv_impl(priv, pub);
+}
+
+// 判断普通表示的点 (x, y) 是否在 SM2 曲线上：y^2 = x^3 - 3x + b (mod p)
+static bool point_on_curve(const bn256* x, const bn256* y) {
+    bn256 xm, ym, bm;
+    mont_mul(&xm, x, &MOD_P.R2, MOD_P);
+    mont_mul(&ym, y, &MOD_P.R2, MOD_P);
+    bn_from_be(&bm, S2_B_BYTES);
+    mont_mul(&bm, &bm, &MOD_P.R2, MOD_P);
+
+    bn256 lhs, rhs, t, t3;
+    mont_sqr(&lhs, &ym, MOD_P);          // lhs = y^2
+    mont_sqr(&t, &xm, MOD_P);            // t = x^2
+    mont_mul(&rhs, &t, &xm, MOD_P);      // rhs = x^3
+    t3 = xm;
+    mod_add(&t3, &t3, &xm, MOD_P);       // t3 = 2x
+    mod_add(&t3, &t3, &xm, MOD_P);       // t3 = 3x
+    mod_sub(&rhs, &rhs, &t3, MOD_P);     // rhs = x^3 - 3x
+    mod_add(&rhs, &rhs, &bm, MOD_P);     // rhs = x^3 - 3x + b
+    return bn_eq(&lhs, &rhs);
+}
+
+bool sm2_ecdh(uint8_t shared[SM2_KEY_SIZE],
+              const uint8_t priv[SM2_KEY_SIZE],
+              const uint8_t* peer_pub, size_t peer_pub_len) {
+    sm2_init_params();
+    if (shared == nullptr || priv == nullptr || peer_pub == nullptr) return false;
+
+    const uint8_t* px = nullptr;
+    const uint8_t* py = nullptr;
+    if (peer_pub_len == SM2_PUB_SIZE) {
+        px = peer_pub;
+        py = peer_pub + 32;
+    } else if (peer_pub_len == SM2_PUB_SIZE + 1 && peer_pub[0] == 0x04) {
+        px = peer_pub + 1;
+        py = peer_pub + 33;
+    } else {
+        return false;
+    }
+
+    bn256 d;
+    bn_from_be(&d, priv);
+    if (bn_is_zero(&d) || !bn_lt(&d, &N)) return false;
+
+    bn256 qx, qy;
+    bn_from_be(&qx, px);
+    bn_from_be(&qy, py);
+    if (!bn_lt(&qx, &P) || !bn_lt(&qy, &P)) return false;
+    if (!point_on_curve(&qx, &qy)) return false;
+
+    aff_point Q;
+    mont_mul(&Q.X, &qx, &MOD_P.R2, MOD_P);
+    mont_mul(&Q.Y, &qy, &MOD_P.R2, MOD_P);
+
+    aff_point table[8];
+    build_odd_table(table, &Q);
+    jac_point R;
+    wnaf_scalar_mult(&R, &d, table);
+    if (jac_is_inf(&R)) return false;
+
+    aff_point A;
+    batch_affine(&R, &A, 1);
+    bn256 x;
+    mont_mul(&x, &A.X, &ONE, MOD_P);     // from_mont
+    bn_to_be(&x, shared);
+    return true;
 }
 
 void sm2_sign(const uint8_t priv[SM2_KEY_SIZE],

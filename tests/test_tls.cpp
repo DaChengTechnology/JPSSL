@@ -569,7 +569,7 @@ static bool ch_find_sig_alg_ext(const std::vector<uint8_t>& ch, uint16_t want,
 void test_signature_algorithm_extensions() {
     // 默认列表包含全部支持的方案
     auto def = tls_default_signature_algorithms();
-    TEST("Default list size", def.size() == 11);
+    TEST("Default list size", def.size() == 12);
     TEST("Default includes ed25519", std::find(def.begin(), def.end(), 0x0807) != def.end());
     TEST("Default includes rsa_pss_rsae_sha256", std::find(def.begin(), def.end(), 0x0804) != def.end());
     TEST("Default includes rsa_pkcs1_sha384", std::find(def.begin(), def.end(), 0x0501) != def.end());

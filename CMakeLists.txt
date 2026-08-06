@@ -124,6 +124,7 @@ set(CPU_SOURCES
     src/aes_ccm.cpp
     src/ecdsa.cpp
     src/sm2.cpp
+    src/sm2_mont_asm.cpp
     src/sm3.cpp
     src/sm4.cpp
     src/base64.cpp
@@ -154,6 +155,7 @@ if(MSVC)
     list(APPEND CPU_SOURCES src/rsa_mont_asm_win.asm)
     list(APPEND CPU_SOURCES src/fe51_mul_adx.asm)
     list(APPEND CPU_SOURCES src/fe51_sq_adx.asm)
+    list(APPEND CPU_SOURCES src/sm2_mont_asm_win.asm)
     # SM3 标量压缩汇编
     list(APPEND CPU_SOURCES src/sm3_win.asm)
 endif()
@@ -285,6 +287,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
         # RSA Montgomery asm: 内联 asm 模板为 Intel 语法且含 "m" 内存操作数，
         # 需 -masm=intel 使 GCC 生成与模板一致的 Intel 形式操作数文本
         set_source_files_properties(src/rsa_mont_asm.cpp PROPERTIES
+            COMPILE_FLAGS "-masm=intel")
+        # SM2 Montgomery asm: 同上（GCC/Clang 内联汇编）
+        set_source_files_properties(src/sm2_mont_asm.cpp PROPERTIES
             COMPILE_FLAGS "-masm=intel")
         # RSA batch AVX2: 4-wide Montgomery multiplication
         set_source_files_properties(src/rsa_batch_avx2.cpp PROPERTIES
