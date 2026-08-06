@@ -1115,6 +1115,34 @@ sm2_keygen(sm2_cert->pub.sm2, sm2_cert->priv.sm2);
 
 
 
+#### 1.1 服务端直接加载 PEM / CSR 证书
+
+服务端证书不再需要手工拼 `tls_certificate` 结构体——`tls_certificate` 提供从 PEM 证书、PEM 私钥与 CSR 直接加载的工厂方法：
+
+```cpp
+// 从 PEM 证书 + PEM 私钥加载（私钥支持 PKCS#8 / PKCS#1 / SEC1 / RFC 8410 / 加密 PBES2）
+std::string err;
+auto cert = tls_certificate::from_pem_file("server.crt", "server.key", &err);
+if (!cert) { /* err 描述失败原因 */ }
+
+// 也可以直接传 PEM 字符串内容
+auto cert2 = tls_certificate::from_pem(cert_pem, key_pem);
+
+// 从 CSR + 私钥加载：subject 与公钥取自 CSR，私钥用于签名
+// cert_data 留空，握手时按 CSR 主体自动生成自签名证书
+auto cert3 = tls_certificate::from_csr_pem_file("server.csr", "server.key", &err);
+```
+
+加载后直接加入 `tls_certificate_manager` 即可用于服务端握手：
+
+```cpp
+tls_certificate_manager cert_mgr;
+cert_mgr.add_certificate("example.com", std::move(cert));
+```
+
+支持密钥类型：RSA-2048、Ed25519、Ed448、ECDSA P-256/P-384/P-521、SM2（RSA-4096 私钥暂不支持 TLS 证书签名）。
+
+
 #### 2. 多域名证书管理（SNI）
 
 
@@ -1213,9 +1241,21 @@ tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
 
 std::vector<uint8_t> client_finished;
 
+// 方式 A：cert_manager 按 SNI 查找预期服务器证书（兼容旧行为）
+
 tls13_process_server_flight(client, server_flight.data(), server_flight.size(),
 
                              client_finished, &cert_mgr);
+
+// 方式 B（推荐）：客户端直接走 x509 链验证——信任库提供 CA 根证书，
+// 握手时对服务端证书链执行 x509_verify_chain（含叶子证书主机名匹配），
+// 验证失败则握手失败。cert_manager 传 nullptr 即完全依赖信任库。
+
+auto trust = tls_trust_store::from_pem_file("ca.crt"); // 可含多张 CA 根
+
+tls13_process_server_flight(client, server_flight.data(), server_flight.size(),
+
+                             client_finished, nullptr, &trust);
 
 
 
@@ -1655,7 +1695,7 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 
 | `tls13_make_server_flight(s, ch, len, out, cert_mgr)` | 服务端处理 ClientHello，生成完整回包（SH+EE+Cert+CV+SF） |
 
-| `tls13_process_server_flight(s, data, len, out, cert_mgr)` | 客户端处理服务端回包，生成 Client Finished |
+| `tls13_process_server_flight(s, data, len, out, cert_mgr, trust)` | 客户端处理服务端回包，生成 Client Finished；`trust`（tls_trust_store*）提供时走 x509 链验证 |
 
 | `tls13_process_client_finished(s, data, len)` | 服务端验证客户端 Finished |
 
@@ -1738,6 +1778,18 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 | `tls_certificate_manager::get_certificate(domain)` | 根据域名获取证书（支持通配降级） |
 
 | `tls_certificate_manager::get_default_certificate()` | 获取默认证书 |
+
+| `tls_certificate::from_pem(cert_pem, key_pem, err)` | 从 PEM 证书 + PEM 私钥构造服务端证书 |
+
+| `tls_certificate::from_pem_file(cert_path, key_path, err)` | 从证书/私钥 PEM 文件构造 |
+
+| `tls_certificate::from_csr_pem(csr_pem, key_pem, err)` | 从 CSR + 私钥构造（握手时自动生成自签证书） |
+
+| `tls_certificate::from_csr_pem_file(csr_path, key_path, err)` | 从 CSR/私钥 PEM 文件构造 |
+
+| `tls_key_type_to_sig_alg(kt)` | KeyType → TLS 签名方案映射 |
+
+| `tls_trust_store` | 客户端信任库：持有 CA 根证书列表（from_pem / from_pem_file） |
 
 | `tls_parse_server_name(extensions, len)` | 从扩展中解析 SNI 域名 |
 
@@ -2135,6 +2187,8 @@ x509::KeyType kt = tls_sig_alg_to_key_type(cert->sig_alg);
 
 TLS 握手时若 `tls_certificate::cert_data` 为空，会自动生成 X.509 v3 DER 证书并发送给对端（`tls13_make_certificate` / `tls12_make_certificate` 均支持）。
 
+服务端证书可直接从 PEM / CSR 加载（见上文 [1.1 服务端直接加载 PEM / CSR 证书](#11-服务端直接加载-pem--csr-证书)）；客户端可通过 `tls_trust_store` 对服务端证书链执行 `x509_verify_chain` 验证（含叶子主机名匹配）。
+
 
 
 ## GPU 持久化池
@@ -2419,11 +2473,13 @@ ECDSA/SHA-256 的国密证书透明实现（参考 GM/T《证书透明规范》�
 
 
 
-- `tls::tls_connection`：客户端 `connect(host, port, trust_store)` 或服务端
+- `tls::tls_connection`：客户端 `connect(host, port, trust_store)`（trust_store
 
-  `server_handshake(cert_manager)` 完成 TLS 1.3 握手；`send` / `recv`
+  可为 `tls_certificate_manager*` 或 `tls_trust_store&`——后者对服务端证书链
 
-  收发加密应用数据。
+  执行 x509 验证）或服务端 `server_handshake(cert_manager)` 完成 TLS 1.3 握手；
+
+  `send` / `recv` 收发加密应用数据。
 
 - `tls::tls_listener`：`listen(port)` + `accept(conn, cert_manager)`，
 

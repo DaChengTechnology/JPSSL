@@ -417,9 +417,8 @@ bool tls_connection::more_data_pending() const {
 #endif
 }
 
-bool tls_connection::connect(const std::string& host, uint16_t port,
-                             const tls_certificate_manager* trust_store,
-                             std::string* error) {
+bool tls_connection::establish_tcp(const std::string& host, uint16_t port,
+                                    std::string* error) {
     close();
     if (!tls_socket_init(error)) return false;
 
@@ -473,10 +472,25 @@ bool tls_connection::connect(const std::string& host, uint16_t port,
     set_tcp_nodelay();
     reset_session_preserving_config(session_);
     session_.server_name = host;
-    return do_client_handshake(trust_store, error);
+    return true;
+}
+
+bool tls_connection::connect(const std::string& host, uint16_t port,
+                             const tls_certificate_manager* trust_store,
+                             std::string* error) {
+    if (!establish_tcp(host, port, error)) return false;
+    return do_client_handshake(trust_store, nullptr, error);
+}
+
+bool tls_connection::connect(const std::string& host, uint16_t port,
+                             const tls_trust_store& trust,
+                             std::string* error) {
+    if (!establish_tcp(host, port, error)) return false;
+    return do_client_handshake(nullptr, &trust, error);
 }
 
 bool tls_connection::do_client_handshake(const tls_certificate_manager* trust_store,
+                                         const tls_trust_store* trust,
                                          std::string* error) {
     handshake_guard hg(handshake_pending_);
     // 1. ClientHello（裸握手消息）→ 封装为明文 record 发送
@@ -513,7 +527,7 @@ bool tls_connection::do_client_handshake(const tls_certificate_manager* trust_st
     // 3. 处理服务端 flight，得到加密的 Client Finished record 并发送
     std::vector<uint8_t> client_finished;
     if (!tls13_process_server_flight(session_, flight.data(), flight.size(),
-                                     client_finished, trust_store)) {
+                                     client_finished, trust_store, trust)) {
         set_err(error, "tls13_process_server_flight failed");
         return false;
     }

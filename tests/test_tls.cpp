@@ -1091,6 +1091,199 @@ void test_sign_scheme_cert_verify_context() {
                               content.data(), content.size(), raw_sig, raw_len));
 }
 
+static const char* SERVER_CERT_PEM =
+R"PEM(
+-----BEGIN CERTIFICATE-----
+MIHiMIGVAhQ3QcBTRWB5/0iXP6dBWv6L09fu1zAFBgMrZXAwFDESMBAGA1UEAwwJ
+bG9jYWxob3N0MB4XDTI2MDgwNjExNDIyMFoXDTM2MDgwMzExNDIyMFowFDESMBAG
+A1UEAwwJbG9jYWxob3N0MCowBQYDK2VwAyEA4iYoNNrvHeItoFmTGVDkodw8CdKs
+XDWpnIvHQ/DtzNswBQYDK2VwA0EACoJvkELy68lHdU97+PBNxNgefWiEzBkP8ISU
+LE7kbfXfeBMQADx99HX7vOI3h53SseMChzTe7SUKRHcxY1DgAQ==
+-----END CERTIFICATE-----
+)PEM";
+static const char* SERVER_KEY_PEM =
+R"PEM(
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIDYkFyRVsdWOvuF3Q4Y0twsB7pTfoUW/ggunW6tT4Q3W
+-----END PRIVATE KEY-----
+)PEM";
+static const char* SERVER_CSR_PEM =
+R"PEM(
+-----BEGIN CERTIFICATE REQUEST-----
+MIGTMEcCAQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MCowBQYDK2VwAyEA4iYoNNrv
+HeItoFmTGVDkodw8CdKsXDWpnIvHQ/DtzNugADAFBgMrZXADQQBgxWcoFgUMaVQv
+Aq9VUoYMwqFoqGM/DoxnsSyj2eV8O+y5V7TZ/iazPDP+kmd+/vmE7RKxg4jqVlHV
+YF7XpWYN
+-----END CERTIFICATE REQUEST-----
+)PEM";
+static const char* CA_CERT_PEM =
+R"PEM(
+-----BEGIN CERTIFICATE-----
+MIIBODCB66ADAgECAhRk2rBvarvzp+G3+u2YLA11bUgYmDAFBgMrZXAwEjEQMA4G
+A1UEAwwHVGVzdCBDQTAeFw0yNjA4MDYxMTQyMjBaFw0zNjA4MDMxMTQyMjBaMBIx
+EDAOBgNVBAMMB1Rlc3QgQ0EwKjAFBgMrZXADIQBuLZ82R06cJi7HWkHgaax10zOq
++8Z4cTlcN+K4voQ7wqNTMFEwHQYDVR0OBBYEFAkYXk9nD3iOJsx/A2kMzQBpCrVB
+MB8GA1UdIwQYMBaAFAkYXk9nD3iOJsx/A2kMzQBpCrVBMA8GA1UdEwEB/wQFMAMB
+Af8wBQYDK2VwA0EAgv7CZN/t/4lDEZ9weJ+LJGmHZrhykQWIFnNp5neKK/Zn0vSm
+vmxoNgNVpj6/0wqwFiSgUo7dXN8tDXqkoyeOAQ==
+-----END CERTIFICATE-----
+)PEM";
+static const char* LEAF_CERT_PEM =
+R"PEM(
+-----BEGIN CERTIFICATE-----
+MIIBPzCB8qADAgECAhRB5WGBrrfR4zpwyLjjoGT7Zyv9LTAFBgMrZXAwEjEQMA4G
+A1UEAwwHVGVzdCBDQTAeFw0yNjA4MDYxMTQyMjBaFw0zNjA4MDMxMTQyMjBaMBQx
+EjAQBgNVBAMMCWxvY2FsaG9zdDAqMAUGAytlcAMhAOImKDTa7x3iLaBZkxlQ5KHc
+PAnSrFw1qZyLx0Pw7czbo1gwVjAUBgNVHREEDTALgglsb2NhbGhvc3QwHQYDVR0O
+BBYEFMHpNbL5goC1YSf6IDu0EDZpfiXjMB8GA1UdIwQYMBaAFAkYXk9nD3iOJsx/
+A2kMzQBpCrVBMAUGAytlcANBAPfsOG5xhxhrBX92rQDTLxXjuotD3Ois5A6/OPTY
+UJ7mSNvkpNZPN32t2DizB7vMu0hIU6HBOR8yncuZcyFU2gQ=
+-----END CERTIFICATE-----
+)PEM";
+static const char* WRONG_CA_PEM =
+R"PEM(
+-----BEGIN CERTIFICATE-----
+MIIBOjCB7aADAgECAhQMubxwFkp+fp75RasIsKScp35nNzAFBgMrZXAwEzERMA8G
+A1UEAwwIV3JvbmcgQ0EwHhcNMjYwODA2MTE1MjM5WhcNMzYwODAzMTE1MjM5WjAT
+MREwDwYDVQQDDAhXcm9uZyBDQTAqMAUGAytlcAMhAI0oTX+lXP7KNk2nQcbvpDCw
+N+7b/UEi0PB8isBYHsQTo1MwUTAdBgNVHQ4EFgQUV6I2dnZY0MOCL1R3BH+re2tG
+ItwwHwYDVR0jBBgwFoAUV6I2dnZY0MOCL1R3BH+re2tGItwwDwYDVR0TAQH/BAUw
+AwEB/zAFBgMrZXADQQB4hbTRr/jbAPDQwM03q7BWm3XaXmKprJRHzdieUWq/WvN8
+EmG+mpwGw9DQxDOvM4n3Y3DDCktRPDNJIelniRIB
+-----END CERTIFICATE-----
+)PEM";
+
+// ========================================================================
+//  服务端 PEM / CSR 证书加载
+// ========================================================================
+
+void test_tls_cert_from_pem() {
+    auto cert = tls_certificate::from_pem(SERVER_CERT_PEM, SERVER_KEY_PEM);
+    TEST("from_pem 构造成功", cert != nullptr);
+    if (!cert) return;
+    TEST("from_pem subject_name=localhost", cert->subject_name == "localhost");
+    TEST("from_pem sig_alg=ED25519", cert->sig_alg == SignatureAlgorithm::ED25519);
+    TEST("from_pem cert_data 非空", !cert->cert_data.empty());
+    const uint8_t msg[] = "PEM certificate signing test";
+    uint8_t sig[64]; size_t sig_len = 0;
+    TEST("from_pem sign 成功", cert->sign(msg, sizeof(msg) - 1, sig, sig_len));
+    TEST("from_pem verify 成功", cert->verify(msg, sizeof(msg) - 1, sig, sig_len));
+    // 错误输入
+    std::string err;
+    auto bad = tls_certificate::from_pem("garbage", SERVER_KEY_PEM, &err);
+    TEST("无效证书 PEM 失败", bad == nullptr);
+    TEST("错误信息已填充", !err.empty());
+}
+
+void test_tls_cert_from_csr_pem() {
+    auto cert = tls_certificate::from_csr_pem(SERVER_CSR_PEM, SERVER_KEY_PEM);
+    TEST("from_csr_pem 构造成功", cert != nullptr);
+    if (!cert) return;
+    TEST("from_csr_pem subject_name=localhost", cert->subject_name == "localhost");
+    TEST("from_csr_pem sig_alg=ED25519", cert->sig_alg == SignatureAlgorithm::ED25519);
+    const uint8_t msg[] = "CSR certificate signing test";
+    uint8_t sig[64]; size_t sig_len = 0;
+    TEST("from_csr_pem sign 成功", cert->sign(msg, sizeof(msg) - 1, sig, sig_len));
+    TEST("from_csr_pem verify 成功", cert->verify(msg, sizeof(msg) - 1, sig, sig_len));
+}
+
+// ========================================================================
+//  服务端 PEM 加载 + 客户端 x509 链验证（TLS 1.3 完整握手）
+// ========================================================================
+
+void test_tls13_pem_server_x509_verify() {
+    // 服务端：CA 签发的 leaf 证书 + 私钥（从 PEM 加载）
+    auto srv_cert = tls_certificate::from_pem(LEAF_CERT_PEM, SERVER_KEY_PEM);
+    TEST("服务端 from_pem(leaf) 构造成功", srv_cert != nullptr);
+    if (!srv_cert) return;
+    tls_certificate_manager cert_mgr;
+    cert_mgr.add_certificate("localhost", std::move(srv_cert));
+
+    // 客户端：信任库仅含 CA 根，x509 验证应通过
+    tls_session client;
+    client.server_name = "localhost";
+    std::vector<uint8_t> client_hello;
+    TEST("客户端 make ClientHello", tls13_make_client_hello(client, client_hello));
+
+    tls_session server;
+    std::vector<uint8_t> server_flight;
+    TEST("服务端 make ServerFlight", tls13_make_server_flight(server, client_hello.data(),
+                                                              client_hello.size(),
+                                                              server_flight, cert_mgr));
+
+    auto trust = tls_trust_store::from_pem(CA_CERT_PEM);
+    TEST("trust store 解析 CA", trust.count() >= 1);
+
+    std::vector<uint8_t> client_finished;
+    TEST("客户端 x509 链验证通过", tls13_process_server_flight(client, server_flight.data(),
+                                                               server_flight.size(),
+                                                               client_finished, nullptr, &trust));
+    TEST("客户端 Finished 生成", !client_finished.empty());
+    TEST("服务端验证 Client Finished", tls13_process_client_finished(server, client_finished.data(),
+                                                                     client_finished.size()));
+
+    // 应用数据往返
+    const uint8_t app_data[] = "PEM + x509 verify handshake OK";
+    auto enc = tls_encrypt(client, ContentType::APPLICATION_DATA, app_data, sizeof(app_data) - 1);
+    ContentType ct; std::vector<uint8_t> dec;
+    TEST("服务端解密应用数据", tls_decrypt(server, enc.data(), enc.size(), ct, dec));
+    TEST("内容一致", dec.size() == sizeof(app_data) - 1 &&
+                    std::memcmp(dec.data(), app_data, sizeof(app_data) - 1) == 0);
+}
+
+void test_tls13_csr_server_handshake() {
+    // 服务端从 CSR + 私钥加载（cert_data 留空，握手时自动生成自签证书）
+    auto srv_cert = tls_certificate::from_csr_pem(SERVER_CSR_PEM, SERVER_KEY_PEM);
+    TEST("服务端 from_csr_pem 构造成功", srv_cert != nullptr);
+    if (!srv_cert) return;
+    tls_certificate_manager cert_mgr;
+    cert_mgr.add_certificate("localhost", std::move(srv_cert));
+
+    tls_session client;
+    client.server_name = "localhost";
+    std::vector<uint8_t> client_hello;
+    TEST("客户端 make ClientHello", tls13_make_client_hello(client, client_hello));
+
+    tls_session server;
+    std::vector<uint8_t> server_flight;
+    TEST("服务端 make ServerFlight", tls13_make_server_flight(server, client_hello.data(),
+                                                              client_hello.size(),
+                                                              server_flight, cert_mgr));
+
+    std::vector<uint8_t> client_finished;
+    // CSR 自签证书：用 cert_manager 预期证书模式完成握手
+    TEST("客户端处理 ServerFlight", tls13_process_server_flight(client, server_flight.data(),
+                                                                 server_flight.size(),
+                                                                 client_finished, &cert_mgr));
+    TEST("客户端 Finished 生成", !client_finished.empty());
+    TEST("服务端验证 Client Finished", tls13_process_client_finished(server, client_finished.data(),
+                                                                     client_finished.size()));
+}
+
+void test_tls13_client_x509_verify_reject() {
+    // 服务端：CA 签发的 leaf（与上例相同）
+    auto srv_cert = tls_certificate::from_pem(LEAF_CERT_PEM, SERVER_KEY_PEM);
+    if (!srv_cert) return;
+    tls_certificate_manager cert_mgr;
+    cert_mgr.add_certificate("localhost", std::move(srv_cert));
+
+    tls_session client;
+    client.server_name = "localhost";
+    std::vector<uint8_t> client_hello;
+    tls13_make_client_hello(client, client_hello);
+
+    tls_session server;
+    std::vector<uint8_t> server_flight;
+    tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                             server_flight, cert_mgr);
+
+    // 客户端信任库用错误 CA → x509 链验证必须失败
+    auto trust = tls_trust_store::from_pem(WRONG_CA_PEM);
+    std::vector<uint8_t> client_finished;
+    TEST("错误 CA 拒绝握手", !tls13_process_server_flight(client, server_flight.data(),
+                                                           server_flight.size(),
+                                                           client_finished, nullptr, &trust));
+}
 
 // ========================================================================
 //  入口
@@ -1122,6 +1315,11 @@ int main(int argc, char** argv) {
     RUN_TEST(test_tls13_cert_verify_rfc8446_content);
     RUN_TEST(test_tls12_skx_scheme_selection);
     RUN_TEST(test_sign_scheme_cert_verify_context);
+    RUN_TEST(test_tls_cert_from_pem);
+    RUN_TEST(test_tls_cert_from_csr_pem);
+    RUN_TEST(test_tls13_pem_server_x509_verify);
+    RUN_TEST(test_tls13_client_x509_verify_reject);
+    RUN_TEST(test_tls13_csr_server_handshake);
 
     return test_summary();
 }

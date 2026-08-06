@@ -241,6 +241,13 @@ public:
                  const tls_certificate_manager* trust_store = nullptr,
                  std::string* error = nullptr);
 
+    /// 客户端：TCP 连接 + TLS 1.3 客户端握手，按 x509 信任库验证服务端证书链。
+    /// trust 提供 CA 根证书时，握手会对服务端证书链执行 x509_verify_chain
+    /// （含叶子证书主机名匹配），验证失败则握手失败。
+    bool connect(const std::string& host, uint16_t port,
+                 const tls_trust_store& trust,
+                 std::string* error = nullptr);
+
     /// 服务端：对已建立的 TCP 连接执行 TLS 1.3 服务端握手。
     /// 通常由 tls_listener::accept 调用；也可对原生 socket 手动设置后调用。
     bool server_handshake(const tls_certificate_manager& cert_manager,
@@ -311,7 +318,11 @@ public:
 private:
     friend class tls_listener;
 
-    bool do_client_handshake(const tls_certificate_manager* trust_store, std::string* error);
+    bool do_client_handshake(const tls_certificate_manager* trust_store,
+                             const tls_trust_store* trust,
+                             std::string* error);
+    /// 建立 TCP 连接并初始化会话（connect 两个重载共用）。
+    bool establish_tcp(const std::string& host, uint16_t port, std::string* error);
     bool do_server_handshake(const tls_certificate_manager& cert_manager, std::string* error);
 
     bool write_all(const uint8_t* data, size_t len, std::string* error);
