@@ -1,4 +1,5 @@
 #include "sha3.hpp"
+#include "cpu_features.hpp"
 #include <cstring>
 namespace jpssl {
 
@@ -15,7 +16,7 @@ static const int ROTS[5][5]={
 
 static inline uint64_t ROL64(uint64_t x,int n){return(x<<n)|(x>>(64-n));}
 
-static void keccak_f1600(uint64_t s[25]){
+void keccak_f1600_scalar(uint64_t s[25]){
     for(int r=0;r<24;++r){
         uint64_t C[5];
         for(int x=0;x<5;++x)C[x]=s[x]^s[x+5]^s[x+10]^s[x+15]^s[x+20];
@@ -37,10 +38,18 @@ static void keccak_f1600(uint64_t s[25]){
     }
 }
 
+// 运行时分派：FEAT_SHA3 可用时由 sha3_neon.cpp 的静态初始化接管该指针
+void (*keccak_f1600_ptr)(uint64_t[25]) = nullptr;
+static bool init_cpu(){
+    if(!keccak_f1600_ptr) keccak_f1600_ptr = keccak_f1600_scalar;
+    return true;
+}
+static bool _cpu_init = init_cpu();
+
 static void keccak_absorb(sha3_ctx*ctx){
     uint8_t*st=(uint8_t*)ctx->state;
     for(size_t i=0;i<ctx->rate_bytes;++i)st[i]^=ctx->buf[i];
-    keccak_f1600(ctx->state);
+    keccak_f1600_ptr(ctx->state);
 }
 
 void sha3_256_init(sha3_ctx*ctx){
@@ -68,7 +77,7 @@ void sha3_update(sha3_ctx*ctx,const uint8_t*data,size_t len){
     while(len>=rate){
         uint8_t*st=(uint8_t*)ctx->state;
         for(size_t i=0;i<rate;++i)st[i]^=data[i];
-        keccak_f1600(ctx->state);
+        keccak_f1600_ptr(ctx->state);
         data+=rate;len-=rate;
     }
     if(len>0){memcpy(ctx->buf,data,len);ctx->buf_len=len;}
@@ -80,7 +89,7 @@ void sha3_final(sha3_ctx*ctx,uint8_t digest[SHA3_512_DIGEST_SIZE]){
     ctx->buf[ctx->rate_bytes-1]=0x80;
     uint8_t*st=(uint8_t*)ctx->state;
     for(size_t i=0;i<ctx->rate_bytes;++i)st[i]^=ctx->buf[i];
-    keccak_f1600(ctx->state);
+    keccak_f1600_ptr(ctx->state);
     memcpy(digest,st,ctx->output_len);
 }
 
@@ -105,7 +114,7 @@ void shake_update(sha3_ctx*ctx,const uint8_t*data,size_t len){
     while(len>=rate){
         uint8_t*st=(uint8_t*)ctx->state;
         for(size_t i=0;i<rate;++i)st[i]^=data[i];
-        keccak_f1600(ctx->state);
+        keccak_f1600_ptr(ctx->state);
         data+=rate;len-=rate;
     }
     if(len>0){memcpy(ctx->buf,data,len);ctx->buf_len=len;}
@@ -116,7 +125,7 @@ static void shake_pad_and_permute(sha3_ctx*ctx){
     ctx->buf[ctx->rate_bytes-1]=0x80;
     uint8_t*st=(uint8_t*)ctx->state;
     for(size_t i=0;i<ctx->rate_bytes;++i)st[i]^=ctx->buf[i];
-    keccak_f1600(ctx->state);
+    keccak_f1600_ptr(ctx->state);
     ctx->output_len=1;
     ctx->buf_len=0;
     memcpy(ctx->buf,ctx->state,ctx->rate_bytes);
@@ -127,7 +136,7 @@ void shake_squeeze(sha3_ctx*ctx,uint8_t* out,size_t outlen){
     size_t off=ctx->buf_len;
     while(outlen>0){
         if(off>=rate){
-            keccak_f1600(ctx->state);
+            keccak_f1600_ptr(ctx->state);
             memcpy(ctx->buf,ctx->state,rate);
             off=0;
         }

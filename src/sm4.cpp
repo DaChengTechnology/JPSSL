@@ -144,6 +144,11 @@ void sm4_init(sm4_ctx* ctx, const uint8_t key[SM4_KEY_SIZE]) {
 
 // ── 块加密/解密 ─────────────────────────────────────────────────────────
 
+// ARM NEON (FEAT_SM4) 加速入口；默认 nullptr（标量）。
+// 由 src/sm4_neon.cpp 在支持 SM4 指令的机器上静态接管。
+void (*sm4_encrypt_fn)(const uint32_t rk[32], const uint8_t[16], uint8_t[16]) = nullptr;
+void (*sm4_decrypt_fn)(const uint32_t rk[32], const uint8_t[16], uint8_t[16]) = nullptr;
+
 // 核心变换（加密：正向轮密钥；解密：反向轮密钥）
 static void sm4_transform(const uint32_t rk[32], const uint8_t in[SM4_BLOCK_SIZE],
                            uint8_t out[SM4_BLOCK_SIZE]) {
@@ -163,6 +168,10 @@ static void sm4_transform(const uint32_t rk[32], const uint8_t in[SM4_BLOCK_SIZE
 
 void sm4_encrypt_block(const sm4_ctx* ctx, const uint8_t plain[SM4_BLOCK_SIZE],
                         uint8_t cipher[SM4_BLOCK_SIZE]) {
+    if (sm4_encrypt_fn) {
+        sm4_encrypt_fn(ctx->rk, plain, cipher);
+        return;
+    }
     sm4_transform(ctx->rk, plain, cipher);
 }
 
@@ -184,6 +193,10 @@ static void sm4_transform_decrypt(const uint32_t rk[32], const uint8_t in[SM4_BL
 
 void sm4_decrypt_block(const sm4_ctx* ctx, const uint8_t cipher[SM4_BLOCK_SIZE],
                         uint8_t plain[SM4_BLOCK_SIZE]) {
+    if (sm4_decrypt_fn) {
+        sm4_decrypt_fn(ctx->rk, cipher, plain);
+        return;
+    }
     sm4_transform_decrypt(ctx->rk, cipher, plain);
 }
 

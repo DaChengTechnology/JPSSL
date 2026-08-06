@@ -7,6 +7,11 @@ inline constexpr size_t SHA3_256_DIGEST_SIZE=32, SHA3_384_DIGEST_SIZE=48, SHA3_5
 inline constexpr size_t SHAKE128_RATE=168, SHAKE256_RATE=136;
 struct sha3_ctx{uint64_t state[25];uint8_t buf[200];size_t rate_bytes,output_len,buf_len;};
 
+#if defined(JP_NEON) && defined(__aarch64__)
+/// ARMv8.2 SHA-3 扩展加速的 Keccak-f[1600] 置换（sha3_neon.cpp，FEAT_SHA3）
+void keccak_f1600_neon(uint64_t s[25]);
+#endif
+
 // 固定输出 SHA3 (FIPS 202 §6.1)
 void sha3_256_init(sha3_ctx*);
 void sha3_384_init(sha3_ctx*);

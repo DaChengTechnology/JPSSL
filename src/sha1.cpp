@@ -25,7 +25,7 @@ const uint32_t K[80] = {
 
 inline uint32_t ROL(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
 
-void sha1_transform_cpu(uint32_t h[5], const uint8_t data[64]) {
+void sha1_transform_scalar(uint32_t h[5], const uint8_t data[64]) {
     uint32_t w[80];
     for (int i = 0; i < 16; ++i)
         w[i] = ((uint32_t)data[i * 4] << 24) | ((uint32_t)data[i * 4 + 1] << 16) |
@@ -46,17 +46,28 @@ void sha1_transform_cpu(uint32_t h[5], const uint8_t data[64]) {
     h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e;
 }
 
+/// 单块压缩分派：ARMv8 SHA-1 扩展可用时走 NEON，否则标量
+void sha1_transform(uint32_t h[5], const uint8_t data[64]) {
+#if defined(JP_NEON) && defined(__aarch64__)
+    if (cpu_has_arm_sha1()) {
+        sha1_transform_neon(h, data);
+        return;
+    }
+#endif
+    sha1_transform_scalar(h, data);
+}
+
 void sha1_finalize_tail(sha1_ctx* ctx) {
     const uint64_t bits = ctx->len * 8;
     ctx->buf[ctx->buf_len++] = 0x80;
     if (ctx->buf_len > 56) {
         while (ctx->buf_len < 64) ctx->buf[ctx->buf_len++] = 0;
-        sha1_transform_cpu(ctx->h, ctx->buf);
+        sha1_transform(ctx->h, ctx->buf);
         ctx->buf_len = 0;
     }
     while (ctx->buf_len < 56) ctx->buf[ctx->buf_len++] = 0;
     for (int i = 7; i >= 0; --i) ctx->buf[ctx->buf_len++] = (uint8_t)(bits >> (i * 8));
-    sha1_transform_cpu(ctx->h, ctx->buf);
+    sha1_transform(ctx->h, ctx->buf);
 }
 
 } // namespace
@@ -80,9 +91,9 @@ void sha1_update(sha1_ctx* ctx, const uint8_t* data, size_t len) {
     }
     size_t off = 64 - ctx->buf_len;
     std::memcpy(ctx->buf + ctx->buf_len, data, off);
-    sha1_transform_cpu(ctx->h, ctx->buf);
+    sha1_transform(ctx->h, ctx->buf);
     while (off + 64 <= len) {
-        sha1_transform_cpu(ctx->h, data + off);
+        sha1_transform(ctx->h, data + off);
         off += 64;
     }
     ctx->buf_len = len - off;

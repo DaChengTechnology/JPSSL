@@ -1,12 +1,22 @@
 // ECDSA P-256 (secp256r1 / prime256v1) 完整实现
 // 对外字节序：公钥/签名/私钥均为大端（标准格式）
 // 内部 uint256 使用 little-endian limbs[0..3]（limbs[0] 为最低位）
+//
+// 性能：域运算（P-256 4×64 位 / P-384 6×64 位）全程在 Montgomery 域
+// （R = 2^(64N)）中运行，CIOS 乘法/对称平方/快速幂与 sm2.cpp 同源；
+// 仅在标量乘入口（to_mont）与仿射化输出（from_mont）做进出域转换。
+// GCC/Clang 的 __uint128_t 在 AArch64 上编译为 umulh/adc 序列。
 #include "ecdsa.hpp"
 #include "sha256.hpp"
 #include "sha512.hpp"
 #include "rand_os.hpp"
 #include <cstring>
 #include <random>
+
+#ifdef _MSC_VER
+#include <intrin.h>
+#pragma intrinsic(_umul128, _addcarry_u64, _subborrow_u64)
+#endif
 
 namespace jpssl {
 
@@ -39,8 +49,9 @@ static const uint8_t N_BYTES[32] = {
 
 struct uint256 { uint64_t v[4]; };
 
-// 512 位结果
-struct uint512 { uint64_t v[8]; };
+// 全局域参数（init_params 填充）
+static uint256 G_P, G_N, G_Gx, G_Gy;
+static bool g_init = false;
 
 static void u256_from_be(uint256* r, const uint8_t b[32]) {
     for (int i = 0; i < 4; ++i) {
@@ -113,66 +124,245 @@ static uint64_t u256_shl1(uint256* r, const uint256* a) {
     return carry;
 }
 
-// r = a * b (512 位)
-static void u256_mul_full(uint512* r, const uint256* a, const uint256* b) {
-    for (int i = 0; i < 8; ++i) r->v[i] = 0;
-    for (int i = 0; i < 4; ++i) {
-        uint64_t carry = 0;
-        for (int j = 0; j < 4; ++j) {
-            __uint128_t t = (__uint128_t)a->v[i] * b->v[j] + r->v[i+j] + carry;
-            r->v[i+j] = (uint64_t)t;
-            carry = (uint64_t)(t >> 64);
+// ════════════════════════════════════════════════════════════════════
+//  Montgomery 域（R = 2^(64N)）CIOS 乘法 / 对称平方 / 快速幂
+//  与 sm2.cpp 已验证实现同源；GCC/Clang 的 __uint128_t 在 AArch64 上
+//  编译为 umulh/adc 序列，MSVC 经 jp_uint128（_umul128/_addcarry_u64）
+// ════════════════════════════════════════════════════════════════════
+
+// 64x64 -> 128 位原语
+static inline void mul64(uint64_t a, uint64_t b, uint64_t* lo, uint64_t* hi) {
+#ifdef _MSC_VER
+    *lo = _umul128(a, b, hi);
+#else
+    __uint128_t t = (__uint128_t)a * b;
+    *lo = (uint64_t)t;
+    *hi = (uint64_t)(t >> 64);
+#endif
+}
+
+// 把 (lo, hi) 累加到 t[pos..]，返回进位链高字（与 sm2.cpp acc_school 一致）
+template <int T>
+static inline uint64_t mont_acc(uint64_t* t, int pos, uint64_t lo, uint64_t hi,
+                                uint64_t cin) {
+#ifdef _MSC_VER
+    unsigned char cf1 = _addcarry_u64(0, lo, t[pos], &lo);
+    unsigned char cf2 = _addcarry_u64(0, lo, cin, &lo);
+    t[pos] = lo;
+    uint64_t old = hi;
+    hi = old + (uint64_t)cf1 + (uint64_t)cf2;
+    if (hi < old) {  // 高字回绕：向 t[pos+2..] 传播 +1
+        for (int k = pos + 2; k < T; ++k) {
+            uint64_t s2 = t[k] + 1;
+            t[k] = s2;
+            if (s2) break;
         }
-        r->v[i+4] = carry;
+    }
+    return hi;
+#else
+    __uint128_t s = (__uint128_t)t[pos] + lo + cin;
+    t[pos] = (uint64_t)s;
+    uint64_t cf = (uint64_t)(s >> 64);
+    __uint128_t s2 = (__uint128_t)hi + cf;
+    if (s2 >> 64) {
+        for (int k = pos + 2; k < T; ++k) {
+            uint64_t s3 = t[k] + 1;
+            t[k] = s3;
+            if (s3) break;
+        }
+    }
+    return (uint64_t)s2;
+#endif
+}
+
+// t = a*b（学校乘法，t 容量 2N+2）
+template <int N>
+static void mont_mul_school(uint64_t* t, const uint64_t* a, const uint64_t* b) {
+    const int T = 2 * N + 2;
+    for (int k = 0; k < T; ++k) t[k] = 0;
+    for (int i = 0; i < N; ++i) {
+        uint64_t ca = 0;
+        for (int j = 0; j < N; ++j) {
+            uint64_t lo, hi;
+            mul64(a[i], b[j], &lo, &hi);
+            ca = mont_acc<T>(t, i + j, lo, hi, ca);
+        }
+        if (ca) {
+            for (int k = i + N; ca && k < T; ++k) {
+                uint64_t s2 = t[k] + ca;
+                t[k] = s2;
+                ca = (s2 < ca) ? 1 : 0;
+            }
+        }
     }
 }
 
-// ════════════════════════════════════════════════════════════════════
-//  模运算 (参数化模数 m, 正确性优先)
-// ════════════════════════════════════════════════════════════════════
-
-// r = (512 位 a) mod m, 二进制长除法
-// acc 使用 5 limbs (320 位) 防止左移溢出丢失进位
-static void mod_reduce_512(uint256* r, const uint512* a, const uint256* m) {
-    uint64_t acc[5] = {0,0,0,0,0};
-    uint64_t mlimb[5] = {m->v[0], m->v[1], m->v[2], m->v[3], 0};
-    for (int i = 7; i >= 0; --i) {
-        for (int bit = 63; bit >= 0; --bit) {
-            // acc = acc << 1 (320 位)
-            uint64_t carry = (a->v[i] >> bit) & 1;
-            for (int j = 0; j < 5; ++j) {
-                uint64_t nc = acc[j] >> 63;
-                acc[j] = (acc[j] << 1) | carry;
-                carry = nc;
+// t = a*a（对称平方，N(N+1)/2 次 mul64）
+template <int N>
+static void mont_sqr_school(uint64_t* t, const uint64_t* a) {
+    const int T = 2 * N + 2;
+    for (int k = 0; k < T; ++k) t[k] = 0;
+    for (int i = 0; i < N; ++i) {
+        uint64_t lo, hi;
+        mul64(a[i], a[i], &lo, &hi);
+        uint64_t ca = mont_acc<T>(t, 2 * i, lo, hi, 0);
+        if (ca) {
+            for (int k = 2 * i + 1; ca && k < T; ++k) {
+                uint64_t s2 = t[k] + ca;
+                t[k] = s2;
+                ca = (s2 < ca) ? 1 : 0;
             }
-            // 如果 acc >= m (比较 320 位，但 m 只有 256 位，acc[4] 为高 limb)
-            bool ge = false;
-            if (acc[4] > 0) ge = true;
-            else {
-                for (int j = 3; j >= 0; --j) {
-                    if (acc[j] > mlimb[j]) { ge = true; break; }
-                    if (acc[j] < mlimb[j]) { ge = false; break; }
-                    if (j == 0) ge = true; // 相等也减
+        }
+        for (int j = i + 1; j < N; ++j) {
+            mul64(a[i], a[j], &lo, &hi);
+            // 2 * a[i] * a[j]（翻倍后最高位单独传播）
+            uint64_t top = hi >> 63;
+            uint64_t c0 = lo >> 63;
+            lo <<= 1;
+            hi = (hi << 1) | c0;
+            ca = mont_acc<T>(t, i + j, lo, hi, 0);
+            if (ca) {
+                for (int k = i + j + 1; ca && k < T; ++k) {
+                    uint64_t s2 = t[k] + ca;
+                    t[k] = s2;
+                    ca = (s2 < ca) ? 1 : 0;
                 }
             }
-            if (ge) {
-                // acc -= m
-                uint64_t borrow = 0;
-                for (int j = 0; j < 5; ++j) {
-                    __uint128_t t = (__uint128_t)acc[j] - mlimb[j] - borrow;
-                    acc[j] = (uint64_t)t;
-                    borrow = (t >> 64) ? 1 : 0;
+            if (top) {
+                for (int k = i + j + 2; k < T; ++k) {
+                    uint64_t s2 = t[k] + 1;
+                    t[k] = s2;
+                    if (s2) break;
                 }
             }
         }
     }
-    r->v[0] = acc[0]; r->v[1] = acc[1]; r->v[2] = acc[2]; r->v[3] = acc[3];
+}
+
+// Montgomery 归约：r = T * R^{-1} mod m（m 为 N 个 limb 的奇模数）
+template <int N>
+static void mont_reduce(uint64_t* r, uint64_t* t, const uint64_t* m, uint64_t mp) {
+    const int T = 2 * N + 2;
+    for (int i = 0; i < N; ++i) {
+        uint64_t u = t[i] * mp;
+        uint64_t ca = 0;
+        for (int j = 0; j < N; ++j) {
+            uint64_t lo, hi;
+            mul64(u, m[j], &lo, &hi);
+            ca = mont_acc<T>(t, i + j, lo, hi, ca);
+        }
+        if (ca) {
+            for (int k = i + N; ca && k < T; ++k) {
+                uint64_t s2 = t[k] + ca;
+                t[k] = s2;
+                ca = (s2 < ca) ? 1 : 0;
+            }
+        }
+    }
+    for (int i = 0; i < N; ++i) r[i] = t[i + N];
+    // 结果 < 2m，一次条件减法即可（t[2N] 记录溢出）
+    bool ge = t[2 * N] != 0;
+    if (!ge) {
+        for (int i = N - 1; i >= 0; --i) {
+            if (r[i] > m[i]) { ge = true; break; }
+            if (r[i] < m[i]) break;
+            if (i == 0) ge = true;
+        }
+    }
+    if (ge) {
+        uint64_t borrow = 0;
+        for (int i = 0; i < N; ++i) {
+            __uint128_t s = (__uint128_t)r[i] - m[i] - borrow;
+            r[i] = (uint64_t)s;
+            borrow = (uint64_t)(s >> 64) & 1u;
+        }
+    }
+}
+
+template <int N>
+static void mont_mul_impl(uint64_t* r, const uint64_t* a, const uint64_t* b,
+                          const uint64_t* m, uint64_t mp) {
+    uint64_t t[2 * N + 2];
+    mont_mul_school<N>(t, a, b);
+    mont_reduce<N>(r, t, m, mp);
+}
+
+template <int N>
+static void mont_sqr_impl(uint64_t* r, const uint64_t* a,
+                          const uint64_t* m, uint64_t mp) {
+    uint64_t t[2 * N + 2];
+    mont_sqr_school<N>(t, a);
+    mont_reduce<N>(r, t, m, mp);
+}
+
+// Montgomery 快速幂（Montgomery 域内成立）：acc 从 one（= R mod m）出发，
+// 每步 sqr/mul 都消掉一个 R^{-1}，最终 r = base^exp * R mod m
+template <int N>
+static void mont_pow_impl(uint64_t* r, const uint64_t* base, const uint64_t* one,
+                          const uint64_t* m, uint64_t mp, const uint64_t* exp) {
+    uint64_t acc[N], b[N];
+    for (int i = 0; i < N; ++i) acc[i] = one[i];
+    for (int i = 0; i < N; ++i) b[i] = base[i];
+    for (int i = N - 1; i >= 0; --i) {
+        for (int bit = 63; bit >= 0; --bit) {
+            mont_sqr_impl<N>(acc, acc, m, mp);
+            if ((exp[i] >> bit) & 1)
+                mont_mul_impl<N>(acc, acc, b, m, mp);
+        }
+    }
+    for (int i = 0; i < N; ++i) r[i] = acc[i];
 }
 
 // r = a mod m (a 是 256 位, a < 2m)
 static void mod_reduce_256(uint256* r, const uint256* a, const uint256* m) {
     if (u256_lt(a, m)) { *r = *a; return; }
     u256_sub(r, a, m);
+}
+
+// ── P-256 Montgomery 上下文（m = G_P 或 G_N）──
+struct mont_ctx256 {
+    const uint256* m;
+    uint256  R2;    // R^2 mod m
+    uint256  one;   // R mod m（Montgomery 表示下的 1）
+    uint64_t mp;    // -m[0]^{-1} mod 2^64
+};
+
+static mont_ctx256 M256_P, M256_N;
+static const uint256 ONE256 = {1, 0, 0, 0};
+
+static void mont256_init(mont_ctx256* M, const uint256* m) {
+    M->m = m;
+    // mp = -m[0]^{-1} mod 2^64（Newton 迭代）
+    uint64_t x = 1;
+    for (int i = 0; i < 63; ++i) x = x * (2 - m->v[0] * x);
+    M->mp = (uint64_t)(-(int64_t)x);
+    // one = R mod m = 2^256 - m（m > 2^255）
+    for (int i = 0; i < 4; ++i) M->one.v[i] = ~m->v[i];
+    u256_add(&M->one, &M->one, &ONE256);
+    // R2 = 2^512 mod m（从 1 起 512 次倍增）
+    uint256 r2 = {1, 0, 0, 0};
+    for (int i = 0; i < 512; ++i) {
+        uint64_t c = 0;
+        for (int j = 0; j < 4; ++j) {
+            __uint128_t s = (__uint128_t)r2.v[j] + r2.v[j] + c;
+            r2.v[j] = (uint64_t)s;
+            c = (uint64_t)(s >> 64);
+        }
+        if (c || !u256_lt(&r2, m)) u256_sub(&r2, &r2, m);
+    }
+    M->R2 = r2;
+}
+
+// 进入 Montgomery 域：a' = a*R mod m（先规约到 [0, m)，兼容任意 256 位输入）
+static void to_mont256(uint256* r, const uint256* a, const mont_ctx256& M) {
+    uint256 t;
+    mod_reduce_256(&t, a, M.m);
+    mont_mul_impl<4>(r->v, t.v, M.R2.v, M.m->v, M.mp);
+}
+
+// 离开 Montgomery 域：a = a' * R^{-1} mod m
+static void from_mont256(uint256* r, const uint256* a, const mont_ctx256& M) {
+    mont_mul_impl<4>(r->v, a->v, ONE256.v, M.m->v, M.mp);
 }
 
 // r = (a + b) mod m
@@ -187,33 +377,25 @@ static void mm_sub(uint256* r, const uint256* a, const uint256* b, const uint256
     if (borrow) u256_add(r, r, m);
 }
 
-// r = (a * b) mod m
+// r = (a * b) mod m（输入输出均为 Montgomery 表示）
 static void mm_mul(uint256* r, const uint256* a, const uint256* b, const uint256* m) {
-    uint512 prod;
-    u256_mul_full(&prod, a, b);
-    mod_reduce_512(r, &prod, m);
+    const mont_ctx256& M = (m == &G_P) ? M256_P : M256_N;
+    mont_mul_impl<4>(r->v, a->v, b->v, M.m->v, M.mp);
 }
 
-// r = (a^2) mod m
+// r = (a^2) mod m（输入输出均为 Montgomery 表示）
 static void mm_sqr(uint256* r, const uint256* a, const uint256* m) {
-    mm_mul(r, a, a, m);
+    const mont_ctx256& M = (m == &G_P) ? M256_P : M256_N;
+    mont_sqr_impl<4>(r->v, a->v, M.m->v, M.mp);
 }
 
-// r = a^{-1} mod m (Fermat: a^{m-2})
+// r = a^{-1} mod m（Fermat: a^{m-2}，Montgomery 域内求逆）
 static void mm_inv(uint256* r, const uint256* a, const uint256* m) {
-    uint256 two = {2,0,0,0};
+    const mont_ctx256& M = (m == &G_P) ? M256_P : M256_N;
+    uint256 two = {2, 0, 0, 0};
     uint256 exp;
     u256_sub(&exp, m, &two);
-    uint256 base = *a;
-    uint256 result = {1,0,0,0};
-    for (int i = 3; i >= 0; --i) {
-        for (int bit = 63; bit >= 0; --bit) {
-            mm_sqr(&result, &result, m);
-            if ((exp.v[i] >> bit) & 1)
-                mm_mul(&result, &result, &base, m);
-        }
-    }
-    *r = result;
+    mont_pow_impl<4>(r->v, a->v, M.one.v, M.m->v, M.mp, exp.v);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -223,16 +405,14 @@ static void mm_inv(uint256* r, const uint256* a, const uint256* m) {
 
 struct jac_point { uint256 X, Y, Z; };
 
-// 全局域参数 (init_params 填充)
-static uint256 G_P, G_N, G_Gx, G_Gy;
-static bool g_init = false;
-
 static void init_params() {
     if (g_init) return;
     u256_from_be(&G_P,  P_BYTES);
     u256_from_be(&G_N,  N_BYTES);
     u256_from_be(&G_Gx, Gx_BYTES);
     u256_from_be(&G_Gy, Gy_BYTES);
+    mont256_init(&M256_P, &G_P);
+    mont256_init(&M256_N, &G_N);
     g_init = true;
 }
 
@@ -330,12 +510,17 @@ static void jac_add(jac_point* R, const jac_point* P, const jac_point* Q) {
 
 // 标量乘法 R = k * P (left-to-right double-and-add)
 static void scalar_mult(jac_point* R, const uint256* k, const jac_point* P) {
+    // 进入 Montgomery 域（仅此一次；点运算全程留在域内）
+    jac_point Pd;
+    to_mont256(&Pd.X, &P->X, M256_P);
+    to_mont256(&Pd.Y, &P->Y, M256_P);
+    to_mont256(&Pd.Z, &P->Z, M256_P);
     jac_inf(R);
     for (int i = 3; i >= 0; --i) {
         for (int bit = 63; bit >= 0; --bit) {
             jac_dbl(R, R);
             if ((k->v[i] >> bit) & 1)
-                jac_add(R, R, P);
+                jac_add(R, R, &Pd);
         }
     }
 }
@@ -355,11 +540,17 @@ static void jac_to_affine(uint256* x, uint256* y, const jac_point* P) {
         return;
     }
     uint256 Zinv, Zinv2, Zinv3;
-    mm_inv(&Zinv, &P->Z, &G_P);
+    mm_inv(&Zinv, &P->Z, &G_P);          // 域内求逆
     mm_sqr(&Zinv2, &Zinv, &G_P);
     mm_mul(&Zinv3, &Zinv2, &Zinv, &G_P);
-    if (x) mm_mul(x, &P->X, &Zinv2, &G_P);
-    if (y) mm_mul(y, &P->Y, &Zinv3, &G_P);
+    if (x) {
+        mm_mul(x, &P->X, &Zinv2, &G_P);
+        from_mont256(x, x, M256_P);      // 离开域
+    }
+    if (y) {
+        mm_mul(y, &P->Y, &Zinv3, &G_P);
+        from_mont256(y, y, M256_P);
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -428,16 +619,23 @@ void ecdsa_p256_sign(const uint8_t priv[32], const uint8_t* msg, size_t msg_len,
 
     uint256 r, s, k, k_inv, rd, ed, Rx;
     jac_point R;
+    uint256 d_m, e_m;
+    to_mont256(&d_m, &d, M256_N);
+    to_mont256(&e_m, &e, M256_N);
     do {
         rand_scalar(&k);
         scalar_mult_G(&R, &k);
         jac_to_affine(&Rx, nullptr, &R);
         mod_reduce_256(&r, &Rx, &G_N);
         if (u256_is_zero(&r)) continue;
-        mm_inv(&k_inv, &k, &G_N);
-        mm_mul(&rd, &r, &d, &G_N);
-        mm_add(&ed, &e, &rd, &G_N);
+        uint256 k_m, r_m;
+        to_mont256(&k_m, &k, M256_N);
+        to_mont256(&r_m, &r, M256_N);
+        mm_inv(&k_inv, &k_m, &G_N);
+        mm_mul(&rd, &r_m, &d_m, &G_N);
+        mm_add(&ed, &e_m, &rd, &G_N);
         mm_mul(&s, &k_inv, &ed, &G_N);
+        from_mont256(&s, &s, M256_N);
     } while (u256_is_zero(&s));
 
     u256_to_be(&r, sig);
@@ -460,9 +658,15 @@ bool ecdsa_p256_verify(const uint8_t pub[64], const uint8_t* msg, size_t msg_len
     u256_from_be(&e, e_bytes);
 
     uint256 w, u1, u2;
-    mm_inv(&w, &s, &G_N);
-    mm_mul(&u1, &e, &w, &G_N);
-    mm_mul(&u2, &r, &w, &G_N);
+    uint256 e_m, s_m, r_m;
+    to_mont256(&e_m, &e, M256_N);
+    to_mont256(&s_m, &s, M256_N);
+    to_mont256(&r_m, &r, M256_N);
+    mm_inv(&w, &s_m, &G_N);
+    mm_mul(&u1, &e_m, &w, &G_N);
+    mm_mul(&u2, &r_m, &w, &G_N);
+    from_mont256(&u1, &u1, M256_N);
+    from_mont256(&u2, &u2, M256_N);
 
     jac_point u1G;
     scalar_mult_G(&u1G, &u1);
@@ -517,7 +721,10 @@ static const uint8_t P384_N_BYTES[48] = {
 
 // 384 位无符号整数 (little-endian limbs, v[0] = 最低位)
 struct uint384 { uint64_t v[6]; };
-struct uint768 { uint64_t v[12]; };
+
+// 全局域参数（init384_params 填充）
+static uint384 G384_P, G384_N, G384_Gx, G384_Gy;
+static bool g384_init = false;
 
 static void u384_from_be(uint384* r, const uint8_t b[48]) {
     for (int i = 0; i < 6; ++i) {
@@ -570,57 +777,54 @@ static uint64_t u384_sub(uint384* r, const uint384* a, const uint384* b) {
     }
     return borrow;
 }
-static void u384_mul_full(uint768* r, const uint384* a, const uint384* b) {
-    for (int i = 0; i < 12; ++i) r->v[i] = 0;
-    for (int i = 0; i < 6; ++i) {
-        uint64_t carry = 0;
-        for (int j = 0; j < 6; ++j) {
-            __uint128_t t = (__uint128_t)a->v[i] * b->v[j] + r->v[i+j] + carry;
-            r->v[i+j] = (uint64_t)t;
-            carry = (uint64_t)(t >> 64);
-        }
-        r->v[i+6] = carry;
-    }
-}
+// ── 模运算 (384 位, 参数化模数 m, Montgomery 域) ──
 
-// ── 模运算 (384 位, 参数化模数 m) ──
-
-// r = (768 位 a) mod m, 二进制长除法, 7-limb (448 位) 累加器
-static void mod384_reduce_768(uint384* r, const uint768* a, const uint384* m) {
-    uint64_t acc[7] = {0,0,0,0,0,0,0};
-    uint64_t ml[7] = {m->v[0], m->v[1], m->v[2], m->v[3], m->v[4], m->v[5], 0};
-    for (int i = 11; i >= 0; --i) {
-        for (int bit = 63; bit >= 0; --bit) {
-            uint64_t carry = (a->v[i] >> bit) & 1;
-            for (int j = 0; j < 7; ++j) {
-                uint64_t nc = acc[j] >> 63;
-                acc[j] = (acc[j] << 1) | carry;
-                carry = nc;
-            }
-            bool ge = false;
-            if (acc[6] > 0) ge = true;
-            else {
-                for (int j = 5; j >= 0; --j) {
-                    if (acc[j] > ml[j]) { ge = true; break; }
-                    if (acc[j] < ml[j]) { ge = false; break; }
-                    if (j == 0) ge = true;
-                }
-            }
-            if (ge) {
-                uint64_t borrow = 0;
-                for (int j = 0; j < 7; ++j) {
-                    __uint128_t t = (__uint128_t)acc[j] - ml[j] - borrow;
-                    acc[j] = (uint64_t)t;
-                    borrow = (t >> 64) ? 1 : 0;
-                }
-            }
-        }
-    }
-    for (int i = 0; i < 6; ++i) r->v[i] = acc[i];
-}
 static void mod384_reduce_384(uint384* r, const uint384* a, const uint384* m) {
     if (u384_lt(a, m)) { *r = *a; return; }
     u384_sub(r, a, m);
+}
+
+// ── P-384 Montgomery 上下文（m = G384_P 或 G384_N）──
+struct mont_ctx384 {
+    const uint384* m;
+    uint384  R2;    // R^2 mod m
+    uint384  one;   // R mod m（Montgomery 表示下的 1）
+    uint64_t mp;    // -m[0]^{-1} mod 2^64
+};
+
+static mont_ctx384 M384_P, M384_N;
+static const uint384 ONE384 = {1, 0, 0, 0, 0, 0};
+
+static void mont384_init(mont_ctx384* M, const uint384* m) {
+    M->m = m;
+    uint64_t x = 1;
+    for (int i = 0; i < 63; ++i) x = x * (2 - m->v[0] * x);
+    M->mp = (uint64_t)(-(int64_t)x);
+    // one = R mod m = 2^384 - m（m > 2^383）
+    for (int i = 0; i < 6; ++i) M->one.v[i] = ~m->v[i];
+    u384_add(&M->one, &M->one, &ONE384);
+    // R2 = 2^768 mod m（从 1 起 768 次倍增）
+    uint384 r2 = {1, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 768; ++i) {
+        uint64_t c = 0;
+        for (int j = 0; j < 6; ++j) {
+            __uint128_t s = (__uint128_t)r2.v[j] + r2.v[j] + c;
+            r2.v[j] = (uint64_t)s;
+            c = (uint64_t)(s >> 64);
+        }
+        if (c || !u384_lt(&r2, m)) u384_sub(&r2, &r2, m);
+    }
+    M->R2 = r2;
+}
+
+static void to_mont384(uint384* r, const uint384* a, const mont_ctx384& M) {
+    uint384 t;
+    mod384_reduce_384(&t, a, M.m);
+    mont_mul_impl<6>(r->v, t.v, M.R2.v, M.m->v, M.mp);
+}
+
+static void from_mont384(uint384* r, const uint384* a, const mont_ctx384& M) {
+    mont_mul_impl<6>(r->v, a->v, ONE384.v, M.m->v, M.mp);
 }
 static void mm384_add(uint384* r, const uint384* a, const uint384* b, const uint384* m) {
     uint64_t carry = u384_add(r, a, b);
@@ -630,36 +834,28 @@ static void mm384_sub(uint384* r, const uint384* a, const uint384* b, const uint
     uint64_t borrow = u384_sub(r, a, b);
     if (borrow) u384_add(r, r, m);
 }
+// r = (a * b) mod m（输入输出均为 Montgomery 表示）
 static void mm384_mul(uint384* r, const uint384* a, const uint384* b, const uint384* m) {
-    uint768 prod;
-    u384_mul_full(&prod, a, b);
-    mod384_reduce_768(r, &prod, m);
+    const mont_ctx384& M = (m == &G384_P) ? M384_P : M384_N;
+    mont_mul_impl<6>(r->v, a->v, b->v, M.m->v, M.mp);
 }
+// r = (a^2) mod m（输入输出均为 Montgomery 表示）
 static void mm384_sqr(uint384* r, const uint384* a, const uint384* m) {
-    mm384_mul(r, a, a, m);
+    const mont_ctx384& M = (m == &G384_P) ? M384_P : M384_N;
+    mont_sqr_impl<6>(r->v, a->v, M.m->v, M.mp);
 }
+// r = a^{-1} mod m（Fermat: a^{m-2}，Montgomery 域内求逆）
 static void mm384_inv(uint384* r, const uint384* a, const uint384* m) {
-    uint384 two = {2,0,0,0,0,0};
+    const mont_ctx384& M = (m == &G384_P) ? M384_P : M384_N;
+    uint384 two = {2, 0, 0, 0, 0, 0};
     uint384 exp;
     u384_sub(&exp, m, &two);
-    uint384 base = *a;
-    uint384 result = {1,0,0,0,0,0};
-    for (int i = 5; i >= 0; --i) {
-        for (int bit = 63; bit >= 0; --bit) {
-            mm384_sqr(&result, &result, m);
-            if ((exp.v[i] >> bit) & 1)
-                mm384_mul(&result, &result, &base, m);
-        }
-    }
-    *r = result;
+    mont_pow_impl<6>(r->v, a->v, M.one.v, M.m->v, M.mp, exp.v);
 }
 
 // ── P-384 Jacobian 点运算 ──
 
 struct jac384_point { uint384 X, Y, Z; };
-
-static uint384 G384_P, G384_N, G384_Gx, G384_Gy;
-static bool g384_init = false;
 
 static void init384_params() {
     if (g384_init) return;
@@ -667,6 +863,8 @@ static void init384_params() {
     u384_from_be(&G384_N,  P384_N_BYTES);
     u384_from_be(&G384_Gx, P384_Gx_BYTES);
     u384_from_be(&G384_Gy, P384_Gy_BYTES);
+    mont384_init(&M384_P, &G384_P);
+    mont384_init(&M384_N, &G384_N);
     g384_init = true;
 }
 
@@ -763,12 +961,17 @@ static void jac384_add(jac384_point* R, const jac384_point* P, const jac384_poin
 
 // 标量乘法 R = k * P
 static void scalar384_mult(jac384_point* R, const uint384* k, const jac384_point* P) {
+    // 进入 Montgomery 域（仅此一次；点运算全程留在域内）
+    jac384_point Pd;
+    to_mont384(&Pd.X, &P->X, M384_P);
+    to_mont384(&Pd.Y, &P->Y, M384_P);
+    to_mont384(&Pd.Z, &P->Z, M384_P);
     jac384_inf(R);
     for (int i = 5; i >= 0; --i) {
         for (int bit = 63; bit >= 0; --bit) {
             jac384_dbl(R, R);
             if ((k->v[i] >> bit) & 1)
-                jac384_add(R, R, P);
+                jac384_add(R, R, &Pd);
         }
     }
 }
@@ -786,11 +989,17 @@ static void jac384_to_affine(uint384* x, uint384* y, const jac384_point* P) {
         return;
     }
     uint384 Zinv, Zinv2, Zinv3;
-    mm384_inv(&Zinv, &P->Z, &G384_P);
+    mm384_inv(&Zinv, &P->Z, &G384_P);    // 域内求逆
     mm384_sqr(&Zinv2, &Zinv, &G384_P);
     mm384_mul(&Zinv3, &Zinv2, &Zinv, &G384_P);
-    if (x) mm384_mul(x, &P->X, &Zinv2, &G384_P);
-    if (y) mm384_mul(y, &P->Y, &Zinv3, &G384_P);
+    if (x) {
+        mm384_mul(x, &P->X, &Zinv2, &G384_P);
+        from_mont384(x, x, M384_P);      // 离开域
+    }
+    if (y) {
+        mm384_mul(y, &P->Y, &Zinv3, &G384_P);
+        from_mont384(y, y, M384_P);
+    }
 }
 
 // ── P-384 辅助 ──
@@ -839,16 +1048,23 @@ void ecdsa_p384_sign(const uint8_t priv[48], const uint8_t* msg, size_t msg_len,
 
     uint384 r, s, k, k_inv, rd, ed, Rx;
     jac384_point R;
+    uint384 d_m, e_m;
+    to_mont384(&d_m, &d, M384_N);
+    to_mont384(&e_m, &e, M384_N);
     do {
         rand384_scalar(&k);
         scalar384_mult_G(&R, &k);
         jac384_to_affine(&Rx, nullptr, &R);
         mod384_reduce_384(&r, &Rx, &G384_N);
         if (u384_is_zero(&r)) continue;
-        mm384_inv(&k_inv, &k, &G384_N);
-        mm384_mul(&rd, &r, &d, &G384_N);
-        mm384_add(&ed, &e, &rd, &G384_N);
+        uint384 k_m, r_m;
+        to_mont384(&k_m, &k, M384_N);
+        to_mont384(&r_m, &r, M384_N);
+        mm384_inv(&k_inv, &k_m, &G384_N);
+        mm384_mul(&rd, &r_m, &d_m, &G384_N);
+        mm384_add(&ed, &e_m, &rd, &G384_N);
         mm384_mul(&s, &k_inv, &ed, &G384_N);
+        from_mont384(&s, &s, M384_N);
     } while (u384_is_zero(&s));
 
     u384_to_be(&r, sig);
@@ -871,9 +1087,15 @@ bool ecdsa_p384_verify(const uint8_t pub[96], const uint8_t* msg, size_t msg_len
     u384_from_be(&e, e_bytes);
 
     uint384 w, u1, u2;
-    mm384_inv(&w, &s, &G384_N);
-    mm384_mul(&u1, &e, &w, &G384_N);
-    mm384_mul(&u2, &r, &w, &G384_N);
+    uint384 e_m, s_m, r_m;
+    to_mont384(&e_m, &e, M384_N);
+    to_mont384(&s_m, &s, M384_N);
+    to_mont384(&r_m, &r, M384_N);
+    mm384_inv(&w, &s_m, &G384_N);
+    mm384_mul(&u1, &e_m, &w, &G384_N);
+    mm384_mul(&u2, &r_m, &w, &G384_N);
+    from_mont384(&u1, &u1, M384_N);
+    from_mont384(&u2, &u2, M384_N);
 
     jac384_point u1G;
     scalar384_mult_G(&u1G, &u1);

@@ -35,6 +35,16 @@ void sm4_encrypt_block(const sm4_ctx* ctx, const uint8_t plain[SM4_BLOCK_SIZE],
 void sm4_decrypt_block(const sm4_ctx* ctx, const uint8_t cipher[SM4_BLOCK_SIZE],
                        uint8_t plain[SM4_BLOCK_SIZE]);
 
+// ── ARM NEON (FEAT_SM4) 硬件加速入口 ─────────────────────────────────
+// 仅在 aarch64 + NEON 构建且编译器可见 SM4 指令时声明；运行时由
+// cpu_has_arm_sm4() 分派，不支持 FEAT_SM4 的机器自动回退到标量实现。
+#if defined(__aarch64__) && defined(JP_NEON) && defined(__ARM_FEATURE_SM4)
+void sm4_encrypt_block_neon(const uint32_t rk[32], const uint8_t in[SM4_BLOCK_SIZE],
+                            uint8_t out[SM4_BLOCK_SIZE]);
+void sm4_decrypt_block_neon(const uint32_t rk[32], const uint8_t in[SM4_BLOCK_SIZE],
+                            uint8_t out[SM4_BLOCK_SIZE]);
+#endif
+
 // ── ECB 模式 ────────────────────────────────────────────────────────────
 
 /// ECB 加密：数据长度必须是 16 字节的倍数

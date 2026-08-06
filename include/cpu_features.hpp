@@ -16,6 +16,16 @@
 #include <intrin.h>
 #endif
 
+#if defined(__aarch64__) && defined(__APPLE__)
+#include <sys/sysctl.h>
+#include <sys/types.h>
+#endif
+
+#if defined(__aarch64__) && defined(__linux__)
+#include <sys/auxv.h>
+#include <asm/hwcap.h>
+#endif
+
 namespace jpssl {
 
 // 内部 CPUID 辅助（仅 MSVC 需要）
@@ -160,6 +170,203 @@ inline bool cpu_has_sha_ni() {
 #endif
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  ARMv8 / ARMv8.1 / ARMv8.2 / ARMv9 特性检测（aarch64）
+//
+//  macOS（Apple Silicon）: 通过 sysctlbyname("hw.optional.arm.FEAT_*") 查询
+//  Linux:                 getauxval(AT_HWCAP / AT_HWCAP2)
+//  其他 aarch64 平台:     回退到编译期 __ARM_FEATURE_* 宏（安全，无运行时检测时
+//                         不会错误地启用 crypto 代码路径）
+// ═══════════════════════════════════════════════════════════════════════
+
+#if defined(__aarch64__) && defined(__APPLE__)
+namespace detail_cpu {
+inline bool sysctl_feature(const char* name) {
+    int v = 0;
+    size_t sz = sizeof(v);
+    return sysctlbyname(name, &v, &sz, nullptr, 0) == 0 && v != 0;
+}
+} // namespace detail_cpu
+#endif
+
+/// NEON：ARMv8 起为必选扩展
+inline bool cpu_has_neon() {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    return true;
+#else
+    return false;
+#endif
+}
+
+/// ARMv8 Crypto：AES 指令（AESE/AESD）
+inline bool cpu_has_arm_aes() {
+#if defined(__aarch64__) && defined(__APPLE__)
+    return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_AES");
+#elif defined(__aarch64__) && defined(__linux__)
+    return (getauxval(AT_HWCAP) & HWCAP_AES) != 0;
+#elif defined(__aarch64__)
+#if defined(__ARM_FEATURE_AES)
+    return true;
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
+
+/// ARMv8 Crypto：PMULL（GF(2^128) 乘，GCM GHASH 硬件加速）
+inline bool cpu_has_arm_pmull() {
+#if defined(__aarch64__) && defined(__APPLE__)
+    return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_PMULL");
+#elif defined(__aarch64__) && defined(__linux__)
+    return (getauxval(AT_HWCAP) & HWCAP_PMULL) != 0;
+#elif defined(__aarch64__)
+#if defined(__ARM_FEATURE_PMULL)
+    return true;
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
+
+/// ARMv8 Crypto：SHA1 指令
+inline bool cpu_has_arm_sha1() {
+#if defined(__aarch64__) && defined(__APPLE__)
+    return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_SHA1");
+#elif defined(__aarch64__) && defined(__linux__)
+    return (getauxval(AT_HWCAP) & HWCAP_SHA1) != 0;
+#elif defined(__aarch64__)
+#if defined(__ARM_FEATURE_SHA1)
+    return true;
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
+
+/// ARMv8 Crypto：SHA-256 指令（ARMv8.0 可选 / ARMv8.2 常见）
+inline bool cpu_has_arm_sha2() {
+#if defined(__aarch64__) && defined(__APPLE__)
+    return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_SHA256");
+#elif defined(__aarch64__) && defined(__linux__)
+    return (getauxval(AT_HWCAP) & HWCAP_SHA2) != 0;
+#elif defined(__aarch64__)
+#if defined(__ARM_FEATURE_SHA2)
+    return true;
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
+
+/// ARMv8.1：CRC32 指令
+inline bool cpu_has_arm_crc32() {
+#if defined(__aarch64__) && defined(__APPLE__)
+    return detail_cpu::sysctl_feature("hw.optional.armv8_crc32");
+#elif defined(__aarch64__) && defined(__linux__)
+    return (getauxval(AT_HWCAP) & HWCAP_CRC32) != 0;
+#elif defined(__aarch64__)
+#if defined(__ARM_FEATURE_CRC32)
+    return true;
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
+
+/// ARMv8.2：SHA-512 指令
+inline bool cpu_has_arm_sha512() {
+#if defined(__aarch64__) && defined(__APPLE__)
+    return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_SHA512");
+#elif defined(__aarch64__) && defined(__linux__)
+#if defined(HWCAP2_SHA512)
+    return (getauxval(AT_HWCAP2) & HWCAP2_SHA512) != 0;
+#else
+    return false;
+#endif
+#elif defined(__aarch64__)
+#if defined(__ARM_FEATURE_SHA512)
+    return true;
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
+
+/// ARMv8.2：SHA3 指令
+inline bool cpu_has_arm_sha3() {
+#if defined(__aarch64__) && defined(__APPLE__)
+    return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_SHA3");
+#elif defined(__aarch64__) && defined(__linux__)
+#if defined(HWCAP2_SHA3)
+    return (getauxval(AT_HWCAP2) & HWCAP2_SHA3) != 0;
+#else
+    return false;
+#endif
+#elif defined(__aarch64__)
+#if defined(__ARM_FEATURE_SHA3)
+    return true;
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
+
+/// ARMv8.2：SM4 指令
+inline bool cpu_has_arm_sm4() {
+#if defined(__aarch64__) && defined(__APPLE__)
+    return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_SM4");
+#elif defined(__aarch64__) && defined(__linux__)
+#if defined(HWCAP2_SM4)
+    return (getauxval(AT_HWCAP2) & HWCAP2_SM4) != 0;
+#else
+    return false;
+#endif
+#elif defined(__aarch64__)
+#if defined(__ARM_FEATURE_SM4)
+    return true;
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
+
+/// ARMv8.2：SM3 指令
+inline bool cpu_has_arm_sm3() {
+#if defined(__aarch64__) && defined(__APPLE__)
+    return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_SM3");
+#elif defined(__aarch64__) && defined(__linux__)
+#if defined(HWCAP2_SM3)
+    return (getauxval(AT_HWCAP2) & HWCAP2_SM3) != 0;
+#else
+    return false;
+#endif
+#elif defined(__aarch64__)
+#if defined(__ARM_FEATURE_SM3)
+    return true;
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
+
 /// 一次性获取所有特性
 struct cpu_features {
     bool aesni;
@@ -168,6 +375,17 @@ struct cpu_features {
     bool avx512;
     bool vpclmulqdq_vaes;
     bool sha_ni;
+    // ARMv8/v8.1/v8.2/v9
+    bool neon;
+    bool arm_aes;
+    bool arm_pmull;
+    bool arm_sha1;
+    bool arm_sha2;
+    bool arm_crc32;
+    bool arm_sha512;
+    bool arm_sha3;
+    bool arm_sm4;
+    bool arm_sm3;
 
     static cpu_features detect() {
         return {
@@ -176,7 +394,17 @@ struct cpu_features {
             cpu_has_pclmulqdq(),
             cpu_has_avx512(),
             cpu_has_vpclmulqdq_vaes(),
-            cpu_has_sha_ni()
+            cpu_has_sha_ni(),
+            cpu_has_neon(),
+            cpu_has_arm_aes(),
+            cpu_has_arm_pmull(),
+            cpu_has_arm_sha1(),
+            cpu_has_arm_sha2(),
+            cpu_has_arm_crc32(),
+            cpu_has_arm_sha512(),
+            cpu_has_arm_sha3(),
+            cpu_has_arm_sm4(),
+            cpu_has_arm_sm3()
         };
     }
 };

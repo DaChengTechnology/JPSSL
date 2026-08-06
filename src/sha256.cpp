@@ -1,4 +1,5 @@
 #include "sha256.hpp"
+#include "cpu_features.hpp"
 #include <cstring>
 namespace jpssl {
 
@@ -20,7 +21,7 @@ static inline uint32_t ROR(uint32_t x,int n){return(x>>n)|(x<<(32-n));}
 #define CH(x,y,z) ((x&y)^(~x&z))
 #define MAJ(x,y,z) ((x&y)^(x&z)^(y&z))
 
-static void sha256_transform(uint32_t h[8],const uint8_t data[64]){
+static void sha256_transform_scalar(uint32_t h[8],const uint8_t data[64]){
     uint32_t w[64];
     for(int i=0;i<16;++i)w[i]=((uint32_t)data[i*4]<<24)|((uint32_t)data[i*4+1]<<16)|((uint32_t)data[i*4+2]<<8)|data[i*4+3];
     for(int i=16;i<64;++i)w[i]=s1(w[i-2])+w[i-7]+s0(w[i-15])+w[i-16];
@@ -30,6 +31,17 @@ static void sha256_transform(uint32_t h[8],const uint8_t data[64]){
         hh=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;
     }
     h[0]+=a;h[1]+=b;h[2]+=c;h[3]+=d;h[4]+=e;h[5]+=f;h[6]+=g;h[7]+=hh;
+}
+
+/// 分派：ARMv8 SHA-256 扩展可用时走 NEON（JP_NEON 构建）
+static void sha256_transform(uint32_t h[8],const uint8_t data[64]){
+#if defined(JP_NEON) && defined(__aarch64__)
+    if (cpu_has_arm_sha2()) {
+        sha256_transform_neon(h, data);
+        return;
+    }
+#endif
+    sha256_transform_scalar(h, data);
 }
 
 void sha256_init(sha256_ctx*ctx){ctx->h[0]=0x6a09e667;ctx->h[1]=0xbb67ae85;ctx->h[2]=0x3c6ef372;ctx->h[3]=0xa54ff53a;ctx->h[4]=0x510e527f;ctx->h[5]=0x9b05688c;ctx->h[6]=0x1f83d9ab;ctx->h[7]=0x5be0cd19;ctx->len=0;ctx->buf_len=0;}

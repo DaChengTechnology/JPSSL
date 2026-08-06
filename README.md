@@ -1,6 +1,6 @@
 # jpssl — C++20 高性能密码学库（CPU + MUSA GPU）
 
-跨平台密码学库，支持 **AES**、**ChaCha20-Poly1305**、**RSA**、**TLS 1.2/1.3**、**Ed25519**、**ECDSA**、**X.509 v3 证书**（RFC 5280），以及 **SM2/SM3/SM4 国密算法**（GM/T 0002/3/4-2012，RFC 8998 TLS 1.3 国密套件）。提供 CPU 优化（AES-NI/AVX2/VAES/PCLMULQDQ/Montgomery）和可选的 MUSA GPU 加速（实验性，默认关闭）。同时提供静态库和动态库两种构建方式。
+跨平台密码学库，支持 **AES**、**ChaCha20-Poly1305**、**RSA**、**TLS 1.2/1.3**、**Ed25519**、**Ed448**、**ECDSA**、**X.509 v3 证书**（RFC 5280），以及 **SM2/SM3/SM4 国密算法**（GM/T 0002/3/4-2012，RFC 8998 TLS 1.3 国密套件）。提供 CPU 优化（AES-NI/AVX2/VAES/PCLMULQDQ/Montgomery、ARM NEON：AES-GCM / ChaCha20 / SHA-1 / SHA-256 / SHA-512 / SHA-3 / SM3 / SM4）和可选的 MUSA GPU 加速（实验性，默认关闭）。同时提供静态库和动态库两种构建方式。
 
 ## 架构
 
@@ -24,24 +24,33 @@
 │  ├─ aes_gcm_avx2.cpp       AVX2 GCM 4 路并行      │
 │  ├─ aes_gcm_avx512.cpp     AVX512 GCM 8 路并行    │
 │  ├─ aes_gcm_auto.cpp       GCM 自动分派           │
+│  ├─ aes_gcm_neon.cpp       ARM NEON GCM (AESE+PMULL) │
 │  ├─ chacha20_poly1305.cpp  ChaCha20-Poly1305 AEAD │
+│  ├─ chacha20_neon.cpp      ARM NEON ChaCha20 (4 路) │
 │  ├─ rsa.cpp (+body.inc)    RSA 2048/4096 Montgomery│
 │  ├─ sha1.cpp               SHA-1 哈希            │
 │  ├─ sha1_avx2.cpp          SHA-1 8 路多缓冲 (AVX2) │
 │  ├─ sha1_avx512.cpp        SHA-1 16 路多缓冲 (AVX512) │
+│  ├─ sha1_neon.cpp          ARM NEON SHA-1 (SHA1C/P/M) │
 │  ├─ sha256.cpp             SHA-256 哈希           │
+│  ├─ sha256_neon.cpp        ARM NEON SHA-256       │
 │  ├─ sha3.cpp               SHA3-256/384/512 哈希   │
+│  ├─ sha3_neon.cpp          ARM NEON SHA-3 (EOR3/RAX1/XAR) │
 │  ├─ sha512_cpu.cpp         SHA-384/512 哈希 (CPU) │
 │  ├─ sha512_opt.cpp         SHA-384/512 哈希 (SSE) │
+│  ├─ sha512_neon.cpp        ARM NEON SHA-384/512 (SHA-512 扩展) │
 │  ├─ hmac.cpp               HMAC-SHA256/SHA384      │
 │  ├─ hkdf.cpp               HKDF-SHA256/SHA384      │
 │  ├─ x25519.cpp             X25519 ECDH            │
 │  ├─ ed25519.cpp            Ed25519 签名/验证      │
-│  ├─ ecdsa.cpp              ECDSA P-256 签名/验证  │
+│  ├─ ed448.cpp              Ed448 签名/验证        │
+│  ├─ ecdsa.cpp              ECDSA P-256/P-384 (Montgomery CIOS) │
 │  ├─ sm2.cpp                SM2 签名/验证/密钥交换  │
 │  ├─ sm3.cpp                SM3 密码杂凑算法        │
 │  ├─ sm3_win.asm           SM3 标量汇编 (MSVC x64)       │
+│  ├─ sm3_neon.cpp          ARM NEON SM3 (vsm3* 指令)      │
 │  ├─ sm4.cpp                SM4 分组密码            │
+│  ├─ sm4_neon.cpp          ARM NEON SM4 (vsm4e 指令)      │
 │  ├─ sm4_gcm.cpp            SM4-GCM AEAD 模式       │
 │  ├─ hmac.cpp               HMAC-SHA256/SHA384/SM3   │
 │  ├─ hkdf.cpp               HKDF-SHA256/SHA384/SM3   │
@@ -151,6 +160,7 @@ ctest --test-dir build-win -R test_tls_stability --output-on-failure
 - **128 位整数**：MSVC 不提供 GCC 的 `__uint128_t`，Windows 构建通过 `/FI` 强制包含 `include/jpssl_platform.hpp` 提供等价的 `jp_uint128` 兼容层（基于 `_umul128`/`_addcarry_u64`/`_udiv128`，全部内联）。**不要求**业务代码改动；GCC/Clang 仍使用原生类型。
 - **随机数**：统一走 `include/rand_os.hpp`（`jpssl::os_rand_bytes`）——Windows 用 `BCryptGenRandom`，Linux 用 `/dev/urandom`。MSVC 的 `std::random_device` 是确定性的，不用于密钥/签名 nonce。
 - **CPU 特性检测**：`include/cpu_features.hpp` 在 MSVC 下改用 `__cpuidex`/`_xgetbv` 运行时检测 AES-NI/AVX2/AVX512/SHA-NI，硬件加速分派在 Windows 上同样生效。
+- **ARM NEON / macOS (Apple Silicon)**：aarch64 下提供 NEON 硬件加速路径——AES-GCM（AESE/AESMC + PMULL GHASH，4 块并行）、ChaCha20（4 块并行）、SHA-1（SHA1C/P/M + SHA1SU0/1）、SHA-256（vsha256hq）、SHA-384/512（vsha512hq2）、SHA-3/Keccak（EOR3/RAX1/BCAX/XAR）、SM3（vsm3ss1/tt1a/tt2a/pw1/partw1/partw2）、SM4（vsm4e/vsm4ekey），运行时由 `cpu_features` 自动分派：macOS 用 `sysctlbyname("hw.optional.arm.FEAT_*")`、Linux 用 `getauxval(AT_HWCAP)`、其他 aarch64 平台回退编译期 `__ARM_FEATURE_*` 宏。ARMv8.0 起必选的 NEON + `-march=…+crypto`（AES/PMULL/SHA 扩展）即可启用；SHA-512/SHA-3/SM3/SM4 属于 ARMv8.2/8.4+ 可选扩展（FEAT_SHA512/SHA3/SM3/SM4），默认单独以 `-march=armv8.4-a+crypto` 编译这些源（也可直接 `-DJP_ARM_MARCH=armv8.4-a` 让全部 NEON 源按该等级编译，含 SHA-1/SHA-256），在**不支持这些指令的 CPU（如 Apple M 系列不支持 FEAT_SM3/SM4）上运行时自动回退标量实现，不会触发非法指令**。SM2/ECDSA/Ed25519/Ed448/X25519/X448 没有对应的 ARM 密码学指令，走可移植标量路径：256/448 位域运算在 AArch64 上由 `__uint128_t` 编译为 `umulh`/`adc`/`madd` 序列（SM2 与 ECDSA 的 Montgomery CIOS、fe51 radix-2^51、Goldilocks fe448 均如此），且 SM2 的 ZA/签名杂凑、Ed25519 的 SHA-512、Ed448 的 SHAKE256 分别自动受益于 SM3/SHA-512/SHA-3 的 NEON 路径。`-DJP_ARM_MARCH=armv9-a` 会自动禁用 SVE/SVE2 代码生成（Apple 芯片不支持 SVE），保证构建产物在 Apple Silicon 与 ARMv9 机器上均可运行。
 - **Base64 SIMD 加速**：RFC 4648 base64 编解码新增 AVX2（24B→32B/次）与 AVX-512（48B→64B/次）路径（`src/base64_avx2.cpp` / `src/base64_avx512.cpp`），运行时按 AVX-512 > AVX2 > 标量自动分派，尾部与 `=` 填充仍走标量。AVX2 实测编码约 21–22 GB/s、解码约 17 GB/s（i7-13700K，vs 标量编码约 3 GB/s、解码约 0.2 GB/s）。
 - **RSA Montgomery 汇编加速**：RSA-2048/4096 的 CIOS Montgomery 乘法在 Windows 走手写 MASM 汇编（`src/rsa_mont_asm_win.asm`，MULX 加速，K=32/64），Linux 走 GCC 内联汇编（`src/rsa_mont_asm.cpp`）。运行时不支持 BMI2/ADX 的 CPU 自动回退到标量 `_umul128` 实现；CPUID 检测结果进程内缓存。
 - **CRT 半尺寸汇编加速**：CRT 私钥解密的 p/q 模幂使用半尺寸 Montgomery 乘法 `mont_mul_half_`（只处理前 K/2 个 limb），同样接入汇编快速路径（`mont_mul_half_asm`，HK=16/32，MASM 宏生成双实例 + GCC 动态 HK 单实例），核心吞吐提升约 1.3–1.45×。
@@ -250,26 +260,28 @@ jpssl-crypt rand 32
 
 | 算法 | 模式 | CPU 加速 | GPU 加速 |
 |------|------|----------|----------|
-| **AES-128/256** | ECB, CBC+PKCS7, GCM | AES-NI (~5 GB/s), AVX2/AVX512 GCM | ECB kernel (实验性) |
-| **GHASH / GF(2^128)** | GCM 认证原语（一次性/增量/GCM 完整哈希） | PCLMULQDQ | — |
-| **ChaCha20-Poly1305** | 流加密, AEAD | — | Keystream kernel (实验性) |
+| **AES-128/256** | ECB, CBC+PKCS7, GCM | AES-NI (~5 GB/s), AVX2/AVX512 GCM, ARM NEON (AESE+PMULL) | ECB kernel (实验性) |
+| **GHASH / GF(2^128)** | GCM 认证原语（一次性/增量/GCM 完整哈希） | PCLMULQDQ / ARM PMULL | — |
+| **ChaCha20-Poly1305** | 流加密, AEAD | ARM NEON (4 路并行) | Keystream kernel (实验性) |
 | **RSA 2048/4096** | PKCS#1 v1.5 | Montgomery CIOS | 批量模幂 (实验性) |
-| **SHA-1** | 哈希 (FIPS 180-4) | AVX2 8 路 / AVX-512 16 路多缓冲 | — |
-| **SHA-256** | 哈希 | — | — |
-| **SHA-384/512** | 哈希 (FIPS 180-4) | SSE4.1 消息调度 | GPU kernel (实验性) |
-| **SHA3-256/384/512** | 哈希 (FIPS 202, Keccak) | — | — |
+| **SHA-1** | 哈希 (FIPS 180-4) | AVX2 8 路 / AVX-512 16 路多缓冲, ARM NEON (SHA1C/P/M) | — |
+| **SHA-256** | 哈希 | ARM NEON (SHA-256 扩展) | — |
+| **SHA-384/512** | 哈希 (FIPS 180-4) | SSE4.1 消息调度, ARM NEON (SHA-512 扩展) | GPU kernel (实验性) |
+| **SHA3-256/384/512** | 哈希 (FIPS 202, Keccak) | ARM NEON (SHA-3 扩展: EOR3/RAX1/BCAX/XAR) | — |
 | **HMAC-SHA256/SHA384/SM3** | MAC | — | — |
 | **HKDF-SHA256/SHA384/SM3** | TLS 1.3 密钥派生 | — | — |
-| **X25519** | ECDH 密钥交换 | — | — |
-| **Ed25519** | 数字签名 (EdDSA) | — | — |
-| **ECDSA P-256** | 数字签名 (secp256r1) | — | — |
+| **X25519** | ECDH 密钥交换 | AVX-512 (x86), AArch64 标量 fe51 (umulh/adc) | — |
+| **X448** | ECDH 密钥交换 (RFC 7748) | 标量 Goldilocks fe448 (AArch64 umulh/adc), 批量 x86 AVX2/AVX512 | — |
+| **Ed25519** | 数字签名 (EdDSA, RFC 8032) | 标量 radix-2^51 (x86 ADX 汇编 / AArch64 umulh·adc) | — |
+| **Ed448** | 数字签名 (EdDSA, RFC 8032) | 标量 Goldilocks fe448 (AArch64 umulh/adc), 批量验证 x86 AVX2/AVX512 | — |
+| **ECDSA P-256/P-384** | 数字签名 (secp256r1/secp384r1) | Montgomery CIOS 域运算 (AArch64 umulh/adc) | — |
 | **X.509 v3** | 证书 DER 编解码 (RFC 5280), 自签名/证书链, SAN/KeyUsage/BasicConstraints | — | — |
-| **SM2** | 数字签名/密钥交换 (sm2p256v1, GM/T 0003) | — | — |
-| **SM3** | 密码杂凑 (256-bit, GM/T 0004) | — | — |
-| **SM4** | 分组密码 (128-bit, GM/T 0002) | — | — |
+| **SM2** | 数字签名/密钥交换 (sm2p256v1, GM/T 0003) | 标量 Montgomery CIOS (AArch64 umulh/adc), SM3 杂凑走 NEON | — |
+| **SM3** | 密码杂凑 (256-bit, GM/T 0004) | ARM NEON (SM3 扩展: vsm3*), x86 标量汇编 (MSVC) | — |
+| **SM4** | 分组密码 (128-bit, GM/T 0002) | ARM NEON (SM4 扩展: vsm4e) | — |
 | **SM4-GCM** | SM4 AEAD 认证加密 (NIST SP 800-38D) | AVX2 自动分派 | — |
 | **SM4-CCM** | SM4 AEAD 认证加密 (NIST SP 800-38C) | — | — |
-| **TLS 1.2/1.3** | 完整握手, 密码套件协商, ECDHE/RSA, AES-GCM/ChaCha20/CCM/SM4-GCM, 0-RTT, RFC 8998 | AVX2/AVX512 GCM | — |
+| **TLS 1.2/1.3** | 完整握手, 密码套件协商, ECDHE/RSA, AES-GCM/ChaCha20/CCM/SM4-GCM, 0-RTT, RFC 8998 | AVX2/AVX512 GCM, ARM NEON GCM | — |
 
 ## API 示例
 
@@ -1053,11 +1065,11 @@ jpssl/
 │   └── tls.hpp                  TLS 1.2/1.3 (含 RFC 8998 + ECDHE)
 ├── src/
 │   ├── aes_cpu.cpp / aes_musa.cpp / aes_gpu.mu
-│   ├── aes_gcm_avx2.cpp / aes_gcm_avx512.cpp / aes_gcm_auto.cpp
-│   ├── chacha20_poly1305.cpp / chacha20_gpu.mu
+│   ├── aes_gcm_avx2.cpp / aes_gcm_avx512.cpp / aes_gcm_auto.cpp / aes_gcm_neon.cpp
+│   ├── chacha20_poly1305.cpp / chacha20_neon.cpp / chacha20_gpu.mu
 │   ├── rsa.cpp / rsa_body.inc / rsa_musa.cpp / rsa_gpu.mu
-│   ├── sha1.cpp / sha1_avx2.cpp / sha1_avx512.cpp
-│   ├── sha256.cpp / sha3.cpp
+│   ├── sha1.cpp / sha1_avx2.cpp / sha1_avx512.cpp / sha1_neon.cpp
+│   ├── sha256.cpp / sha256_neon.cpp / sha3.cpp
 │   ├── hmac.cpp / hkdf.cpp
 │   ├── sha512_cpu.cpp / sha512_opt.cpp / sha512_musa.cpp / sha512_gpu.mu
 │   ├── x25519.cpp / ed25519.cpp / ecdsa.cpp
@@ -1087,13 +1099,18 @@ jpssl/
 | `JP_ENABLE_OPENMP` | ON | OpenMP 并行（CPU 批量 RSA） |
 | `JP_ENABLE_AVX2` | ON | AVX2 GCM (4 路并行) + SHA-512 SIMD 消息调度 |
 | `JP_ENABLE_AVX512` | ON | AVX512 VAES GCM (8 路并行) |
+| `JP_ENABLE_NEON` | ON | ARM NEON/crypto 加速（aarch64：AES-GCM / ChaCha20 / SHA-1 / SHA-256 / SHA-512 / SHA-3 / SM3 / SM4） |
+| `JP_ARM_MARCH` | `armv8.2-a` | ARM 架构等级：`armv8-a` / `armv8.1-a` / `armv8.2-a` / `armv8.4-a` / `armv9-a`（仅影响 NEON 源；SHA-512/SHA-3/SM3/SM4 扩展源默认以 `armv8.4-a+crypto` 编译，运行时按 FEAT_* 检测回退标量） |
 
 ```bash
 # 启用 MUSA GPU 加速 (需要 MUSA SDK 4.3.0+)
 cmake -B build -DJP_ENABLE_MUSA=ON
 
+# ARM (macOS Apple Silicon / Linux aarch64)：启用 NEON 加速并指定架构等级
+cmake -B build -DJP_ENABLE_NEON=ON -DJP_ARM_MARCH=armv9-a
+
 # 禁用所有 SIMD 加速（纯标量回退）
-cmake -B build -DJP_ENABLE_AVX2=OFF -DJP_ENABLE_AVX512=OFF
+cmake -B build -DJP_ENABLE_AVX2=OFF -DJP_ENABLE_AVX512=OFF -DJP_ENABLE_NEON=OFF
 ```
 
 ## 依赖
@@ -1103,6 +1120,7 @@ cmake -B build -DJP_ENABLE_AVX2=OFF -DJP_ENABLE_AVX512=OFF
 - **OpenSSL** (仅部分测试目标需要，用于与 OpenSSL 结果对比)
 - **MUSA SDK** 4.3.0+ (可选，实验性 GPU 加速，默认关闭，通过 `-DJP_ENABLE_MUSA=ON` 启用)
 - **x86_64** (AES-NI / AVX2 / AVX512, 可选)
+- **aarch64** (macOS Apple Silicon / Linux ARM64, NEON 可选)
 
 ## 国密证书透明 (SM2 CT)
 

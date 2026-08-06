@@ -30,7 +30,9 @@
 
 namespace jpssl {
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__aarch64__)
+
+#if defined(__x86_64__) || defined(_M_X64)
 
 static inline uint32_t bswap32_u(uint32_t v) {
 #if defined(_MSC_VER)
@@ -92,6 +94,8 @@ static inline __m128i ccm_mac_data(__m128i state, const uint8_t* data, size_t le
     }
     return state;
 }
+
+#endif // __x86_64__ || _M_X64
 
 /// 构造 AAD 长度前缀块（RFC 3610 §2.2），不足 16 字节补零
 static void ccm_aad_prefix(uint8_t out[16], size_t a_len) {
@@ -291,7 +295,7 @@ static void aes_ccm_encrypt_impl(const aes_context& ctx,
     }
 }
 
-#endif // __x86_64__
+#endif // __x86_64__ || __aarch64__
 
 // ──────────────────────────────────────────────────────────────────────────
 //  公共 API（非零拷贝，vector 输出）

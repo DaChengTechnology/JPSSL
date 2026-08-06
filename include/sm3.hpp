@@ -22,6 +22,13 @@ void sm3_init(sm3_ctx* ctx);
 void sm3_update(sm3_ctx* ctx, const uint8_t* data, size_t len);
 void sm3_final(sm3_ctx* ctx, uint8_t digest[SM3_DIGEST_SIZE]);
 
+// ── ARM NEON (FEAT_SM3) 硬件加速入口 ─────────────────────────────────
+// 仅在 aarch64 + NEON 构建且编译器可见 SM3 指令时声明；运行时由
+// cpu_has_arm_sm3() 分派，不支持 FEAT_SM3 的机器自动回退到标量实现。
+#if defined(__aarch64__) && defined(JP_NEON) && defined(__ARM_FEATURE_SM3)
+void sm3_cf_neon(uint32_t v[8], const uint8_t block[SM3_BLOCK_SIZE]);
+#endif
+
 /// 一次性哈希便捷函数
 inline void sm3_hash(uint8_t digest[SM3_DIGEST_SIZE], const uint8_t* data, size_t len) {
     sm3_ctx ctx;

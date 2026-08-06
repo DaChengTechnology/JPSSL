@@ -565,8 +565,14 @@ void test_cpu_features() {
     std::printf("\n--- CPU Features ---\n");
 
     auto feats = cpu_features::detect();
+#if defined(__aarch64__)
+    CHECK("NEON available", feats.neon);
+    CHECK("ARM AES available", feats.arm_aes);
+    CHECK("ARM PMULL available", feats.arm_pmull);
+#else
     CHECK("AES-NI available", feats.aesni);
     CHECK("PCLMULQDQ available", feats.pclmulqdq);
+#endif
     // AVX2/AVX512/VCLMUL are optional
     std::printf("  [INFO] AVX2: %s\n", feats.avx2 ? "yes" : "no");
     std::printf("  [INFO] VAES/VPCLMUL: %s\n", feats.vpclmulqdq_vaes ? "yes" : "no");

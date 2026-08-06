@@ -1,4 +1,7 @@
 build/
+build-arm64/
+build-armv9/
+build-arm84/
 build-win/
 .cache/
 .codewhale/
