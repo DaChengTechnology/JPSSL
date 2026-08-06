@@ -182,6 +182,15 @@ struct tls_session {
     uint8_t ks_priv_x25519[32];
     uint8_t ks_pub_x25519[32];
 
+    // TLS 1.2 服务端：RSA 密钥交换/签名所需的服务器私钥（由握手流程注入，
+    // 仅服务端会话填充；ECDHE 套件仅用于 SKX 签名，RSA 套件用于 premaster 解密）
+    jpssl::rsa_private_key rsa_key;
+
+    // TLS 1.2 客户端：ClientHello 原始字节缓存。客户端生成 ClientHello 时
+    // 还不知道服务端将选定的 cipher_suite（transcript 哈希算法依赖它），
+    // 因此推迟到收到 ServerHello、解析出套件后再初始化 transcript 并补入。
+    std::vector<uint8_t> tls12_client_hello_cache;
+
     // 0-RTT / PSK 支持
     bool psk_valid = false;                // 客户端: 是否有可用 PSK
     uint8_t psk_identity[32];              // PSK 标识 (ticket)
@@ -276,6 +285,11 @@ inline bool tls_scheme_allowed_for_cert_verify(uint16_t scheme) {
 inline size_t tls_hash_len(CipherSuite cs) {
     switch (cs) {
         case CipherSuite::TLS_AES_256_GCM_SHA384: return 48;
+        // TLS 1.2 SHA-384 套件（RFC 5289）：Finished/PRF 用 SHA-384
+        case CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384:
+            return 48;
         default: return 32;
     }
 }
@@ -284,6 +298,11 @@ inline size_t tls_hash_len(CipherSuite cs) {
 inline bool tls_use_sha384(CipherSuite cs) {
     switch (cs) {
         case CipherSuite::TLS_AES_256_GCM_SHA384: return true;
+        // TLS 1.2 SHA-384 套件（RFC 5289）
+        case CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384:
+            return true;
         default: return false;
     }
 }
@@ -473,6 +492,12 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
                                   const uint8_t* pre_master_secret, size_t pms_len,
                                   std::vector<uint8_t>& client_finished);
 
+// 服务端: 处理 ClientHello → 生成明文 hello flight（ServerHello+Certificate+SKX+ServerHelloDone）
+// 保存服务端 ECDHE 私钥到 s.ks_priv；随后调用 tls12_process_client_key_exchange 处理 ClientKeyExchange
+bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
+                                    std::vector<uint8_t>& server_response,
+                                    const tls_certificate_manager& cert_manager);
+
 // 服务端: 处理 ClientHello → 生成 ServerHello+Certificate+ServerHelloDone
 // 返回完整的 server_flight (不含加密部分，CCS+Finished 需要单独调用)
 bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
@@ -490,8 +515,8 @@ bool tls12_process_client_key_exchange(tls_session& s, const uint8_t* encrypted_
 // 服务端: 处理客户端 Finished
 bool tls12_process_client_finished(tls_session& s, const uint8_t* data, size_t len);
 
-// 密钥派生
-void tls12_derive_keys(tls_session& s, const uint8_t pre_master[48]);
+// 密钥派生（pms_len：ECDHE 共享密钥 32 字节，RSA premaster 48 字节；默认 48 兼容旧调用）
+void tls12_derive_keys(tls_session& s, const uint8_t* pre_master, size_t pms_len = 48);
 
 // ── 消息构造辅助 ────────────────────────────────────────────────────────
 

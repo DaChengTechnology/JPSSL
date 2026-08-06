@@ -603,5 +603,5 @@ bool CAT(dec_fn_,K)(const PRIV_KEY&prv,const uint8_t*ct,std::vector<uint8_t>&pt)
 #else
 CAT(mont_modpow_half_win8_ex_,K)(m1,c,prv.dP,mcp,prv.p,Rh_p,R2h_p);CAT(mont_modpow_half_win8_ex_,K)(m2,c,prv.dQ,mcq,prv.q,Rh_q,R2h_q);
 #endif
-BN m2p;if(m2<prv.p)m2p=m2;else bn_mod(m2p,m2,prv.p);BN h;if(m1<m2p){BN tmp;bn_sub(tmp,prv.p,m2p);bn_add(h,m1,tmp);}else bn_sub(h,m1,m2p);BN qInv_m;CAT(mont_mul_half_,K)(qInv_m,prv.qInv,R2h_p,prv.p,mcp.m_prime);BN h2;CAT(mont_mul_half_,K)(h2,h,qInv_m,prv.p,mcp.m_prime);BN t;bn_mul(t,prv.q,h2);bn_add(m,m2,t);if(!(m<prv.n))bn_sub(m,m,prv.n);}
+BN m2p;if(m2<prv.p)m2p=m2;else bn_mod(m2p,m2,prv.p);BN h;if(m1<m2p){BN tmp;bn_sub(tmp,prv.p,m2p);bn_add(h,m1,tmp);}else bn_sub(h,m1,m2p);BN qInv_m;CAT(mont_mul_half_,K)(qInv_m,prv.qInv,R2h_p,prv.p,mcp.m_prime);BN h2;CAT(mont_mul_half_,K)(h2,h,qInv_m,prv.p,mcp.m_prime);BN t;bn_mul(t,prv.q,h2);bn_add(m,m2,t);if(!(m<prv.n))bn_sub(m,m,prv.n);}else{/* non-CRT privkey (d/n/e only, e.g. PEM): m = c^d mod n */bn_modpow(m,c,prv.d,prv.n);}
 uint8_t pad[512];m.to_bytes(pad);if(pad[0]!=0||pad[1]!=2)return 0;size_t sep=2;while(sep<bl&&pad[sep]!=0)++sep;if(sep>=bl-1)return 0;pt.assign(pad+sep+1,pad+bl);return 1;}
