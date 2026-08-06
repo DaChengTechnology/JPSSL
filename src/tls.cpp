@@ -501,6 +501,241 @@ const tls_certificate* tls_certificate_manager::get_default_certificate() const 
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  服务端证书加载（PEM / CSR + 私钥）
+// ═══════════════════════════════════════════════════════════════════════
+SignatureAlgorithm tls_key_type_to_sig_alg(x509::KeyType kt) {
+    switch (kt) {
+        case x509::KeyType::RSA_2048: case x509::KeyType::RSA_4096:
+            return SignatureAlgorithm::RSA_PKCS1_SHA256;
+        case x509::KeyType::Ed25519:  return SignatureAlgorithm::ED25519;
+        case x509::KeyType::Ed448:    return SignatureAlgorithm::ED448;
+        case x509::KeyType::ECDSA_P256: return SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
+        case x509::KeyType::ECDSA_P384: return SignatureAlgorithm::ECDSA_SECP384R1_SHA384;
+        case x509::KeyType::ECDSA_P521: return SignatureAlgorithm::ECDSA_SECP521R1_SHA512;
+        case x509::KeyType::SM2:      return SignatureAlgorithm::SM2_SM3;
+        default: return SignatureAlgorithm::ED25519;
+    }
+}
+
+namespace {
+
+// 用 x509 公钥 raw bytes 填充 tls_certificate.pub
+bool fill_pub(tls_certificate& out, x509::KeyType kt, const std::vector<uint8_t>& pub) {
+    switch (kt) {
+        case x509::KeyType::RSA_2048: {
+            if (pub.size() < 256 + 3) return false;
+            out.pub.rsa.n = rsa_bignum::from_bytes(pub.data(), 256);
+            out.pub.rsa.e = rsa_bignum::from_bytes(pub.data() + 256, 3);
+            return true;
+        }
+        case x509::KeyType::Ed25519:
+            if (pub.size() < 32) return false;
+            std::memcpy(out.pub.ed25519, pub.data(), 32);
+            return true;
+        case x509::KeyType::Ed448:
+            if (pub.size() < 57) return false;
+            std::memcpy(out.pub.ed448, pub.data(), 57);
+            return true;
+        case x509::KeyType::ECDSA_P256:
+            if (pub.size() < 64) return false;
+            std::memcpy(out.pub.ecdsa_p256, pub.data(), 64);
+            return true;
+        case x509::KeyType::ECDSA_P384:
+            if (pub.size() < 96) return false;
+            std::memcpy(out.pub.ecdsa_p384, pub.data(), 96);
+            return true;
+        case x509::KeyType::ECDSA_P521:
+            if (pub.size() < 132) return false;
+            std::memcpy(out.pub.ecdsa_p521, pub.data(), 132);
+            return true;
+        case x509::KeyType::SM2:
+            if (pub.size() < 64) return false;
+            std::memcpy(out.pub.sm2, pub.data(), 64);
+            return true;
+        default:
+            return false;
+    }
+}
+
+// 用 x509 私钥 raw bytes 填充 tls_certificate.priv（RSA 需要私钥的 n||e 公钥）
+bool fill_priv(tls_certificate& out, x509::KeyType kt,
+               const std::vector<uint8_t>& priv, const std::vector<uint8_t>& pub) {
+    switch (kt) {
+        case x509::KeyType::RSA_2048: {
+            if (priv.size() < 256 || pub.size() < 256 + 3) return false;
+            out.priv.rsa.d = rsa_bignum::from_bytes(priv.data(), 256);
+            out.priv.rsa.n = rsa_bignum::from_bytes(pub.data(), 256);
+            out.priv.rsa.e = rsa_bignum::from_bytes(pub.data() + 256, 3);
+            return true;
+        }
+        case x509::KeyType::Ed25519:
+            if (priv.size() < 64) return false;
+            std::memcpy(out.priv.ed25519, priv.data(), 64);
+            return true;
+        case x509::KeyType::Ed448:
+            if (priv.size() < 57) return false;
+            std::memcpy(out.priv.ed448, priv.data(), 57);
+            return true;
+        case x509::KeyType::ECDSA_P256:
+            if (priv.size() < 32) return false;
+            std::memcpy(out.priv.ecdsa_p256, priv.data(), 32);
+            return true;
+        case x509::KeyType::ECDSA_P384:
+            if (priv.size() < 48) return false;
+            std::memcpy(out.priv.ecdsa_p384, priv.data(), 48);
+            return true;
+        case x509::KeyType::ECDSA_P521:
+            if (priv.size() < 66) return false;
+            std::memcpy(out.priv.ecdsa_p521, priv.data(), 66);
+            return true;
+        case x509::KeyType::SM2:
+            if (priv.size() < 32) return false;
+            std::memcpy(out.priv.sm2, priv.data(), 32);
+            return true;
+        default:
+            return false;
+    }
+}
+
+// 从 CSR subject 提取 CN 作为证书主体名
+std::string csr_common_name(const x509::csr& req) {
+    for (const auto& attr : req.subject) {
+        if (attr.oid.size() == 3 &&
+            std::memcmp(attr.oid.data(), x509::OID_CN, 3) == 0)
+            return attr.value;
+    }
+    if (!req.subject.empty()) return req.subject[0].value;
+    return "localhost";
+}
+
+// 读取整个文件为字符串（失败返回空串）
+std::string read_file_string(const char* path) {
+    FILE* f = std::fopen(path, "rb");
+    if (!f) return {};
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    std::string s;
+    if (sz > 0) {
+        s.resize((size_t)sz);
+        size_t rd = std::fread(&s[0], 1, (size_t)sz, f);
+        s.resize(rd);
+    }
+    std::fclose(f);
+    return s;
+}
+
+// 解析 PEM 中全部证书块（CA bundle 可含多张）
+std::vector<x509::x509_cert> parse_all_pem_certs(const std::string& pem) {
+    std::vector<x509::x509_cert> out;
+    size_t pos = 0;
+    while (true) {
+        size_t b = pem.find("-----BEGIN CERTIFICATE-----", pos);
+        if (b == std::string::npos) break;
+        size_t e = pem.find("-----END CERTIFICATE-----", b);
+        if (e == std::string::npos) break;
+        std::string block = pem.substr(b, e - b + std::string("-----END CERTIFICATE-----").size());
+        if (auto c = x509::x509_cert::from_pem(block)) out.push_back(std::move(*c));
+        pos = e;
+    }
+    return out;
+}
+
+void set_err(std::string* err, const std::string& msg) { if (err) *err = msg; }
+
+} // anonymous namespace
+
+std::unique_ptr<tls_certificate> tls_certificate::from_pem(const std::string& cert_pem,
+                                                           const std::string& key_pem,
+                                                           std::string* err) {
+    auto c = x509::x509_cert::from_pem(cert_pem);
+    if (!c) { set_err(err, "certificate PEM parse failed"); return nullptr; }
+    auto k = x509::private_key::from_pem(key_pem);
+    if (!k) { set_err(err, "private key PEM parse failed"); return nullptr; }
+    if (c->key_type == x509::KeyType::RSA_4096) {
+        set_err(err, "RSA-4096 private key is not supported in tls_certificate (use RSA-2048)");
+        return nullptr;
+    }
+    if (k->key_type != c->key_type) {
+        set_err(err, "certificate/private key key-type mismatch");
+        return nullptr;
+    }
+    auto out = std::make_unique<tls_certificate>();
+    out->subject_name = c->common_name();
+    out->cert_data = c->to_der();
+    out->sig_alg = tls_key_type_to_sig_alg(c->key_type);
+    if (!fill_pub(*out, c->key_type, c->public_key)) {
+        set_err(err, "failed to import certificate public key");
+        return nullptr;
+    }
+    if (!fill_priv(*out, k->key_type, k->priv, k->pub)) {
+        set_err(err, "failed to import private key");
+        return nullptr;
+    }
+    return out;
+}
+
+std::unique_ptr<tls_certificate> tls_certificate::from_pem_file(const char* cert_path,
+                                                                const char* key_path,
+                                                                std::string* err) {
+    std::string cp = read_file_string(cert_path);
+    if (cp.empty()) { set_err(err, "cannot read cert file"); return nullptr; }
+    std::string kp = read_file_string(key_path);
+    if (kp.empty()) { set_err(err, "cannot read key file"); return nullptr; }
+    return from_pem(cp, kp, err);
+}
+
+std::unique_ptr<tls_certificate> tls_certificate::from_csr_pem(const std::string& csr_pem,
+                                                               const std::string& key_pem,
+                                                               std::string* err) {
+    auto req = x509::csr::from_pem(csr_pem);
+    if (!req) { set_err(err, "CSR PEM parse failed"); return nullptr; }
+    auto k = x509::private_key::from_pem(key_pem);
+    if (!k) { set_err(err, "private key PEM parse failed"); return nullptr; }
+    if (k->key_type != req->key_type) {
+        set_err(err, "CSR/private key key-type mismatch");
+        return nullptr;
+    }
+    if (req->key_type == x509::KeyType::RSA_4096) {
+        set_err(err, "RSA-4096 private key is not supported in tls_certificate (use RSA-2048)");
+        return nullptr;
+    }
+    auto out = std::make_unique<tls_certificate>();
+    out->subject_name = csr_common_name(*req);
+    // cert_data 留空：握手时按 CSR 主体自动生成自签名证书
+    out->sig_alg = tls_key_type_to_sig_alg(req->key_type);
+    if (!fill_pub(*out, req->key_type, req->public_key)) {
+        set_err(err, "failed to import CSR public key");
+        return nullptr;
+    }
+    if (!fill_priv(*out, k->key_type, k->priv, k->pub)) {
+        set_err(err, "failed to import private key");
+        return nullptr;
+    }
+    return out;
+}
+
+std::unique_ptr<tls_certificate> tls_certificate::from_csr_pem_file(const char* csr_path,
+                                                                    const char* key_path,
+                                                                    std::string* err) {
+    std::string cp = read_file_string(csr_path);
+    if (cp.empty()) { set_err(err, "cannot read CSR file"); return nullptr; }
+    std::string kp = read_file_string(key_path);
+    if (kp.empty()) { set_err(err, "cannot read key file"); return nullptr; }
+    return from_csr_pem(cp, kp, err);
+}
+
+tls_trust_store tls_trust_store::from_pem(const std::string& pem) {
+    tls_trust_store ts;
+    ts.ca_roots = parse_all_pem_certs(pem);
+    return ts;
+}
+
+tls_trust_store tls_trust_store::from_pem_file(const char* path) {
+    return from_pem(read_file_string(path));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  SNI 解析
 // ═══════════════════════════════════════════════════════════════════════
 std::string tls_parse_server_name(const uint8_t* extensions, size_t ext_len){
@@ -820,6 +1055,59 @@ static bool tls13_verify_cert_verify(const tls_certificate& cert, tls_session& s
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  客户端 x509 链验证辅助
+// ═══════════════════════════════════════════════════════════════════════
+namespace {
+
+// 叶子证书主机名匹配（SAN DNS 优先，其次 CN；支持 *.example.com 通配）
+bool tls13_hostname_matches(const x509::x509_cert& leaf, const std::string& host) {
+    if (host.empty()) return true;
+    for (const auto& dns : leaf.dns_names()) {
+        if (dns == host) return true;
+        if (dns.size() > 2 && dns[0] == '*' && dns[1] == '.') {
+            std::string suffix = dns.substr(1); // ".example.com"
+            if (host.size() > suffix.size() &&
+                host.compare(host.size() - suffix.size(), suffix.size(), suffix) == 0)
+                return true;
+        }
+    }
+    if (leaf.common_name() == host) return true;
+    return false;
+}
+
+// 服务端证书链 + 信任库验证：
+//   1) 服务端链自身可通过（链已含自签根）；
+//   2) 否则逐个尝试把信任库中的 CA 根追加到链尾后验证。
+// 通过后还需叶子主机名匹配 server_name。
+bool tls13_verify_server_chain(const std::vector<x509::x509_cert>& server_chain,
+                               const tls_trust_store& trust,
+                               const std::string& hostname) {
+    if (server_chain.empty()) return false;
+    auto r = x509::x509_verify_chain(server_chain);
+    if (!r.success) {
+        for (const auto& root : trust.ca_roots) {
+            std::vector<x509::x509_cert> full = server_chain;
+            full.push_back(root);
+            r = x509::x509_verify_chain(full);
+            if (r.success) break;
+        }
+    }
+    if (!r.success) return false;
+    return tls13_hostname_matches(server_chain.front(), hostname);
+}
+
+// 用解析出的 x509 叶子证书构造 tls_certificate（只填公钥，用于 CertificateVerify 验证）
+std::unique_ptr<tls_certificate> tls_cert_from_x509_leaf(const x509::x509_cert& leaf) {
+    auto out = std::make_unique<tls_certificate>();
+    out->subject_name = leaf.common_name();
+    out->sig_alg = tls_key_type_to_sig_alg(leaf.key_type);
+    if (!fill_pub(*out, leaf.key_type, leaf.public_key)) return nullptr;
+    return out;
+}
+
+} // anonymous namespace
+
+// ═══════════════════════════════════════════════════════════════════════
 //  构建 EncryptedExtensions
 // ═══════════════════════════════════════════════════════════════════════
 // alpn_selected 非空时携带 ALPN 扩展（RFC 7301：服务端只选择一个协议）。
@@ -1109,10 +1397,12 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
 
 bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len,
                                   std::vector<uint8_t>& client_finished,
-                                  const tls_certificate_manager* cert_manager){
+                                  const tls_certificate_manager* cert_manager,
+                                  const tls_trust_store* trust_store){
     if(len<5)return false;
     size_t offset=0;
     const tls_certificate* server_cert=nullptr;
+    std::unique_ptr<tls_certificate> parsed_server_cert;  // x509 验证路径下持有叶子证书
 
     // 解析 ServerHello（明文）
     if(data[offset]!=(uint8_t)HandshakeType::SERVER_HELLO)return false;
@@ -1285,29 +1575,45 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
                 const std::vector<uint16_t>& cert_algs =
                     s.sig_algs_cert.empty() ? tls_default_signature_algorithms() : s.sig_algs_cert;
                 size_t bo = 4; // 跳过握手头
-                if (bo + 1 + 3 <= 4 + hlen) {
-                    size_t ctx_len = hmsg[bo];
-                    size_t list_off = bo + 1 + ctx_len;
-                    if (list_off + 3 <= 4 + hlen) {
-                        size_t list_len = ((size_t)hmsg[list_off] << 16) |
-                                          ((size_t)hmsg[list_off + 1] << 8) | hmsg[list_off + 2];
-                        if (list_len >= 3 && list_off + 3 + 3 <= 4 + hlen) {
-                            size_t cert_len = ((size_t)hmsg[list_off + 3] << 16) |
-                                              ((size_t)hmsg[list_off + 4] << 8) | hmsg[list_off + 5];
-                            if (list_off + 3 + 3 + cert_len <= 4 + hlen) {
-                                const uint8_t* der = hmsg + list_off + 3 + 3;
-                                auto parsed = x509::x509_cert::from_der(der, cert_len);
-                                if (parsed) {
-                                    uint16_t chain_scheme = x509_key_type_chain_scheme(parsed->sign_key_type);
-                                    if (chain_scheme != 0 && !scheme_in_list(cert_algs, chain_scheme)) return false;
-                                }
-                            }
-                        }
+                // TLS 1.3 Certificate: context_len(1) + list_len(3) + [cert_len(3)+cert+ext_len(2)]*
+                size_t ctx_len = (bo < 4 + hlen) ? hmsg[bo] : 0;
+                size_t list_off = bo + 1 + ctx_len;
+                if (list_off + 3 <= 4 + hlen) {
+                    size_t list_len = ((size_t)hmsg[list_off] << 16) |
+                                      ((size_t)hmsg[list_off + 1] << 8) | hmsg[list_off + 2];
+                    size_t p = list_off + 3;
+                    size_t list_end = list_off + 3 + list_len;
+                    if (list_end > 4 + hlen) list_end = 4 + hlen;
+                    std::vector<x509::x509_cert> chain;
+                    while (p + 3 <= list_end) {
+                        size_t cert_len = ((size_t)hmsg[p] << 16) |
+                                          ((size_t)hmsg[p + 1] << 8) | hmsg[p + 2];
+                        p += 3;
+                        if (p + cert_len > list_end) break;
+                        auto parsed = x509::x509_cert::from_der(hmsg + p, cert_len);
+                        if (!parsed) break;
+                        uint16_t chain_scheme = x509_key_type_chain_scheme(parsed->sign_key_type);
+                        if (chain_scheme != 0 && !scheme_in_list(cert_algs, chain_scheme)) return false;
+                        chain.push_back(std::move(*parsed));
+                        p += cert_len;
+                        if (p + 2 <= list_end) p += 2 + ((size_t)hmsg[p] << 8 | hmsg[p + 1]); // 跳过证书扩展
+                        else break;
+                    }
+                    // 客户端 x509 验证：trust_store 提供 CA 根时，验证整条链 + 主机名
+                    if (trust_store) {
+                        if (!tls13_verify_server_chain(chain, *trust_store, s.server_name)) return false;
+                        // 链验证通过后必须能用叶子证书构造 server_cert 验证 CertificateVerify，
+                        // 否则（如 RSA-4096 对端证书）不能静默跳过 CV 校验，直接判失败。
+                        if (chain.empty() ||
+                            !(parsed_server_cert = tls_cert_from_x509_leaf(chain[0])))
+                            return false;
+                        server_cert = parsed_server_cert.get();
                     }
                 }
-                if(cert_manager){
-                    server_cert=cert_manager->get_certificate(s.server_name);
-                    if(!server_cert)server_cert=cert_manager->get_default_certificate();
+                // 旧行为：cert_manager 按 SNI 查找预期服务器证书（trust_store 未提供时使用）
+                if (!server_cert && cert_manager) {
+                    server_cert = cert_manager->get_certificate(s.server_name);
+                    if (!server_cert) server_cert = cert_manager->get_default_certificate();
                 }
                 break;
             }

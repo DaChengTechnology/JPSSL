@@ -268,6 +268,26 @@ struct tls_certificate {
     bool verify_scheme(uint16_t scheme, const uint8_t* data, size_t data_len,
                        const uint8_t* sig, size_t sig_len,
                        const uint8_t za[32] = nullptr) const;
+
+    // ── 服务端证书加载（直接读取 PEM / CSR + 私钥）────────────────────
+    /// 从 PEM 证书 + PEM 私钥构造服务端证书（私钥支持 PKCS#8/PKCS#1/SEC1/RFC 8410）。
+    /// 失败返回 nullptr；err 非空时写入错误描述。
+    static std::unique_ptr<tls_certificate> from_pem(const std::string& cert_pem,
+                                                     const std::string& key_pem,
+                                                     std::string* err = nullptr);
+    /// 从证书 PEM 文件 + 私钥 PEM 文件构造。
+    static std::unique_ptr<tls_certificate> from_pem_file(const char* cert_path,
+                                                          const char* key_path,
+                                                          std::string* err = nullptr);
+    /// 从 CSR + PEM 私钥构造服务端证书：subject 与公钥取自 CSR，私钥用于签名。
+    /// 证书数据留空，握手时按 CSR 主体自动生成自签名证书。
+    static std::unique_ptr<tls_certificate> from_csr_pem(const std::string& csr_pem,
+                                                         const std::string& key_pem,
+                                                         std::string* err = nullptr);
+    /// 从 CSR PEM 文件 + 私钥 PEM 文件构造。
+    static std::unique_ptr<tls_certificate> from_csr_pem_file(const char* csr_path,
+                                                              const char* key_path,
+                                                              std::string* err = nullptr);
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -282,6 +302,23 @@ public:
 private:
     std::map<std::string, std::unique_ptr<tls_certificate>> certificates;
     std::string default_domain;
+};
+
+/// KeyType → TLS 签名方案（from_pem / from_csr_pem 内部使用，也对外暴露）
+SignatureAlgorithm tls_key_type_to_sig_alg(x509::KeyType kt);
+
+// ═══════════════════════════════════════════════════════════════════════
+//  客户端信任库（x509 链验证）
+// ═══════════════════════════════════════════════════════════════════════
+/// 持有 CA 根证书，客户端握手时对服务端证书链执行 x509_verify_chain。
+struct tls_trust_store {
+    std::vector<x509::x509_cert> ca_roots;
+    /// 从 PEM 解析全部证书（可含多张 CA 根）。
+    static tls_trust_store from_pem(const std::string& pem);
+    /// 从 PEM 文件解析全部证书。
+    static tls_trust_store from_pem_file(const char* path);
+    size_t count() const { return ca_roots.size(); }
+    bool empty() const { return ca_roots.empty(); }
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -311,9 +348,13 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
 
 // 客户端: 处理服务端回包 (ServerHello + EncryptedExtensions + Certificate + CertificateVerify + Finished)
 // 返回生成的 Client Finished 消息
+// cert_manager: 可选，按 SNI 名称查找预期服务器证书（兼容旧行为）。
+// trust_store:  可选，提供 CA 根证书时对服务端证书链执行 x509 链验证
+//               （x509_verify_chain + 叶子主机名匹配），失败则握手失败。
 bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len,
                                   std::vector<uint8_t>& client_finished,
-                                  const tls_certificate_manager* cert_manager = nullptr);
+                                  const tls_certificate_manager* cert_manager = nullptr,
+                                  const tls_trust_store* trust_store = nullptr);
 
 // 服务端: 处理 ClientHello 并生成完整回包 (ServerHello + EE + Certificate + CV + Finished)
 bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
