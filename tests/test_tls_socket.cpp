@@ -330,6 +330,96 @@ static void test_co_io() {
     listener.close();
 }
 
+// 客户端 connect 默认只信任系统信任库中的 CA：
+// 自签证书（不在系统信任库）必须被拒绝；显式传入信任库则可成功。
+static void test_connect_default_system_trust() {
+    std::printf("\n=== connect 默认系统信任 ===\n");
+    uint8_t pub[64], priv[32];
+    ecdsa_p256_keygen(pub, priv);
+    tls_certificate_manager server_mgr;
+    server_mgr.add_certificate("localhost", make_server_cert(pub, priv));
+
+    tls_listener listener;
+    std::string err;
+    TEST("listener listen", listener.listen(0, "127.0.0.1", &err));
+    uint16_t port = listener.local_port();
+    TEST("listener port assigned", port != 0);
+
+    // 服务端线程：accept 后立即握手（客户端会拒绝，握手失败返回）
+    std::thread server_thread([&] {
+        tls_connection conn;
+        std::string e;
+        listener.accept(conn, server_mgr, &e);  // 握手失败也正常返回
+    });
+
+    // 客户端：默认 connect（无显式 trust）→ 自签证书不被系统信任 → 握手失败
+    // （host 用 localhost 匹配证书 SAN；证书是自签的，系统信任库必然拒绝）
+    tls_connection client;
+    TEST("默认 connect 拒绝自签证书", !client.connect("localhost", port, nullptr, &err));
+    client.close();
+    server_thread.join();
+    listener.close();
+
+    // 显式信任库：CA 签发的 leaf 可成功握手（验证默认行为差异）
+    // 构造 CA + leaf（复用 x509 builder）
+    uint8_t ca_pub[64], ca_priv[32];
+    ecdsa_p256_keygen(ca_pub, ca_priv);
+    x509::x509_builder ca_b;
+    x509::DistinguishedName ca_dn;
+    ca_dn.push_back({std::vector<uint8_t>(x509::OID_CN, x509::OID_CN + 3), "Socket Test CA"});
+    ca_b.set_subject(ca_dn).set_issuer(ca_dn);
+    uint8_t ca_ser[8] = {0xA1};
+    ca_b.set_serial(ca_ser, 8);
+    uint64_t now = (uint64_t)time(nullptr);
+    ca_b.set_validity(now - 86400, now + 365 * 86400);
+    ca_b.set_key(x509::KeyType::ECDSA_P256, ca_pub, 64);
+    ca_b.set_ca(true);
+    auto ca_cert = ca_b.build_and_sign(x509::KeyType::ECDSA_P256, ca_priv, 32);
+
+    uint8_t leaf_pub[64], leaf_priv[32];
+    ecdsa_p256_keygen(leaf_pub, leaf_priv);
+    x509::x509_builder leaf_b;
+    x509::DistinguishedName leaf_dn;
+    leaf_dn.push_back({std::vector<uint8_t>(x509::OID_CN, x509::OID_CN + 3), "localhost"});
+    leaf_b.set_subject(leaf_dn).set_issuer(ca_dn);
+    uint8_t leaf_ser[8] = {0xA2};
+    leaf_b.set_serial(leaf_ser, 8);
+    leaf_b.set_validity(now - 86400, now + 365 * 86400);
+    leaf_b.set_key(x509::KeyType::ECDSA_P256, leaf_pub, 64);
+    leaf_b.set_ca(false);
+    leaf_b.add_san_dns("localhost");
+    auto leaf_cert = leaf_b.build_and_sign(x509::KeyType::ECDSA_P256, ca_priv, 32);
+
+    // 服务端用 CA 签发的 leaf
+    auto srv = std::make_unique<tls_certificate>();
+    srv->subject_name = "localhost";
+    srv->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
+    std::memcpy(srv->pub.ecdsa_p256, leaf_pub, 64);
+    std::memcpy(srv->priv.ecdsa_p256, leaf_priv, 32);
+    srv->cert_data = leaf_cert.to_der();
+    tls_certificate_manager server_mgr2;
+    server_mgr2.add_certificate("localhost", std::move(srv));
+
+    tls_listener listener2;
+    TEST("listener2 listen", listener2.listen(0, "127.0.0.1", &err));
+    uint16_t port2 = listener2.local_port();
+    std::thread server_thread2([&] {
+        tls_connection conn;
+        std::string e;
+        if (!listener2.accept(conn, server_mgr2, &e)) return;
+        const char msg[] = "hi";
+        conn.send((const uint8_t*)msg, sizeof(msg) - 1, &e);
+    });
+
+    tls_connection client2;
+    tls_trust_store trust;
+    trust.ca_roots.push_back(ca_cert);
+    TEST("显式信任库可握手", client2.connect("localhost", port2, trust, &err));
+    client2.close();
+    server_thread2.join();
+    listener2.close();
+}
+
 int main() {
     std::string err;
     TEST("socket init", tls_socket_init(&err));
@@ -337,6 +427,7 @@ int main() {
     test_alpn();
     test_nonblocking();
     test_co_io();
+    test_connect_default_system_trust();
 
     std::printf("\n================================================\n");
     std::printf("  Result: %d passed, %d failed", pass, fail);

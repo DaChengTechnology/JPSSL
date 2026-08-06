@@ -479,7 +479,15 @@ bool tls_connection::connect(const std::string& host, uint16_t port,
                              const tls_certificate_manager* trust_store,
                              std::string* error) {
     if (!establish_tcp(host, port, error)) return false;
-    return do_client_handshake(trust_store, nullptr, error);
+    if (trust_store) return do_client_handshake(trust_store, nullptr, error);
+    // 默认只信任系统信任库中的 CA 根证书：
+    // 对服务端证书链执行 x509 验证，验证失败或系统信任库不可用则握手失败。
+    auto sys = tls_trust_store::from_system();
+    if (sys.empty()) {
+        set_err(error, "no system trust store available (set SSL_CERT_FILE or install system CA bundle)");
+        return false;
+    }
+    return do_client_handshake(nullptr, &sys, error);
 }
 
 bool tls_connection::connect(const std::string& host, uint16_t port,

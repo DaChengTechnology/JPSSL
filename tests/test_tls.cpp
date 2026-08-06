@@ -1260,6 +1260,158 @@ void test_tls13_csr_server_handshake() {
                                                                      client_finished.size()));
 }
 
+// ========================================================================
+//  系统信任库加载 + 客户端鲁棒性测试
+// ========================================================================
+
+void test_tls_trust_store_system() {
+    auto sys = tls_trust_store::from_system();
+    TEST("系统信任库加载非空", !sys.empty());
+    // 缓存命中：重复调用返回相同结果
+    auto sys2 = tls_trust_store::from_system();
+    TEST("系统信任库缓存一致", sys2.count() == sys.count());
+    if (!sys.empty()) {
+        // 抽查根证书基本结构（issuer 非空、可解析）
+        bool any_issuer = false;
+        for (const auto& c : sys.ca_roots)
+            if (!c.issuer_name().empty()) { any_issuer = true; break; }
+        TEST("根证书含 issuer 信息", any_issuer);
+    }
+}
+
+// 构造一次完整 TLS 1.3 服务端 flight（CA 签发 leaf 证书），供鲁棒性测试复用
+static bool make_server_flight_for_robust(std::vector<uint8_t>& server_flight,
+                                          tls_certificate_manager& cert_mgr,
+                                          tls_session* server_out = nullptr) {
+    auto srv_cert = tls_certificate::from_pem(LEAF_CERT_PEM, SERVER_KEY_PEM);
+    if (!srv_cert) return false;
+    cert_mgr.add_certificate("localhost", std::move(srv_cert));
+    tls_session client;
+    client.server_name = "localhost";
+    std::vector<uint8_t> client_hello;
+    if (!tls13_make_client_hello(client, client_hello)) return false;
+    tls_session server;
+    if (!tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                  server_flight, cert_mgr)) return false;
+    if (server_out) *server_out = server;
+    return true;
+}
+
+void test_tls13_robustness_malformed() {
+    tls_certificate_manager cert_mgr;
+    std::vector<uint8_t> sf;
+    if (!make_server_flight_for_robust(sf, cert_mgr)) { TEST("构造 flight", false); return; }
+    TEST("构造 flight", !sf.empty());
+    auto trust = tls_trust_store::from_pem(CA_CERT_PEM);
+
+    // 截断：只给前 10 字节 → 握手必须失败（不崩溃）
+    {
+        tls_session client;
+        client.server_name = "localhost";
+        std::vector<uint8_t> cf;
+        TEST("截断 flight 拒绝", !tls13_process_server_flight(client, sf.data(), 10, cf, nullptr, &trust));
+    }
+    // 空输入
+    {
+        tls_session client;
+        client.server_name = "localhost";
+        std::vector<uint8_t> cf;
+        TEST("空 flight 拒绝", !tls13_process_server_flight(client, nullptr, 0, cf, nullptr, &trust));
+    }
+    // 随机字节
+    {
+        tls_session client;
+        client.server_name = "localhost";
+        std::vector<uint8_t> junk(64);
+        for (auto& b : junk) b = (uint8_t)(b * 31 + 7);
+        std::vector<uint8_t> cf;
+        TEST("随机字节拒绝", !tls13_process_server_flight(client, junk.data(), junk.size(), cf, nullptr, &trust));
+    }
+    // 篡改证书消息中的一个字节（加密 flight 后部）
+    if (sf.size() > 32) {
+        tls_session client;
+        client.server_name = "localhost";
+        auto tampered = sf;
+        tampered[tampered.size() - 16] ^= 0x01;  // 破坏加密 record 尾部
+        std::vector<uint8_t> cf;
+        TEST("篡改加密记录拒绝", !tls13_process_server_flight(client, tampered.data(), tampered.size(),
+                                                               cf, nullptr, &trust));
+    }
+}
+
+void test_tls13_robustness_hostname() {
+    // 证书 SAN 是 localhost，但客户端请求 server_name 不匹配 → 握手失败
+    tls_certificate_manager cert_mgr;
+    std::vector<uint8_t> sf;
+    if (!make_server_flight_for_robust(sf, cert_mgr)) return;
+    auto trust = tls_trust_store::from_pem(CA_CERT_PEM);
+
+    tls_session client;
+    client.server_name = "evil.example.com";  // 与证书不匹配
+    std::vector<uint8_t> cf;
+    TEST("主机名不匹配拒绝", !tls13_process_server_flight(client, sf.data(), sf.size(), cf, nullptr, &trust));
+}
+
+void test_tls13_robustness_expired_cert() {
+    // 构造一张过期 CA 签发的 leaf：链验证应因有效期失败
+    uint8_t ca_pub[64], ca_priv[32];
+    ecdsa_p256_keygen(ca_pub, ca_priv);
+    x509::x509_builder ca_b;
+    x509::DistinguishedName ca_dn;
+    ca_dn.push_back({std::vector<uint8_t>(x509::OID_CN, x509::OID_CN + 3), "Expired CA"});
+    ca_b.set_subject(ca_dn).set_issuer(ca_dn);
+    uint8_t ca_ser[8] = {0xE1};
+    ca_b.set_serial(ca_ser, 8);
+    uint64_t now = (uint64_t)time(nullptr);
+    ca_b.set_validity(now - 3 * 86400, now - 2 * 86400);  // 已过期
+    ca_b.set_key(x509::KeyType::ECDSA_P256, ca_pub, 64);
+    ca_b.set_ca(true);
+    auto ca_cert = ca_b.build_and_sign(x509::KeyType::ECDSA_P256, ca_priv, 32);
+
+    // 用过期 CA 签发 leaf（leaf 本身有效期内，但链根过期）
+    uint8_t leaf_pub[64], leaf_priv[32];
+    ecdsa_p256_keygen(leaf_pub, leaf_priv);
+    x509::x509_builder leaf_b;
+    x509::DistinguishedName leaf_dn;
+    leaf_dn.push_back({std::vector<uint8_t>(x509::OID_CN, x509::OID_CN + 3), "localhost"});
+    leaf_b.set_subject(leaf_dn).set_issuer(ca_dn);
+    uint8_t leaf_ser[8] = {0xE2};
+    leaf_b.set_serial(leaf_ser, 8);
+    leaf_b.set_validity(now - 86400, now + 365 * 86400);
+    leaf_b.set_key(x509::KeyType::ECDSA_P256, leaf_pub, 64);
+    leaf_b.set_ca(false);
+    leaf_b.add_san_dns("localhost");
+    auto leaf_cert = leaf_b.build_and_sign(x509::KeyType::ECDSA_P256, ca_priv, 32);
+
+    // 本库链验证：过期根必须失败
+    auto chain = x509::x509_verify_chain({leaf_cert, ca_cert}, now);
+    TEST("过期 CA 链验证失败", !chain.success);
+
+    // TLS 握手路径：trust store 用过期 CA → 握手失败
+    auto srv_cert = std::make_unique<tls_certificate>();
+    srv_cert->subject_name = "localhost";
+    srv_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
+    std::memcpy(srv_cert->pub.ecdsa_p256, leaf_pub, 64);
+    std::memcpy(srv_cert->priv.ecdsa_p256, leaf_priv, 32);
+    srv_cert->cert_data = leaf_cert.to_der();
+    tls_certificate_manager cert_mgr;
+    cert_mgr.add_certificate("localhost", std::move(srv_cert));
+
+    tls_session client;
+    client.server_name = "localhost";
+    std::vector<uint8_t> ch;
+    TEST("过期场景 ClientHello", tls13_make_client_hello(client, ch));
+    tls_session server;
+    std::vector<uint8_t> sf;
+    TEST("过期场景 ServerFlight", tls13_make_server_flight(server, ch.data(), ch.size(), sf, cert_mgr));
+
+    tls_trust_store trust;
+    trust.ca_roots.push_back(ca_cert);
+    std::vector<uint8_t> cf;
+    TEST("过期 CA 信任库拒绝握手", !tls13_process_server_flight(client, sf.data(), sf.size(),
+                                                                  cf, nullptr, &trust));
+}
+
 void test_tls13_client_x509_verify_reject() {
     // 服务端：CA 签发的 leaf（与上例相同）
     auto srv_cert = tls_certificate::from_pem(LEAF_CERT_PEM, SERVER_KEY_PEM);
@@ -1320,6 +1472,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_tls13_pem_server_x509_verify);
     RUN_TEST(test_tls13_client_x509_verify_reject);
     RUN_TEST(test_tls13_csr_server_handshake);
+    RUN_TEST(test_tls_trust_store_system);
+    RUN_TEST(test_tls13_robustness_malformed);
+    RUN_TEST(test_tls13_robustness_hostname);
+    RUN_TEST(test_tls13_robustness_expired_cert);
 
     return test_summary();
 }

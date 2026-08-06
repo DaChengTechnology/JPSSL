@@ -236,7 +236,11 @@ public:
     tls_connection& operator=(const tls_connection&) = delete;
 
     /// 客户端：TCP 连接 + TLS 1.3 客户端握手。
-    /// trust_store 可选：包含按 SNI 名称查找的服务器证书（用于校验 CertificateVerify）。
+    /// 默认（trust_store == nullptr）：只信任系统信任库中的 CA 根证书
+    /// （tls_trust_store::from_system()，见系统 CA bundle 探测），
+    /// 对服务端证书链做 x509 验证；系统信任库不可用时握手失败。
+    /// trust_store 可选：传 tls_certificate_manager* 时保持旧行为——
+    /// 按 SNI 名称查找预期服务器证书校验 CertificateVerify。
     bool connect(const std::string& host, uint16_t port,
                  const tls_certificate_manager* trust_store = nullptr,
                  std::string* error = nullptr);
