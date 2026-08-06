@@ -154,6 +154,8 @@ struct tls_session {
     std::string server_name; // SNI: 客户端请求的服务器名称
     uint8_t client_random[32], server_random[32];
     uint8_t handshake_secret[48], master_secret[48]; // 48 for SHA-384 suites, first 32 for SHA-256
+    // RFC 8446 7.1：handshake traffic secrets（Finished 密钥的 BaseKey）
+    uint8_t client_hs_traffic[48], server_hs_traffic[48];
     uint8_t client_write_key[32], server_write_key[32];
     uint8_t client_write_iv[12], server_write_iv[12];
     uint64_t client_seq, server_seq;
