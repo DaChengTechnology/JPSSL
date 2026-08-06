@@ -78,7 +78,8 @@ static inline __m128i gcm_ghash_core(__m128i state, __m128i block, __m128i H) {
 }
 
 /// 一条 ymm vpclmulqdq 指令同时做两个独立的 128-bit 无进位乘法（逐 lane）
-static inline __m256i vpclmul_2lane(__m256i a, __m256i b, int imm) {
+template <int imm>
+static inline __m256i vpclmul_2lane(__m256i a, __m256i b) {
     __m256i r;
     __asm__ __volatile__("vpclmulqdq %3, %2, %1, %0" : "=x"(r) : "x"(a), "x"(b), "i"(imm));
     return r;
@@ -97,20 +98,20 @@ static inline __m256i lane_srl64(__m256i v) {
 /// 2-lane 自然域 GF(2^128) 乘法：lane0 = a0·b0, lane1 = a1·b1（各自完整约简）
 /// 与 128-bit gcm_gf128_mul 在 20 万随机输入上逐 lane 验证一致
 static inline __m256i gcm_gf128_mul_2lane(__m256i a, __m256i b) {
-    __m256i t0 = vpclmul_2lane(a, b, 0x00);
-    __m256i t1 = vpclmul_2lane(a, b, 0x11);
-    __m256i t2 = vpclmul_2lane(a, b, 0x01);
-    __m256i t3 = vpclmul_2lane(a, b, 0x10);
+    __m256i t0 = vpclmul_2lane<0x00>(a, b);
+    __m256i t1 = vpclmul_2lane<0x11>(a, b);
+    __m256i t2 = vpclmul_2lane<0x01>(a, b);
+    __m256i t3 = vpclmul_2lane<0x10>(a, b);
     __m256i m = _mm256_xor_si256(t2, t3);
     t0 = _mm256_xor_si256(t0, lane_sll64(m));
     t1 = _mm256_xor_si256(t1, lane_srl64(m));
 
     __m256i r = _mm256_set_epi64x(0, 0x87, 0, 0x87);
-    __m256i q1 = vpclmul_2lane(t1, r, 0x01);   // 每 lane: t1_hi·R_lo
-    t0 = _mm256_xor_si256(t0, vpclmul_2lane(t1, r, 0x00));
+    __m256i q1 = vpclmul_2lane<0x01>(t1, r);   // 每 lane: t1_hi·R_lo
+    t0 = _mm256_xor_si256(t0, vpclmul_2lane<0x00>(t1, r));
     t0 = _mm256_xor_si256(t0, lane_sll64(q1));
     q1 = lane_srl64(q1);
-    t0 = _mm256_xor_si256(t0, vpclmul_2lane(q1, r, 0x00));
+    t0 = _mm256_xor_si256(t0, vpclmul_2lane<0x00>(q1, r));
     return t0;
 }
 
