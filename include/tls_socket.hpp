@@ -2,10 +2,14 @@
 /**
  * tls_socket.hpp -- TLS-over-TCP socket 封装层（Windows Winsock / Linux POSIX）
  *
- * 在 jpssl 消息级 TLS API（tls.hpp）之上提供面向连接的 socket 封装：
- *   - 跨平台套接字句柄（SOCKET / int）与 TCP 连接管理
- *   - TLS 1.3 完整握手（客户端 connect + 服务端 accept 内完成）
- *   - TLS record 收发（自动处理半包/粘包、握手消息封装与加密 record 透传）
+ * 在 jpssl 消息级 TLS API（tls.hpp）之上提供 socket 封装：
+ *   - 跨平台套接字句柄（SOCKET / int）与连接管理（TCP 流式 + UDP 数据报）
+ *   - 外部 fd 托管：attach() 接管调用方已创建的 socket（TCP 已连接 /
+ *     UDP 已 connect 或已 bind），可选择是否持有所有权（关闭时是否 close）
+ *   - TLS 1.3 完整握手（客户端 connect / client_handshake + 服务端
+ *     accept / server_handshake / accept_udp 内完成）
+ *   - TLS record 收发（TCP：自动处理半包/粘包；UDP：每条 TLS record
+ *     封装为一个数据报，握手与应用数据统一走该约定）
  *   - 应用数据加密收发（tls_encrypt / tls_decrypt）
  *
  * 用法（服务端）：
@@ -252,6 +256,44 @@ public:
                  const tls_trust_store& trust,
                  std::string* error = nullptr);
 
+    /// 托管外部 socket 句柄（调用方已创建并就绪的 socket）：
+    ///   - TCP：已 connect 的客户端 socket，或 accept 出的服务端 socket；
+    ///   - UDP：已 connect（固定对端）或已 bind 的 SOCK_DGRAM socket
+    ///     （自动启用数据报模式，见 set_datagram_mode）。
+    /// 托管后调用 client_handshake()（客户端）或 server_handshake()（服务端）
+    /// 在已有 socket 上完成 TLS 握手，再通过 send/recv 收发应用数据。
+    ///
+    /// take_ownership=true（默认）：本连接 close() 时关闭该句柄；
+    /// take_ownership=false：仅借用，close() 不关闭、不 shutdown，由调用方管理。
+    bool attach(socket_handle_t fd, bool take_ownership = true,
+                std::string* error = nullptr);
+
+    /// 查询是否持有外部句柄的所有权（close() 时是否关闭底层 fd）。
+    bool owns_socket() const { return owns_socket_; }
+
+    /// 客户端：在已托管的 socket（attach 之后）上执行 TLS 1.3 客户端握手。
+    /// 不建立任何传输连接，仅做握手；信任语义与 connect() 完全一致
+    /// （trust_store == nullptr 时走系统信任库，传 tls_certificate_manager*
+    /// 时按 SNI 名称查找预期服务器证书校验 CertificateVerify）。
+    bool client_handshake(const std::string& host,
+                          const tls_certificate_manager* trust_store = nullptr,
+                          std::string* error = nullptr);
+
+    /// 客户端握手（数据报/流式均可），按 x509 信任库验证服务端证书链。
+    bool client_handshake(const std::string& host,
+                          const tls_trust_store& trust,
+                          std::string* error = nullptr);
+
+    /// 数据报模式（UDP 链接）开关。attach() 对 SOCK_DGRAM 句柄自动启用；
+    /// 对 TCP 句柄默认关闭。可手动覆盖：enable=true 要求底层为 UDP socket。
+    ///
+    /// 数据报模式下每条 TLS record（含握手消息）封装为一个 UDP 数据报发送，
+    /// 接收端每个数据报解析为一条 record；单条 record 上限 16KiB+开销，
+    /// 远小于 64KiB 数据报上限。send() 对大消息自动分片为多个数据报，
+    /// recv() 自动合并还原。握手与 TCP 模式走同一套 record 收发逻辑。
+    bool set_datagram_mode(bool enable, std::string* error = nullptr);
+    bool is_datagram() const { return datagram_; }
+
     /// 服务端：对已建立的 TCP 连接执行 TLS 1.3 服务端握手。
     /// 通常由 tls_listener::accept 调用；也可对原生 socket 手动设置后调用。
     bool server_handshake(const tls_certificate_manager& cert_manager,
@@ -330,6 +372,9 @@ private:
     bool do_server_handshake(const tls_certificate_manager& cert_manager, std::string* error);
 
     bool write_all(const uint8_t* data, size_t len, std::string* error);
+    /// 数据报模式：单次发送一个完整 UDP 数据报（一条 TLS record）。
+    /// UDP 发送具有原子性：要么整包成功，要么返回错误，不会部分发送。
+    bool send_one_datagram(const uint8_t* data, size_t len, std::string* error);
     /// 从 socket 读入数据追加到 rbuf_ 尾部，直到 rbuf_.size() >= min_total。
     /// 非阻塞应用数据阶段遇 EAGAIN 时返回 false 并置 would_block_（已读部分保留在 rbuf_）。
     bool fill_rbuf(size_t min_total, std::string* error);
@@ -348,6 +393,8 @@ private:
 
     socket_handle_t sock_ = INVALID_SOCKET_HANDLE;
     bool open_ = false;
+    bool owns_socket_ = true;        // 是否持有 sock_ 所有权（close() 时是否关闭）
+    bool datagram_ = false;          // 数据报模式（UDP：每条 TLS record 一个数据报）
     bool nonblocking_ = false;       // 非阻塞模式标志
     bool would_block_ = false;       // 最近一次 I/O 是否 would-block
     bool handshake_pending_ = false; // 当前是否处于握手阶段（影响 EAGAIN 处理）
@@ -372,9 +419,36 @@ public:
     bool listen(uint16_t port, const std::string& bind_addr = "0.0.0.0",
                 std::string* error = nullptr);
 
+    /// 托管外部 socket 句柄（调用方已创建并就绪的监听 socket：
+    /// TCP 已 listen，或 UDP 已 bind）。take_ownership 语义同 tls_connection::attach。
+    /// 对 SOCK_DGRAM 句柄自动标记为 UDP 监听（配合 accept_udp 使用）。
+    bool attach(socket_handle_t fd, bool take_ownership = true,
+                std::string* error = nullptr);
+
+    /// 查询是否持有外部句柄的所有权（close() 时是否关闭底层 fd）。
+    bool owns_socket() const { return owns_socket_; }
+
+    /// 是否 UDP 监听器（listen_udp / attach(SOCK_DGRAM) 后为 true）。
+    bool is_udp() const { return udp_; }
+
     /// 接受一个 TCP 连接并完成 TLS 1.3 服务端握手。
     bool accept(tls_connection& conn, const tls_certificate_manager& cert_manager,
                 std::string* error = nullptr);
+
+    /// UDP 链接（数据报模式）：绑定 UDP 端口等待客户端握手。
+    /// 配合 accept_udp 使用；port == 0 时由系统分配端口（local_port() 查询）。
+    /// 注意：UDP 为无连接传输，握手丢包时由调用方负责重试整个握手。
+    bool listen_udp(uint16_t port, const std::string& bind_addr = "0.0.0.0",
+                    std::string* error = nullptr);
+
+    /// 接收一个 UDP 客户端并完成 TLS 1.3 服务端握手：
+    /// 先 recvfrom 取首个 ClientHello 数据报及其对端地址，用监听 socket
+    /// 本身 connect 固定该对端（保持源端口不变，客户端才能收到回复），
+    /// 把数据注入 conn 后执行服务端握手。监听 socket 由此转交给 conn，
+    /// listener 变为未打开——一个 UDP listener 同一时刻服务一个客户端。
+    /// 非阻塞模式下无待处理数据报时返回 false 并置 would_block()。
+    bool accept_udp(tls_connection& conn, const tls_certificate_manager& cert_manager,
+                    std::string* error = nullptr);
 
     /// 设置/取消监听 socket 的非阻塞模式。非阻塞时 accept() 在无待处理
     /// 连接时返回 false 并置 would_block()（可配合 wait_readable() 重试）。
@@ -398,6 +472,8 @@ public:
 private:
     socket_handle_t sock_ = INVALID_SOCKET_HANDLE;
     bool open_ = false;
+    bool owns_socket_ = true;   // 是否持有 sock_ 所有权（close() 时是否关闭）
+    bool udp_ = false;          // 是否 UDP 监听（accept_udp 用）
     bool nonblocking_ = false;
     bool would_block_ = false;
 };

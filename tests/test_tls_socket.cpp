@@ -40,6 +40,61 @@ static std::unique_ptr<tls_certificate> make_server_cert(const uint8_t pub[64],
     return cert;
 }
 
+// 手动创建 TCP socket 并 connect(供 attach 托管测试使用)
+static socket_handle_t tcp_connect_raw(const char* host, uint16_t port) {
+    addrinfo hints = {};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    addrinfo* res = nullptr;
+    std::string port_str = std::to_string(port);
+    if (getaddrinfo(host, port_str.c_str(), &hints, &res) != 0)
+        return INVALID_SOCKET_HANDLE;
+    socket_handle_t fd = INVALID_SOCKET_HANDLE;
+    for (addrinfo* ai = res; ai; ai = ai->ai_next) {
+        fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd == INVALID_SOCKET_HANDLE) continue;
+        if (::connect(fd, ai->ai_addr, (int)ai->ai_addrlen) == 0) break;
+        close_socket_handle(fd);
+        fd = INVALID_SOCKET_HANDLE;
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+
+// 手动创建已 connect 的 UDP socket(供 UDP 链接测试使用)
+static socket_handle_t udp_connect_raw(const char* host, uint16_t port) {
+    addrinfo hints = {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    addrinfo* res = nullptr;
+    std::string port_str = std::to_string(port);
+    if (getaddrinfo(host, port_str.c_str(), &hints, &res) != 0)
+        return INVALID_SOCKET_HANDLE;
+    socket_handle_t fd = INVALID_SOCKET_HANDLE;
+    for (addrinfo* ai = res; ai; ai = ai->ai_next) {
+        fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd == INVALID_SOCKET_HANDLE) continue;
+        if (::connect(fd, ai->ai_addr, (int)ai->ai_addrlen) == 0) break;
+        close_socket_handle(fd);
+        fd = INVALID_SOCKET_HANDLE;
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+
+// fd 是否仍有效(attach 借用模式验证: close() 不应关闭外部 fd)
+static bool fd_alive(socket_handle_t fd) {
+    int type = 0;
+#ifdef _WIN32
+    int tlen = sizeof(type);
+#else
+    socklen_t tlen = sizeof(type);
+#endif
+    return getsockopt(fd, SOL_SOCKET, SO_TYPE, (char*)&type, &tlen) == 0;
+}
+
 static void test_socket_roundtrip() {
     std::printf("\n=== TLS socket loopback ===\n");
 
@@ -420,6 +475,148 @@ static void test_connect_default_system_trust() {
     listener2.close();
 }
 
+// 托管外部 TCP fd: 手动 connect 后 attach + client_handshake, 双向收发
+static void test_attach_tcp() {
+    std::printf("\n=== TLS socket attach external TCP fd ===\n");
+    uint8_t pub[64], priv[32];
+    ecdsa_p256_keygen(pub, priv);
+    tls_certificate_manager server_mgr, client_mgr;
+    server_mgr.add_certificate("localhost", make_server_cert(pub, priv));
+    client_mgr.add_certificate("localhost", make_server_cert(pub, priv));
+
+    tls_listener listener;
+    std::string err;
+    TEST("attach: listener listen", listener.listen(0, "127.0.0.1", &err));
+    uint16_t port = listener.local_port();
+
+    struct sres { bool accepted = false; std::string got; bool replied = false; } sr;
+    std::thread st([&] {
+        tls_connection conn;
+        std::string e;
+        if (!listener.accept(conn, server_mgr, &e)) return;
+        sr.accepted = true;
+        std::vector<uint8_t> plain;
+        if (conn.recv(plain, &e)) sr.got.assign((const char*)plain.data(), plain.size());
+        const char resp[] = "reply over attached tcp";
+        sr.replied = conn.send((const uint8_t*)resp, sizeof(resp) - 1, &e);
+    });
+
+    socket_handle_t fd = tcp_connect_raw("127.0.0.1", port);
+    TEST("attach: raw tcp connect", fd != INVALID_SOCKET_HANDLE);
+    tls_connection client;
+    TEST("attach: attach tcp fd", client.attach(fd, true, &err));
+    TEST("attach: owns socket", client.owns_socket());
+    TEST("attach: not datagram", !client.is_datagram());
+    TEST("attach: client_handshake on fd",
+         client.client_handshake("localhost", &client_mgr, &err));
+    const char msg[] = "hello via attach";
+    TEST("attach: send", client.send((const uint8_t*)msg, sizeof(msg) - 1, &err));
+    std::vector<uint8_t> resp;
+    TEST("attach: recv", client.recv(resp, &err));
+    TEST("attach: reply matches",
+         std::string((const char*)resp.data(), resp.size()) == "reply over attached tcp");
+    client.close();
+    st.join();
+    TEST("attach: server accepted", sr.accepted);
+    TEST("attach: server got msg", sr.got == "hello via attach");
+    TEST("attach: server replied", sr.replied);
+    listener.close();
+}
+
+// 借用模式: attach(take_ownership=false), close() 不关闭外部 fd
+static void test_attach_borrow() {
+    std::printf("\n=== TLS socket attach borrow (no ownership) ===\n");
+    // 建一个 raw TCP listener 让客户端 connect 成功(无需 TLS 握手)
+    socket_handle_t lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    ::bind(lfd, (sockaddr*)&addr, (int)sizeof(addr));
+    socklen_t alen = sizeof(addr);
+    ::getsockname(lfd, (sockaddr*)&addr, &alen);
+    ::listen(lfd, 4);
+    uint16_t port = ntohs(addr.sin_port);
+
+    socket_handle_t fd = tcp_connect_raw("127.0.0.1", port);
+    TEST("borrow: raw tcp connect", fd != INVALID_SOCKET_HANDLE);
+    std::string err;
+    tls_connection conn;
+    TEST("borrow: attach no-ownership", conn.attach(fd, false, &err));
+    TEST("borrow: owns_socket false", !conn.owns_socket());
+    conn.close();
+    TEST("borrow: fd alive after close()", fd_alive(fd));
+    close_socket_handle(fd); // 借用方负责释放
+    TEST("borrow: fd closed by owner", !fd_alive(fd));
+    close_socket_handle(lfd);
+}
+
+// UDP 链接: 数据报模式双向收发 + 大消息跨数据报自动合并
+static void test_udp_roundtrip() {
+    std::printf("\n=== TLS over UDP datagram roundtrip ===\n");
+    uint8_t pub[64], priv[32];
+    ecdsa_p256_keygen(pub, priv);
+    tls_certificate_manager server_mgr, client_mgr;
+    server_mgr.add_certificate("localhost", make_server_cert(pub, priv));
+    client_mgr.add_certificate("localhost", make_server_cert(pub, priv));
+
+    tls_listener listener;
+    std::string err;
+    TEST("udp: listen_udp", listener.listen_udp(0, "127.0.0.1", &err));
+    TEST("udp: listener is_udp", listener.is_udp());
+    uint16_t port = listener.local_port();
+    TEST("udp: port assigned", port != 0);
+
+    struct sres {
+        bool accepted = false;
+        std::string got, big_got;
+        bool replied = false, big_replied = false;
+    } sr;
+    std::thread st([&] {
+        tls_connection conn;
+        std::string e;
+        if (!listener.accept_udp(conn, server_mgr, &e)) return;
+        sr.accepted = true;
+        std::vector<uint8_t> plain;
+        if (conn.recv(plain, &e)) sr.got.assign((const char*)plain.data(), plain.size());
+        const char resp[] = "reply over udp";
+        sr.replied = conn.send((const uint8_t*)resp, sizeof(resp) - 1, &e);
+        std::vector<uint8_t> big;
+        if (conn.recv(big, &e)) sr.big_got.assign((const char*)big.data(), big.size());
+        const std::string big_resp(40000, 'y');
+        sr.big_replied = conn.send((const uint8_t*)big_resp.data(), big_resp.size(), &e);
+    });
+
+    socket_handle_t fd = udp_connect_raw("127.0.0.1", port);
+    TEST("udp: raw udp connect", fd != INVALID_SOCKET_HANDLE);
+    tls_connection client;
+    TEST("udp: attach udp fd", client.attach(fd, true, &err));
+    TEST("udp: datagram auto-detected", client.is_datagram());
+    TEST("udp: client_handshake",
+         client.client_handshake("localhost", &client_mgr, &err));
+    const char msg[] = "hello udp";
+    TEST("udp: send", client.send((const uint8_t*)msg, sizeof(msg) - 1, &err));
+    std::vector<uint8_t> resp;
+    TEST("udp: recv", client.recv(resp, &err));
+    TEST("udp: reply matches",
+         std::string((const char*)resp.data(), resp.size()) == "reply over udp");
+    // 大消息: send 自动分片为多条 record(多条数据报), recv 自动合并
+    const std::string big_msg(40000, 'x');
+    TEST("udp: big send", client.send(big_msg, &err));
+    std::vector<uint8_t> big_resp;
+    TEST("udp: big recv", client.recv(big_resp, &err));
+    TEST("udp: big reply matches",
+         std::string((const char*)big_resp.data(), big_resp.size()) ==
+             std::string(40000, 'y'));
+    client.close();
+    st.join();
+    TEST("udp: server accepted", sr.accepted);
+    TEST("udp: server got msg", sr.got == "hello udp");
+    TEST("udp: server replied", sr.replied);
+    TEST("udp: server got big msg", sr.big_got == big_msg);
+    TEST("udp: server big replied", sr.big_replied);
+    listener.close();
+}
 int main() {
     std::string err;
     TEST("socket init", tls_socket_init(&err));
@@ -428,6 +625,9 @@ int main() {
     test_nonblocking();
     test_co_io();
     test_connect_default_system_trust();
+    test_attach_tcp();
+    test_attach_borrow();
+    test_udp_roundtrip();
 
     std::printf("\n================================================\n");
     std::printf("  Result: %d passed, %d failed", pass, fail);

@@ -273,7 +273,9 @@ tls_connection::~tls_connection() {
 }
 
 void tls_connection::close() {
-    if (open_ && sock_ != INVALID_SOCKET_HANDLE) {
+    if (open_ && sock_ != INVALID_SOCKET_HANDLE && owns_socket_) {
+        // 借用模式（attach take_ownership=false）不 shutdown、不关闭，
+        // 句柄生命周期由调用方管理。
 #ifdef _WIN32
         shutdown(sock_, SD_BOTH);
 #else
@@ -283,9 +285,59 @@ void tls_connection::close() {
     }
     sock_ = INVALID_SOCKET_HANDLE;
     open_ = false;
+    owns_socket_ = true; // 复位默认（下次 attach 重新决定）
+    datagram_ = false;
     would_block_ = false;
     handshake_pending_ = false;
     rbuf_.clear();
+}
+
+// 托管外部 socket 句柄（TCP 已连接 / accept 出的连接 / UDP 已 connect 或已 bind）
+bool tls_connection::attach(socket_handle_t fd, bool take_ownership,
+                            std::string* error) {
+    if (fd == INVALID_SOCKET_HANDLE) {
+        set_err(error, "attach: invalid socket handle");
+        return false;
+    }
+    close();
+    sock_ = fd;
+    open_ = true;
+    owns_socket_ = take_ownership;
+    would_block_ = false;
+    handshake_pending_ = false;
+    rbuf_.clear();
+    reset_session_preserving_config(session_);
+    // 自动检测 UDP：SOCK_DGRAM -> 数据报模式（每条 TLS record 一个数据报）
+    int type = 0;
+#ifdef _WIN32
+    int tlen = sizeof(type);
+#else
+    socklen_t tlen = sizeof(type);
+#endif
+    datagram_ = (getsockopt(fd, SOL_SOCKET, SO_TYPE, (char*)&type, &tlen) == 0 &&
+                 type == SOCK_DGRAM);
+    if (!datagram_) set_tcp_nodelay(); // UDP 无 TCP_NODELAY，跳过
+    return true;
+}
+
+// 数据报模式开关（attach 对 UDP 自动启用，这里可手动覆盖）
+bool tls_connection::set_datagram_mode(bool enable, std::string* error) {
+    if (enable) {
+        int type = 0;
+#ifdef _WIN32
+        int tlen = sizeof(type);
+#else
+        socklen_t tlen = sizeof(type);
+#endif
+        if (sock_ == INVALID_SOCKET_HANDLE ||
+            getsockopt(sock_, SOL_SOCKET, SO_TYPE, (char*)&type, &tlen) != 0 ||
+            type != SOCK_DGRAM) {
+            set_err(error, "datagram mode requires a SOCK_DGRAM socket");
+            return false;
+        }
+    }
+    datagram_ = enable;
+    return true;
 }
 
 void tls_connection::set_tcp_nodelay() {
@@ -293,10 +345,69 @@ void tls_connection::set_tcp_nodelay() {
     setsockopt(sock_, IPPROTO_TCP, TCP_NODELAY, (const char*)&one, sizeof(one));
 }
 
+// 数据报模式：单次发送一个完整 UDP 数据报（一条 TLS record）。
+// UDP 发送原子：要么整包成功，要么返回错误/would-block，不会部分发送。
+bool tls_connection::send_one_datagram(const uint8_t* data, size_t len,
+                                       std::string* error) {
+    const auto start = std::chrono::steady_clock::now();
+    for (;;) {
+        int w = (int)::send(sock_, (const char*)data, (int)len, 0);
+        if (w > 0) return true; // 整包发出
+        if (w == 0) {
+            set_err(error, "send failed: connection closed");
+            close();
+            return false;
+        }
+        // w < 0：错误或资源暂不可用
+        if (!is_would_block()) {
+            set_err(error, "send failed: " + last_socket_error());
+            close();
+            return false;
+        }
+        if (nonblocking_ && !handshake_pending_) {
+            // 非阻塞模式 + 应用数据阶段：立即返回 would-block，不关闭连接
+            would_block_ = true;
+            set_err(error, "would block");
+            return false;
+        }
+        // 握手阶段（或阻塞模式）：有界等待可写后重试
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - start)
+                           .count();
+        int remain = handshake_timeout_ms_ - (int)elapsed;
+        if (remain <= 0 || !wait_fd(sock_, true, remain)) {
+            set_err(error, "handshake write timeout");
+            close();
+            return false;
+        }
+    }
+}
+
 bool tls_connection::write_all(const uint8_t* data, size_t len, std::string* error) {
     if (!open_ || sock_ == INVALID_SOCKET_HANDLE) {
         set_err(error, "connection not open");
         return false;
+    }
+    if (datagram_) {
+        // 数据报模式：字节流由若干条 TLS record 拼接而成（record 头自描述
+        // 5 字节长度），逐条切分，每条 record 封装为一个 UDP 数据报发送。
+        size_t off = 0;
+        while (off < len) {
+            if (len - off < 5) {
+                set_err(error, "datagram: truncated TLS record header");
+                close();
+                return false;
+            }
+            size_t rlen = ((size_t)data[off + 3] << 8) | data[off + 4];
+            if (off + 5 + rlen > len) {
+                set_err(error, "datagram: truncated TLS record");
+                close();
+                return false;
+            }
+            if (!send_one_datagram(data + off, 5 + rlen, error)) return false;
+            off += 5 + rlen;
+        }
+        return true;
     }
     size_t off = 0;
     const auto start = std::chrono::steady_clock::now();
@@ -346,8 +457,11 @@ bool tls_connection::fill_rbuf(size_t min_total, std::string* error) {
     }
     const auto start = std::chrono::steady_clock::now();
     while (rbuf_.size() < min_total) {
-        size_t want = min_total - rbuf_.size();
-        if (want > 4096) want = 4096;
+        // 数据报模式：一次 recv 拿一个完整 UDP 数据报（最多 64KiB，
+        // 单条 record 上限 16KiB+256 开销，一个数据报恰一条 record）；
+        // TCP 模式：按需增量读取，处理半包/粘包。
+        size_t want = datagram_ ? (size_t)65536
+                                : std::min<size_t>(4096, min_total - rbuf_.size());
         size_t old = rbuf_.size();
         rbuf_.resize(old + want);
         int r = (int)::recv(sock_, (char*)rbuf_.data() + old, (int)want, 0);
@@ -494,6 +608,36 @@ bool tls_connection::connect(const std::string& host, uint16_t port,
                              const tls_trust_store& trust,
                              std::string* error) {
     if (!establish_tcp(host, port, error)) return false;
+    return do_client_handshake(nullptr, &trust, error);
+}
+
+// 客户端：在已托管的 socket（attach 之后）上执行 TLS 1.3 客户端握手，
+// 不建立传输连接。trust_store == nullptr 时走系统信任库。
+bool tls_connection::client_handshake(const std::string& host,
+                                      const tls_certificate_manager* trust_store,
+                                      std::string* error) {
+    if (!open_ || sock_ == INVALID_SOCKET_HANDLE) {
+        set_err(error, "client_handshake: no socket attached (call attach first)");
+        return false;
+    }
+    session_.server_name = host;
+    if (trust_store) return do_client_handshake(trust_store, nullptr, error);
+    auto sys = tls_trust_store::from_system();
+    if (sys.empty()) {
+        set_err(error, "no system trust store available (set SSL_CERT_FILE or install system CA bundle)");
+        return false;
+    }
+    return do_client_handshake(nullptr, &sys, error);
+}
+
+bool tls_connection::client_handshake(const std::string& host,
+                                      const tls_trust_store& trust,
+                                      std::string* error) {
+    if (!open_ || sock_ == INVALID_SOCKET_HANDLE) {
+        set_err(error, "client_handshake: no socket attached (call attach first)");
+        return false;
+    }
+    session_.server_name = host;
     return do_client_handshake(nullptr, &trust, error);
 }
 
@@ -688,8 +832,9 @@ tls_co_task<bool> tls_connection::co_fill_rbuf(size_t min_total,
         co_return false;
     }
     while (rbuf_.size() < min_total) {
-        size_t want = min_total - rbuf_.size();
-        if (want > 4096) want = 4096;
+        // 数据报模式：一次 recv 拿一个完整 UDP 数据报；TCP 模式：增量读取
+        size_t want = datagram_ ? (size_t)65536
+                                : std::min<size_t>(4096, min_total - rbuf_.size());
         size_t old = rbuf_.size();
         rbuf_.resize(old + want);
         int r = (int)::recv(sock_, (char*)rbuf_.data() + old, (int)want, 0);
@@ -753,6 +898,42 @@ tls_co_task<bool> tls_connection::co_send(const uint8_t* data, size_t len,
     if (rec.empty()) {
         set_err(error, "tls_encrypt failed");
         co_return false;
+    }
+    if (datagram_) {
+        // 数据报模式：每条 TLS record 一个 UDP 数据报，整包发送（UDP 原子）。
+        size_t off = 0;
+        while (off < rec.size()) {
+            if (rec.size() - off < 5) {
+                set_err(error, "datagram: truncated TLS record header");
+                close();
+                co_return false;
+            }
+            size_t rlen = ((size_t)rec[off + 3] << 8) | rec[off + 4];
+            if (off + 5 + rlen > rec.size()) {
+                set_err(error, "datagram: truncated TLS record");
+                close();
+                co_return false;
+            }
+            for (;;) {
+                int w = (int)::send(sock_, (const char*)rec.data() + off,
+                                    (int)(5 + rlen), 0);
+                if (w > 0) break; // 整包发出
+                if (w == 0) {
+                    set_err(error, "send failed: connection closed");
+                    close();
+                    co_return false;
+                }
+                if (!is_would_block()) {
+                    set_err(error, "send failed: " + last_socket_error());
+                    close();
+                    co_return false;
+                }
+                // 写缓冲暂满：挂起，等 socket 可写后由执行器恢复重发整包
+                co_await socket_wait_awaiter(*this, true);
+            }
+            off += 5 + rlen;
+        }
+        co_return true;
     }
     size_t off = 0;
     while (off < rec.size()) {
@@ -897,6 +1078,8 @@ bool tls_listener::listen(uint16_t port, const std::string& bind_addr, std::stri
 
     sock_ = fd;
     open_ = true;
+    owns_socket_ = true;
+    udp_ = false;
     // listen 之前若已设置非阻塞标志，则应用到监听 socket
     if (nonblocking_ && !set_socket_nonblocking(fd, true)) {
         set_err(error, "set_nonblocking failed: " + last_socket_error());
@@ -906,6 +1089,134 @@ bool tls_listener::listen(uint16_t port, const std::string& bind_addr, std::stri
         return false;
     }
     return true;
+}
+
+// 托管外部监听 socket 句柄（TCP 已 listen / UDP 已 bind）
+bool tls_listener::attach(socket_handle_t fd, bool take_ownership,
+                          std::string* error) {
+    if (fd == INVALID_SOCKET_HANDLE) {
+        set_err(error, "attach: invalid socket handle");
+        return false;
+    }
+    close();
+    sock_ = fd;
+    open_ = true;
+    owns_socket_ = take_ownership;
+    // 自动检测 UDP 监听器（配合 accept_udp 使用）
+    int type = 0;
+#ifdef _WIN32
+    int tlen = sizeof(type);
+#else
+    socklen_t tlen = sizeof(type);
+#endif
+    udp_ = (getsockopt(fd, SOL_SOCKET, SO_TYPE, (char*)&type, &tlen) == 0 &&
+           type == SOCK_DGRAM);
+    if (nonblocking_ && !set_socket_nonblocking(fd, true)) {
+        set_err(error, "set_nonblocking failed: " + last_socket_error());
+        return false;
+    }
+    return true;
+}
+
+// UDP 链接：绑定 UDP 端口等待客户端握手（数据报模式）
+bool tls_listener::listen_udp(uint16_t port, const std::string& bind_addr,
+                              std::string* error) {
+    close();
+    if (!tls_socket_init(error)) return false;
+
+    addrinfo hints = {};
+    hints.ai_family = AF_INET; // 本封装层暂只监听 IPv4
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    hints.ai_flags = AI_PASSIVE;
+    addrinfo* res = nullptr;
+    std::string port_str = std::to_string(port);
+    const char* node = bind_addr.empty() ? nullptr : bind_addr.c_str();
+    int rc = getaddrinfo(node, port_str.c_str(), &hints, &res);
+    if (rc != 0) {
+        set_err(error, std::string("getaddrinfo: ") + gai_strerror(rc));
+        return false;
+    }
+
+    socket_handle_t fd = INVALID_SOCKET_HANDLE;
+    for (addrinfo* ai = res; ai; ai = ai->ai_next) {
+        fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd == INVALID_SOCKET_HANDLE) continue;
+        int reuse = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
+        if (::bind(fd, ai->ai_addr, (int)ai->ai_addrlen) == 0) break;
+        close_socket_handle(fd);
+        fd = INVALID_SOCKET_HANDLE;
+    }
+    freeaddrinfo(res);
+    if (fd == INVALID_SOCKET_HANDLE) {
+        set_err(error, "udp bind failed: " + last_socket_error());
+        return false;
+    }
+
+    sock_ = fd;
+    open_ = true;
+    owns_socket_ = true;
+    udp_ = true;
+    // bind 之前若已设置非阻塞标志，则应用到 UDP socket
+    if (nonblocking_ && !set_socket_nonblocking(fd, true)) {
+        set_err(error, "set_nonblocking failed: " + last_socket_error());
+        close_socket_handle(fd);
+        sock_ = INVALID_SOCKET_HANDLE;
+        open_ = false;
+        return false;
+    }
+    return true;
+}
+
+// UDP 链接：接收一个客户端数据报 -> 固定对端 -> 完成服务端握手。
+// 注意：必须复用监听 socket 本身（connect 固定对端）才能保持源端口不变，
+// 客户端（connected UDP）才能收到服务端回复；监听 socket 由此转交给 conn，
+// listener 变为未打开，一个 UDP listener 同一时刻服务一个客户端。
+bool tls_listener::accept_udp(tls_connection& conn,
+                              const tls_certificate_manager& cert_manager,
+                              std::string* error) {
+    if (!open_ || !udp_) {
+        set_err(error, "accept_udp: UDP listener not open (call listen_udp)");
+        return false;
+    }
+    // 1. 接收首个 ClientHello 数据报并取对端地址
+    std::vector<uint8_t> buf(65536);
+    sockaddr_storage peer = {};
+    socklen_t plen = sizeof(peer);
+    int r = (int)::recvfrom(sock_, (char*)buf.data(), (int)buf.size(), 0,
+                            (sockaddr*)&peer, &plen);
+    if (r < 0) {
+        would_block_ = is_would_block();
+        if (would_block_) set_err(error, "would block");
+        else set_err(error, "recvfrom failed: " + last_socket_error());
+        return false;
+    }
+    would_block_ = false;
+
+    // 2. 用监听 socket 本身 connect 固定该对端（保持源端口不变）
+    if (::connect(sock_, (sockaddr*)&peer, plen) != 0) {
+        set_err(error, "accept_udp: connect failed: " + last_socket_error());
+        return false;
+    }
+
+    // 3. 装配连接：监听 socket 转交给 conn（listener 释放引用）
+    conn.close();
+    conn.sock_ = sock_;
+    conn.open_ = true;
+    conn.owns_socket_ = true;
+    conn.datagram_ = true;
+    conn.nonblocking_ = nonblocking_; // 继承监听器非阻塞状态
+    if (nonblocking_ && !set_socket_nonblocking(conn.sock_, true)) {
+        set_err(error, "set_nonblocking on accepted socket failed: " +
+                           last_socket_error());
+        return false;
+    }
+    conn.rbuf_.assign(buf.begin(), buf.begin() + r);
+    reset_session_preserving_config(conn.session_);
+    sock_ = INVALID_SOCKET_HANDLE;
+    open_ = false;
+    return conn.do_server_handshake(cert_manager, error);
 }
 
 uint16_t tls_listener::local_port() const {
@@ -936,6 +1247,8 @@ bool tls_listener::accept(tls_connection& conn, const tls_certificate_manager& c
     conn.close();
     conn.sock_ = fd;
     conn.open_ = true;
+    conn.owns_socket_ = true; // accept 出的连接 fd 由 conn 持有
+    conn.datagram_ = false;   // TCP 流式模式
     conn.set_tcp_nodelay();
     reset_session_preserving_config(conn.session_);
     // accept 出的连接 socket 继承监听器的非阻塞状态
@@ -964,9 +1277,12 @@ bool tls_listener::wait_readable(int timeout_ms) const {
 }
 
 void tls_listener::close() {
-    if (open_ && sock_ != INVALID_SOCKET_HANDLE) close_socket_handle(sock_);
+    if (open_ && sock_ != INVALID_SOCKET_HANDLE && owns_socket_)
+        close_socket_handle(sock_);
     sock_ = INVALID_SOCKET_HANDLE;
     open_ = false;
+    owns_socket_ = true; // 复位默认
+    udp_ = false;
 }
 
 } // namespace jpssl::tls
