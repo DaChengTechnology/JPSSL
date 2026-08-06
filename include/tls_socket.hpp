@@ -31,6 +31,8 @@
 
 #include <coroutine>
 #include <cstdint>
+#include <atomic>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -48,6 +50,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
+
+// threadpool submodule（协程线程池，header-only）定义在全局命名空间。
+// 此处仅前置声明；完整类型只在 src/tls_socket.cpp 使用。
+class ThreadPool;
 
 namespace jpssl::tls {
 
@@ -184,9 +190,15 @@ struct tls_co_task<void> {
     }
 };
 
-/// 协程执行器：单线程 poll 驱动。多个 tls_connection 可共享一个执行器，
-/// co_await 挂起的协程在 socket 就绪时由 run_once()/run() 恢复。
-/// 非线程安全：注册与驱动须在同一线程。
+/// 协程执行器：poll 驱动 + 可选的线程池派发。多个 tls_connection 可共享
+/// 一个执行器；co_await 挂起的协程在 socket 就绪时由 run_once()/run() 恢复。
+///
+/// 绑定线程池（attach_threadpool）后：就绪协程的恢复被 enqueue 到线程池，
+/// 协程体（co_send/co_recv 与应用逻辑）运行在线程池工作线程上，可并行；
+/// 未绑定时保持单线程直接恢复行为（向后兼容）。
+///
+/// 线程安全：add_waiter（协程恢复路径）与 run_once/run（驱动路径）允许
+/// 并发调用（waiters_ 由内部互斥锁保护），但驱动路径自身须单线程调用。
 class tls_co_executor {
 public:
     tls_co_executor() = default;
@@ -197,6 +209,11 @@ public:
     /// 注册一次等待（tls_connection 协程 I/O 内部调用，勿手动调用）。
     void add_waiter(int fd, bool for_write, std::coroutine_handle<> h);
 
+    /// 绑定协程线程池：socket 就绪的协程恢复将投递到该线程池执行。
+    /// 传 nullptr 恢复为单线程直接恢复。驱动路径（run/run_once）须继续被调用。
+    void attach_threadpool(::ThreadPool* pool) { pool_ = pool; }
+    ::ThreadPool* threadpool() const { return pool_; }
+
     /// 单次驱动：poll 所有注册 fd，就绪的协程恢复执行。
     /// timeout_ms < 0 表示无限等待；返回本次是否恢复了协程。
     bool run_once(int timeout_ms = -1);
@@ -205,7 +222,10 @@ public:
     void run(int timeout_ms = 100);
 
     /// 当前等待中的协程数量。
-    size_t pending() const { return waiters_.size(); }
+    size_t pending() const {
+        std::lock_guard<std::mutex> lk(mtx_);
+        return waiters_.size();
+    }
 
 private:
     struct waiter {
@@ -214,6 +234,9 @@ private:
         std::coroutine_handle<> h;
     };
     std::vector<waiter> waiters_;
+    mutable std::mutex mtx_;     // 保护 waiters_（pool 线程 add_waiter 与驱动并发）
+    std::atomic<size_t> outstanding_{0}; // 已 enqueue 但尚未执行完的协程恢复
+    ::ThreadPool* pool_ = nullptr; // 可选线程池；nullptr = 单线程直接恢复
 };
 
 // ============================================================================

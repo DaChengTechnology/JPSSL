@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstring>
 #include <mutex>
+#include <threadpool/ThreadPool.hpp>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -219,21 +220,24 @@ bool tls_socket_init(std::string* error) {
 }
 
 // ============================================================================
-// tls_co_executor —— 单线程 poll 驱动
+// tls_co_executor —— poll 驱动 + 可选线程池派发
 // ============================================================================
 
 void tls_co_executor::add_waiter(int fd, bool for_write,
                                  std::coroutine_handle<> h) {
+    std::lock_guard<std::mutex> lk(mtx_); // 协程恢复线程（pool）与驱动线程并发
     waiters_.push_back({fd, for_write, h});
 }
 
 bool tls_co_executor::run_once(int timeout_ms) {
-    if (waiters_.empty()) return false;
-
     std::vector<pollfd> pfds;
-    pfds.reserve(waiters_.size());
-    for (const auto& w : waiters_)
-        pfds.push_back({w.fd, (short)(w.for_write ? POLLOUT : POLLIN), 0});
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (waiters_.empty()) return false;
+        pfds.reserve(waiters_.size());
+        for (const auto& w : waiters_)
+            pfds.push_back({w.fd, (short)(w.for_write ? POLLOUT : POLLIN), 0});
+    }
 
     int rc = poll_multi(pfds, timeout_ms);
     if (rc <= 0) return false;
@@ -241,19 +245,47 @@ bool tls_co_executor::run_once(int timeout_ms) {
     // 先收集就绪协程再逐个恢复：resume 可能注册新的 waiter（如继续读下一条
     // record），不能边遍历边改 waiters_。
     std::vector<std::coroutine_handle<>> ready;
-    for (size_t i = waiters_.size(); i-- > 0;) {
-        short want = (short)(waiters_[i].for_write ? POLLOUT : POLLIN);
-        if (pfds[i].revents & want) {
-            ready.push_back(waiters_[i].h);
-            waiters_.erase(waiters_.begin() + i);
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        for (size_t i = waiters_.size(); i-- > 0;) {
+            short want = (short)(waiters_[i].for_write ? POLLOUT : POLLIN);
+            if (pfds[i].revents & want) {
+                ready.push_back(waiters_[i].h);
+                waiters_.erase(waiters_.begin() + i);
+            }
         }
     }
-    for (auto h : ready) h.resume();
+    for (auto h : ready) {
+        if (pool_) {
+            // 将就绪协程的恢复投递到线程池（异步）；outstanding_ 跨线程计数，
+            // 驱动线程在 run() 中等待其归零，避免 enqueue 返回即退出的竞态。
+            outstanding_.fetch_add(1, std::memory_order_relaxed);
+            pool_->enqueue([this, h]() {
+                h.resume();
+                outstanding_.fetch_sub(1, std::memory_order_relaxed);
+            });
+        } else {
+            h.resume(); // 未绑定线程池：单线程直接恢复
+        }
+    }
     return !ready.empty();
 }
 
 void tls_co_executor::run(int timeout_ms) {
-    while (!waiters_.empty()) run_once(timeout_ms);
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            if (waiters_.empty() && outstanding_.load(std::memory_order_relaxed) == 0)
+                return;
+        }
+        // 仅 outstanding_>0 且无 waiter 时短暂让步，避免忙等
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            if (waiters_.empty())
+                std::this_thread::yield();
+        }
+        run_once(timeout_ms);
+    }
 }
 
 // ============================================================================

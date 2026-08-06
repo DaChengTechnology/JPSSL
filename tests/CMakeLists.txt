@@ -94,7 +94,7 @@ target_link_libraries(test_base64 PRIVATE jpssl_cpu ${MUSA_LIBS})
 
 add_executable(test_tls_socket test_tls_socket.cpp)
 target_include_directories(test_tls_socket PRIVATE ${INCLUDE_DIR})
-target_link_libraries(test_tls_socket PRIVATE jpssl_cpu ${MUSA_LIBS})
+target_link_libraries(test_tls_socket PRIVATE jpssl_cpu threadpool ${MUSA_LIBS})
 
 # ---- TLS stability / soak test (repeated handshakes + data transfer) ----
 add_executable(test_tls_stability test_tls_stability.cpp)

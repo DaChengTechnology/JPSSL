@@ -7,10 +7,12 @@
  *   3. 握手后应用数据双向收发（加密 record 往返）
  *   4. ALPN 协商（RFC 7301）：匹配 / 不匹配 / 服务端未配置 / 偏好序
  *   5. 非阻塞模式：listener 非阻塞 accept、连接非阻塞收发、would-block 与 wait
- *   6. 协程 I/O：co_send / co_recv 挂起-恢复双向回环（tls_co_executor 驱动）
+ *   6. 协程 I/O：co_send / co_recv 挂起-恢复双向回环；绑定 threadpool 后
+ *      协程体在参与线程池线程上执行（tls_co_executor + ThreadPool）
  */
 #include "tls_socket.hpp"
 #include "ecdsa.hpp"
+#include <threadpool/ThreadPool.hpp>
 
 #include <chrono>
 #include <cstdio>
@@ -245,12 +247,14 @@ static void test_nonblocking() {
 // ── 协程 I/O 回环测试 ──────────────────────────────────────────────
 struct co_state {
     tls_co_executor ex;
+    ThreadPool pool{4}; // 协程线程池（最后析构：run 完成后才 shutdown）
     std::unique_ptr<tls_connection> server_conn;
     std::unique_ptr<tls_connection> client_conn;
     std::unique_ptr<tls_co_task<void>> server_task;
     std::unique_ptr<tls_co_task<void>> client_task;
     std::string server_got, client_got;
     bool server_ok = false, client_ok = false;
+    std::thread::id server_tid, client_tid; // 协程在 recv 恢复后的执行线程
 };
 
 // 服务端协程：收 "co hello" → 回 "co reply"
@@ -258,6 +262,7 @@ static tls_co_task<void> co_server_session(co_state& st) {
     std::string e;
     std::vector<uint8_t> msg;
     if (!co_await st.server_conn->co_recv(msg, &e)) co_return;
+    st.server_tid = std::this_thread::get_id(); // 挂起后由线程池恢复
     st.server_got.assign((const char*)msg.data(), msg.size());
     st.server_ok = (st.server_got == "co hello");
     const char reply[] = "co reply";
@@ -275,6 +280,7 @@ static tls_co_task<void> co_client_session(co_state& st) {
         co_return;
     std::vector<uint8_t> reply;
     if (!co_await st.client_conn->co_recv(reply, &e)) co_return;
+    st.client_tid = std::this_thread::get_id(); // 挂起后由线程池恢复
     st.client_got.assign((const char*)reply.data(), reply.size());
     st.client_ok = (st.client_got == "co reply");
 }
@@ -321,12 +327,19 @@ static void test_co_io() {
     // 挂起-恢复路径由最终双向交换结果断言严格验证。
     TEST("co coroutine suspended", st.ex.pending() >= 1);
 
+    // 绑定协程线程池：就绪协程的恢复将被 enqueue 到池线程执行
+    st.ex.attach_threadpool(&st.pool);
+    const std::thread::id main_tid = std::this_thread::get_id();
+
     // 单线程执行器驱动两个协程完成双向交换
     st.ex.run(100);
 
     server_thread.join();
     TEST("co server got client msg", st.server_ok && st.server_got == "co hello");
     TEST("co client got server reply", st.client_ok && st.client_got == "co reply");
+    // 协程在 recv 恢复后执行的代码应运行在线程池工作线程上（非驱动线程）
+    TEST("co server resumed on threadpool", st.server_ok && st.server_tid != main_tid);
+    TEST("co client resumed on threadpool", st.client_ok && st.client_tid != main_tid);
     listener.close();
 }
 

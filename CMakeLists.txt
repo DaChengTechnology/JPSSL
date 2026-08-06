@@ -219,6 +219,12 @@ target_include_directories(jpssl_cpu PUBLIC
 target_include_directories(jpssl_cpu_shared PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+# threadpool submodule（协程线程池，header-only）：tls_co_executor 可选绑定
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/threadpool/CMakeLists.txt)
+    add_subdirectory(threadpool)
+    target_link_libraries(jpssl_cpu PRIVATE threadpool)
+    target_link_libraries(jpssl_cpu_shared PRIVATE threadpool)
+endif()
 set_target_properties(jpssl_cpu_shared PROPERTIES
     OUTPUT_NAME jpssl_cpu
     VERSION ${PROJECT_VERSION}
