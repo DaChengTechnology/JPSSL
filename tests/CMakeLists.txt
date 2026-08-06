@@ -113,6 +113,13 @@ target_include_directories(test_ecdsa PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_ecdsa PRIVATE jpssl_cpu OpenSSL::Crypto)
 endif()
 
+# ── RSASSA-PSS 单元测试 (OpenSSL 对比) ──
+if(OpenSSL_FOUND)
+add_executable(test_rsa_pss test_rsa_pss.cpp)
+target_include_directories(test_rsa_pss PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_rsa_pss PRIVATE jpssl_cpu OpenSSL::Crypto)
+endif()
+
 # ── SM 国密测试 (OpenSSL 对比) ───────────────────────────────────────────
 if(OpenSSL_FOUND)
 add_executable(test_sm test_sm.cpp)
@@ -273,6 +280,7 @@ add_test(NAME test_ed448_rfc     COMMAND test_ed448_rfc)
 add_test(NAME test_ed448_trace   COMMAND test_ed448_trace)
 add_test(NAME test_x25519_ossl   COMMAND test_x25519_ossl)
 add_test(NAME test_ecdsa         COMMAND test_ecdsa)
+add_test(NAME test_rsa_pss       COMMAND test_rsa_pss)
 add_test(NAME test_sm            COMMAND test_sm)
 add_test(NAME test_ghash_debug   COMMAND test_ghash_debug)
 endif()

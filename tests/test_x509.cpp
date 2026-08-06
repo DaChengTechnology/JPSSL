@@ -165,6 +165,41 @@ void test_cert_ecdsa_p256() {
     TEST("ECDSA self-sig verify", cert.verify_signature(cert));
 }
 
+// ── ECDSA P-521 cert (secp521r1 / ecdsa-with-SHA512) ──
+void test_cert_ecdsa_p521() {
+    std::printf("\n=== X.509 ECDSA P-521 ===\n");
+
+    uint8_t pub[132], priv[66];
+    ecdsa_p521_keygen(pub, priv);
+
+    x509_builder builder;
+    DistinguishedName dn;
+    dn.push_back({std::vector<uint8_t>(OID_CN, OID_CN + sizeof(OID_CN)), "ecdsa521.test"});
+    builder.set_subject(dn).set_issuer(dn);
+
+    uint8_t serial[8] = {0xAC};
+    builder.set_serial(serial, 8);
+
+    uint64_t now = (uint64_t)time(nullptr);
+    builder.set_validity(now, now + 365 * 86400);
+    builder.set_key(KeyType::ECDSA_P521, pub, 132);
+    builder.set_ca(false);
+    builder.set_key_usage(KU_DIGITAL_SIGNATURE);
+    builder.add_san_dns("ecdsa521.test");
+
+    auto cert = builder.build_and_sign(KeyType::ECDSA_P521, priv, 66);
+
+    auto der = cert.to_der();
+    TEST("P-521 DER non-empty", !der.empty());
+    TEST("P-521 self-sig verify", cert.verify_signature(cert));
+
+    auto decoded = x509_cert::from_der(der);
+    TEST("P-521 parse", decoded.has_value());
+    TEST("P-521 key type", decoded && decoded->key_type == KeyType::ECDSA_P521);
+    TEST("P-521 pubkey match", decoded && decoded->public_key == cert.public_key);
+    TEST("P-521 sig verify (decoded)", decoded && decoded->verify_signature(*decoded));
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  4. SM2 证书
 // ═══════════════════════════════════════════════════════════════════════
@@ -445,6 +480,7 @@ int main() {
     test_der_primitives();
     test_cert_der_roundtrip_ed25519();
     test_cert_ecdsa_p256();
+    test_cert_ecdsa_p521();
     test_cert_sm2();
     test_cert_ed448();
     test_cert_chain();

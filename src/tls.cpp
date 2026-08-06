@@ -137,7 +137,7 @@ static std::vector<uint16_t> effective_sig_algs(const tls_session& s) {
     return s.sig_algs;
 }
 
-enum class SigKeyFamily { NONE, RSA, ECDSA_P256, ECDSA_P384, ED25519, ED448, SM2 };
+enum class SigKeyFamily { NONE, RSA, ECDSA_P256, ECDSA_P384, ECDSA_P521, ED25519, ED448, SM2 };
 
 static SigKeyFamily sig_key_family(SignatureAlgorithm sa) {
     switch (sa) {
@@ -150,6 +150,7 @@ static SigKeyFamily sig_key_family(SignatureAlgorithm sa) {
             return SigKeyFamily::RSA;
         case SignatureAlgorithm::ECDSA_SECP256R1_SHA256: return SigKeyFamily::ECDSA_P256;
         case SignatureAlgorithm::ECDSA_SECP384R1_SHA384: return SigKeyFamily::ECDSA_P384;
+        case SignatureAlgorithm::ECDSA_SECP521R1_SHA512: return SigKeyFamily::ECDSA_P521;
         case SignatureAlgorithm::ED25519: return SigKeyFamily::ED25519;
         case SignatureAlgorithm::ED448: return SigKeyFamily::ED448;
         case SignatureAlgorithm::SM2_SM3: return SigKeyFamily::SM2;
@@ -191,6 +192,8 @@ static uint16_t x509_key_type_chain_scheme(x509::KeyType kt) {
             return (uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
         case x509::KeyType::ECDSA_P384:
             return (uint16_t)SignatureAlgorithm::ECDSA_SECP384R1_SHA384;
+        case x509::KeyType::ECDSA_P521:
+            return (uint16_t)SignatureAlgorithm::ECDSA_SECP521R1_SHA512;
         case x509::KeyType::Ed25519:
             return (uint16_t)SignatureAlgorithm::ED25519;
         case x509::KeyType::Ed448:
@@ -217,6 +220,8 @@ static uint16_t cert_chain_signature_scheme(const tls_certificate& cert) {
             return (uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
         case SignatureAlgorithm::ECDSA_SECP384R1_SHA384:
             return (uint16_t)SignatureAlgorithm::ECDSA_SECP384R1_SHA384;
+        case SignatureAlgorithm::ECDSA_SECP521R1_SHA512:
+            return (uint16_t)SignatureAlgorithm::ECDSA_SECP521R1_SHA512;
         case SignatureAlgorithm::ED25519: return (uint16_t)SignatureAlgorithm::ED25519;
         case SignatureAlgorithm::ED448: return (uint16_t)SignatureAlgorithm::ED448;
         case SignatureAlgorithm::SM2_SM3: return (uint16_t)SignatureAlgorithm::SM2_SM3;
@@ -283,6 +288,7 @@ static size_t scheme_hash_len(uint16_t scheme) {
             return 48;
         case (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA512:
         case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
+        case (uint16_t)SignatureAlgorithm::ECDSA_SECP521R1_SHA512:
             return 64;
         default: return 0;
     }
@@ -304,6 +310,10 @@ static bool hash_scheme(uint16_t scheme, const uint8_t* data, size_t len, uint8_
         }
         case (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA512:
         case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: {
+            sha512_ctx c; sha512_init(&c);
+            sha512_update(&c, data, len); sha512_final(&c, out); return true;
+        }
+        case (uint16_t)SignatureAlgorithm::ECDSA_SECP521R1_SHA512: {
             sha512_ctx c; sha512_init(&c);
             sha512_update(&c, data, len); sha512_final(&c, out); return true;
         }
@@ -351,41 +361,15 @@ static bool rsa_pkcs1_sign(const rsa_private_key& key, uint16_t scheme,
 // RSASSA-PSS 签名（RSA-2048，saltLen = hLen，RFC 8446 要求）
 static bool rsa_pss_sign(const rsa_private_key& key, uint16_t scheme,
                          const uint8_t* data, size_t len, uint8_t* sig, size_t& sig_len) {
-    size_t hl = scheme_hash_len(scheme);
-    if (hl == 0 || hl > 64) return false;
-    uint8_t mHash[64];
-    if (!hash_scheme(scheme, data, len, mHash)) return false;
-    const size_t emLen = 256;
-    if (emLen < hl + hl + 2) return false;
-    uint8_t salt[64];
-    if (!jpssl::os_rand_bytes(salt, hl)) return false;
-    std::vector<uint8_t> Mprime(8 + hl + hl);
-    memset(Mprime.data(), 0, 8);
-    memcpy(Mprime.data() + 8, mHash, hl);
-    memcpy(Mprime.data() + 8 + hl, salt, hl);
-    uint8_t H[64];
-    if (!hash_scheme(scheme, Mprime.data(), Mprime.size(), H)) return false;
-    size_t psLen = emLen - hl - hl - 2;
-    std::vector<uint8_t> DB(emLen - hl - 1, 0);
-    DB[psLen] = 0x01;
-    memcpy(DB.data() + psLen + 1, salt, hl);
-    std::vector<uint8_t> dbMask(emLen - hl - 1);
+    PssHash hash;
     switch (scheme) {
-        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256: mgf1_sha256(H, hl, dbMask.data(), dbMask.size()); break;
-        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384: mgf1_sha384(H, hl, dbMask.data(), dbMask.size()); break;
-        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: mgf1_sha512(H, hl, dbMask.data(), dbMask.size()); break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256: hash = PssHash::SHA256; break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384: hash = PssHash::SHA384; break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: hash = PssHash::SHA512; break;
         default: return false;
     }
-    for (size_t i = 0; i < dbMask.size(); ++i) DB[i] ^= dbMask[i];
-    DB[0] &= 0x7F;   // emBits = 2047
-    uint8_t EM[256];
-    memcpy(EM, DB.data(), emLen - hl - 1);
-    memcpy(EM + emLen - hl - 1, H, hl);
-    EM[emLen - 1] = 0xBC;
-    rsa_bignum embn = rsa_bignum::from_bytes(EM, 256);
-    rsa_bignum sbn;
-    bn_modpow(sbn, embn, key.d, key.n);
-    sbn.to_bytes(sig);
+    rsa_crt_key crt{key.n, key.e, key.d, key.p, key.q, key.dP, key.dQ, key.qInv};
+    if (!rsassa_pss_sign(crt, data, len, sig, 0, hash)) return false;
     sig_len = 256;
     return true;
 }
@@ -393,43 +377,14 @@ static bool rsa_pss_sign(const rsa_private_key& key, uint16_t scheme,
 static bool rsa_pss_verify(const rsa_public_key& pub, uint16_t scheme,
                            const uint8_t* data, size_t len, const uint8_t* sig, size_t sig_len) {
     if (sig_len != 256) return false;
-    size_t hl = scheme_hash_len(scheme);
-    if (hl == 0 || hl > 64) return false;
-    const size_t emLen = 256;
-    rsa_bignum sbn = rsa_bignum::from_bytes(sig, 256);
-    rsa_bignum mbn;
-    bn_modpow(mbn, sbn, pub.e, pub.n);
-    uint8_t EM[256];
-    mbn.to_bytes(EM);
-    if (EM[0] & 0x80) return false;
-    if (EM[emLen - 1] != 0xBC) return false;
-    size_t dbLen = emLen - hl - 1;
-    uint8_t maskedDB[256]; memcpy(maskedDB, EM, dbLen);
-    uint8_t H[64]; memcpy(H, EM + dbLen, hl);
-    std::vector<uint8_t> dbMask(dbLen);
+    PssHash hash;
     switch (scheme) {
-        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256: mgf1_sha256(H, hl, dbMask.data(), dbMask.size()); break;
-        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384: mgf1_sha384(H, hl, dbMask.data(), dbMask.size()); break;
-        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: mgf1_sha512(H, hl, dbMask.data(), dbMask.size()); break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256: hash = PssHash::SHA256; break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384: hash = PssHash::SHA384; break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: hash = PssHash::SHA512; break;
         default: return false;
     }
-    uint8_t DB[256];
-    for (size_t i = 0; i < dbLen; ++i) DB[i] = maskedDB[i] ^ dbMask[i];
-    DB[0] &= 0x7F;
-    size_t psLen = emLen - hl - hl - 2;
-    if (psLen >= dbLen) return false;
-    for (size_t i = 0; i < psLen; ++i) if (DB[i] != 0) return false;
-    if (DB[psLen] != 0x01) return false;
-    uint8_t salt[64]; memcpy(salt, DB + psLen + 1, hl);
-    uint8_t mHash[64];
-    if (!hash_scheme(scheme, data, len, mHash)) return false;
-    std::vector<uint8_t> Mprime(8 + hl + hl);
-    memset(Mprime.data(), 0, 8);
-    memcpy(Mprime.data() + 8, mHash, hl);
-    memcpy(Mprime.data() + 8 + hl, salt, hl);
-    uint8_t H2[64];
-    if (!hash_scheme(scheme, Mprime.data(), Mprime.size(), H2)) return false;
-    return memcmp(H, H2, hl) == 0;
+    return rsassa_pss_verify(pub, data, len, sig, 0, hash);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -446,6 +401,8 @@ bool tls_certificate::sign_scheme(uint16_t scheme, const uint8_t* data, size_t d
             sig_len = 64; ecdsa_p256_sign(priv.ecdsa_p256, data, data_len, sig); return true;
         case SignatureAlgorithm::ECDSA_SECP384R1_SHA384:
             sig_len = 96; ecdsa_p384_sign(priv.ecdsa_p384, data, data_len, sig); return true;
+        case SignatureAlgorithm::ECDSA_SECP521R1_SHA512:
+            sig_len = 132; ecdsa_p521_sign(priv.ecdsa_p521, data, data_len, sig); return true;
         case SignatureAlgorithm::SM2_SM3:
             sig_len = 64; sm2_sign(priv.sm2, data, data_len, sig, nullptr); return true;
         case SignatureAlgorithm::RSA_PKCS1_SHA256:
@@ -481,6 +438,9 @@ bool tls_certificate::verify_scheme(uint16_t scheme, const uint8_t* data, size_t
         case SignatureAlgorithm::ECDSA_SECP384R1_SHA384:
             if (sig_len != 96) return false;
             return ecdsa_p384_verify(pub.ecdsa_p384, data, data_len, sig);
+        case SignatureAlgorithm::ECDSA_SECP521R1_SHA512:
+            if (sig_len != 132) return false;
+            return ecdsa_p521_verify(pub.ecdsa_p521, data, data_len, sig);
         case SignatureAlgorithm::SM2_SM3:
             if (sig_len != 64) return false;
             return sm2_verify(pub.sm2, data, data_len, sig, nullptr);
@@ -2679,6 +2639,7 @@ x509::KeyType tls_sig_alg_to_key_type(SignatureAlgorithm sa) {
         case SignatureAlgorithm::ED448: return KeyType::Ed448;
         case SignatureAlgorithm::ECDSA_SECP256R1_SHA256: return KeyType::ECDSA_P256;
         case SignatureAlgorithm::ECDSA_SECP384R1_SHA384: return KeyType::ECDSA_P384;
+        case SignatureAlgorithm::ECDSA_SECP521R1_SHA512: return KeyType::ECDSA_P521;
         case SignatureAlgorithm::SM2_SM3: return KeyType::SM2;
         default: return KeyType::Ed25519;
     }
@@ -2699,6 +2660,7 @@ std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint
         case KeyType::Ed448:b.set_key(k,cert.pub.ed448,57);break;
         case KeyType::ECDSA_P256:b.set_key(k,cert.pub.ecdsa_p256,64);break;
         case KeyType::ECDSA_P384:b.set_key(k,cert.pub.ecdsa_p384,96);break;
+        case KeyType::ECDSA_P521:b.set_key(k,cert.pub.ecdsa_p521,132);break;
         case KeyType::SM2:b.set_key(k,cert.pub.sm2,64);break;
     }
     b.set_ca(false).set_key_usage(KU_DIGITAL_SIGNATURE).set_server_auth().add_san_dns(cert.subject_name);
@@ -2709,6 +2671,7 @@ std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint
         case KeyType::Ed448:x=b.build_and_sign(k,cert.priv.ed448,57);break;
         case KeyType::ECDSA_P256:x=b.build_and_sign(k,cert.priv.ecdsa_p256,32);break;
         case KeyType::ECDSA_P384:x=b.build_and_sign(k,cert.priv.ecdsa_p384,48);break;
+        case KeyType::ECDSA_P521:x=b.build_and_sign(k,cert.priv.ecdsa_p521,66);break;
         case KeyType::SM2:x=b.build_and_sign(k,cert.priv.sm2,32);break;
     }
     return x.to_der();

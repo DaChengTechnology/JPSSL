@@ -17,4 +17,11 @@ void ecdsa_p384_keygen(uint8_t pub[96],uint8_t priv[48]);
 void ecdsa_p384_sign(const uint8_t priv[48],const uint8_t* msg,size_t msg_len,uint8_t sig[96]);
 bool ecdsa_p384_verify(const uint8_t pub[96],const uint8_t* msg,size_t msg_len,const uint8_t sig[96]);
 
+// ── P-521 (secp521r1) ──
+inline constexpr size_t ECDSA_P521_KEY_SIZE=66, ECDSA_P521_SIG_SIZE=132, ECDSA_P521_PUB_SIZE=132;
+
+void ecdsa_p521_keygen(uint8_t pub[132],uint8_t priv[66]);
+void ecdsa_p521_sign(const uint8_t priv[66],const uint8_t* msg,size_t msg_len,uint8_t sig[132]);
+bool ecdsa_p521_verify(const uint8_t pub[132],const uint8_t* msg,size_t msg_len,const uint8_t sig[132]);
+
 }

@@ -205,11 +205,17 @@ bool rsaes_oaep_decrypt(const rsa_crt_key&, const uint8_t ct[256],
                         const uint8_t* label, size_t labelLen,
                         std::vector<uint8_t>& msg);
 
-/// §8.1  RSASSA-PSS (SHA-256, saltLen 默认 32)
+/// §8.1  RSASSA-PSS (RFC 8017): RSA-2048/RSA-4096 × SHA-256/384/512
+/// saltLen = 0 表示使用 saltLen = hLen (RFC 8446 / TLS 1.3 CertificateVerify 要求)
+enum class PssHash : uint8_t { SHA256, SHA384, SHA512 };
 bool rsassa_pss_sign(const rsa_crt_key&, const uint8_t* msg, size_t msgLen,
-                     uint8_t sig[256], size_t saltLen=32);
+                     uint8_t sig[256], size_t saltLen=0, PssHash hash=PssHash::SHA256);
 bool rsassa_pss_verify(const rsa_public_key&, const uint8_t* msg, size_t msgLen,
-                       const uint8_t sig[256], size_t saltLen=32);
+                       const uint8_t sig[256], size_t saltLen=0, PssHash hash=PssHash::SHA256);
+bool rsassa_pss_sign4096(const rsa4096_crt_key&, const uint8_t* msg, size_t msgLen,
+                         uint8_t sig[512], size_t saltLen=0, PssHash hash=PssHash::SHA256);
+bool rsassa_pss_verify4096(const rsa4096_public_key&, const uint8_t* msg, size_t msgLen,
+                           const uint8_t sig[512], size_t saltLen=0, PssHash hash=PssHash::SHA256);
 
 /// §8.2  RSASSA-PKCS1-v1_5 签名/验证
 /// digestPrefix: DER 编码的 DigestInfo 前缀 (如 SHA-256: 30 31 30 0d 06 09 60 86 48 01 65 03 04 02 01 05 00 04 20)

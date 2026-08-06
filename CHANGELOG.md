@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.11] — 2026-08-06
+
+### Added
+- **ECDSA P-521 (secp521r1)**：库 API `ecdsa_p521_keygen/sign/verify`（SHA-512，私钥 66 / 公钥 132 / 签名 132 字节），X.509 接入（`KeyType::ECDSA_P521`、OID secp521r1 / ecdsa-with-SHA512、SPKI 编解码、证书签名/验签/自签名），TLS 1.3 签名方案 `ecdsa_secp521r1_sha512` (0x0603) 端到端支持；`test_ecdsa` 新增 P-521 与 OpenSSL 双向交叉验证（公钥派生、双向签名互验、篡改检测）。
+- **RSASSA-PSS 完整实现 (RFC 8017)**：`rsassa_pss_sign/verify` 升级为 RSA-2048/RSA-4096 × SHA-256/384/512，`saltLen` 默认 = hLen（RFC 8446），盐使用 CSPRNG；新增 `rsassa_pss_sign4096/verify4096` 与 `PssHash` 参数；TLS 1.3 CertificateVerify 统一复用该实现（删除原 tls.cpp 内重复的 PSS 代码）；新增 `test_rsa_pss`（2048/4096 × 三种哈希 × OpenSSL 双向互验 + 篡改检测）。
+
+### Tests
+- `test_ecdsa`（P-256/384/521）、`test_rsa_pss`、`test_tls`（136 断言）、`test_x509`、`test_ct`、`test_sm`、`test_tls_sm` 全部通过；ctest 40 项中 39 项通过（唯一失败为 `bench_hardware_accel` 的 AES-NI 计时断言，属本机虚拟化环境问题，与本次改动无关）。
+
 ## [0.9.10] — 2026-08-06
 
 ### Added

@@ -382,6 +382,175 @@ int main() {
         if (ok) ++fails;
     }
 
+    // ── P-521 tests ──
+
+    auto ossl521_pub_from_priv = [](const uint8_t priv_be[66], uint8_t pub_be[132]) -> bool {
+        BIGNUM* d = BN_bin2bn(priv_be, 66, nullptr);
+        EC_GROUP* grp = EC_GROUP_new_by_curve_name(NID_secp521r1);
+        EC_POINT* Q = EC_POINT_new(grp);
+        EC_POINT_mul(grp, Q, d, nullptr, nullptr, nullptr);
+        BN_CTX* ctx = BN_CTX_new();
+        BIGNUM* x = BN_new(); BIGNUM* y = BN_new();
+        EC_POINT_get_affine_coordinates(grp, Q, x, y, ctx);
+        int xl = BN_num_bytes(x), yl = BN_num_bytes(y);
+        memset(pub_be, 0, 132);
+        BN_bn2bin(x, pub_be + (66 - xl));
+        BN_bn2bin(y, pub_be + 66 + (66 - yl));
+        BN_free(x); BN_free(y); BN_free(d);
+        BN_CTX_free(ctx); EC_POINT_free(Q); EC_GROUP_free(grp);
+        return true;
+    };
+
+    auto ossl521_sign = [](const uint8_t priv_be[66], const uint8_t* msg, size_t len,
+                           uint8_t* sig, size_t* siglen) -> bool {
+        EVP_PKEY* pkey = EVP_PKEY_new();
+        BIGNUM* d = BN_bin2bn(priv_be, 66, nullptr);
+        EC_GROUP* grp = EC_GROUP_new_by_curve_name(NID_secp521r1);
+        EC_KEY* eck = EC_KEY_new();
+        EC_KEY_set_group(eck, grp);
+        EC_KEY_set_private_key(eck, d);
+        EC_POINT* Q = EC_POINT_new(grp);
+        BN_CTX* ctx = BN_CTX_new();
+        EC_POINT_mul(grp, Q, d, nullptr, nullptr, ctx);
+        EC_KEY_set_public_key(eck, Q);
+        EVP_PKEY_assign_EC_KEY(pkey, eck);
+        EVP_MD_CTX* mctx = EVP_MD_CTX_new();
+        EVP_DigestSignInit(mctx, nullptr, EVP_sha512(), nullptr, pkey);
+        EVP_DigestSignUpdate(mctx, msg, len);
+        EVP_DigestSignFinal(mctx, nullptr, siglen);
+        EVP_DigestSignFinal(mctx, sig, siglen);
+        EVP_MD_CTX_free(mctx);
+        EVP_PKEY_free(pkey);
+        BN_free(d); EC_POINT_free(Q); BN_CTX_free(ctx); EC_GROUP_free(grp);
+        return true;
+    };
+
+    auto ossl521_verify = [](const uint8_t pub_be[132], const uint8_t* msg, size_t len,
+                             const uint8_t sig_rs[132]) -> bool {
+        uint8_t digest[64];
+        EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
+        EVP_DigestInit_ex(mdctx, EVP_sha512(), nullptr);
+        EVP_DigestUpdate(mdctx, msg, len);
+        unsigned int dlen;
+        EVP_DigestFinal_ex(mdctx, digest, &dlen);
+        EVP_MD_CTX_free(mdctx);
+
+        EC_GROUP* grp = EC_GROUP_new_by_curve_name(NID_secp521r1);
+        EC_KEY* eck = EC_KEY_new();
+        EC_KEY_set_group(eck, grp);
+        BIGNUM* x = BN_bin2bn(pub_be, 66, nullptr);
+        BIGNUM* y = BN_bin2bn(pub_be + 66, 66, nullptr);
+        EC_POINT* Q = EC_POINT_new(grp);
+        BN_CTX* ctx = BN_CTX_new();
+        EC_POINT_set_affine_coordinates(grp, Q, x, y, ctx);
+        EC_KEY_set_public_key(eck, Q);
+        ECDSA_SIG* sig = ECDSA_SIG_new();
+        BIGNUM* r = BN_bin2bn(sig_rs, 66, nullptr);
+        BIGNUM* s = BN_bin2bn(sig_rs + 66, 66, nullptr);
+        ECDSA_SIG_set0(sig, r, s);
+        int ok = ECDSA_do_verify(digest, 64, sig, eck);
+        ECDSA_SIG_free(sig);
+        EC_KEY_free(eck); EC_POINT_free(Q); EC_GROUP_free(grp);
+        BN_free(x); BN_free(y); BN_CTX_free(ctx);
+        return ok == 1;
+    };
+
+    auto der521_to_rs = [](const uint8_t* der, size_t derlen, uint8_t rs[132]) -> bool {
+        const unsigned char* p = der;
+        ECDSA_SIG* sig = d2i_ECDSA_SIG(nullptr, &p, (long)derlen);
+        if (!sig) return false;
+        const BIGNUM* r = ECDSA_SIG_get0_r(sig);
+        const BIGNUM* s = ECDSA_SIG_get0_s(sig);
+        memset(rs, 0, 132);
+        int rl = BN_num_bytes(r), sl = BN_num_bytes(s);
+        BN_bn2bin(r, rs + (66 - rl));
+        BN_bn2bin(s, rs + 66 + (66 - sl));
+        ECDSA_SIG_free(sig);
+        return true;
+    };
+
+    // Test 13: P-521 self keygen/sign/verify
+    printf("=== Test 13: P-521 self keygen/sign/verify ===\n");
+    for (int i = 0; i < 3; ++i) {
+        uint8_t priv[66], pub[132], sig[132];
+        const char* msg = "hello ec p521";
+        jpssl::ecdsa_p521_keygen(pub, priv);
+        jpssl::ecdsa_p521_sign(priv, (const uint8_t*)msg, strlen(msg), sig);
+        bool ok = jpssl::ecdsa_p521_verify(pub, (const uint8_t*)msg, strlen(msg), sig);
+        printf("  iter %d: %s\n", i, ok ? "PASS" : "FAIL");
+        if (!ok) ++fails;
+    }
+
+    // Test 14: P-521 pubkey matches OpenSSL
+    printf("=== Test 14: P-521 pubkey matches OpenSSL ===\n");
+    for (int i = 0; i < 3; ++i) {
+        uint8_t priv[66], pub[132];
+        jpssl::ecdsa_p521_keygen(pub, priv);
+        uint8_t ossl_pub[132];
+        ossl521_pub_from_priv(priv, ossl_pub);
+        bool ok = memcmp(pub, ossl_pub, 132) == 0;
+        printf("  iter %d: %s\n", i, ok ? "PASS" : "FAIL");
+        if (!ok) {
+            hex("priv", priv, 66);
+            hex("ours", pub, 132);
+            hex("ossl", ossl_pub, 132);
+            ++fails;
+        }
+    }
+
+    // Test 15: P-521 our sign -> OpenSSL verify
+    printf("=== Test 15: P-521 our sign -> OpenSSL verify ===\n");
+    for (int i = 0; i < 3; ++i) {
+        uint8_t priv[66], pub[132], sig[132];
+        jpssl::ecdsa_p521_keygen(pub, priv);
+        const char* msg = "cross verify p521";
+        jpssl::ecdsa_p521_sign(priv, (const uint8_t*)msg, strlen(msg), sig);
+        bool ok = ossl521_verify(pub, (const uint8_t*)msg, strlen(msg), sig);
+        printf("  iter %d: %s\n", i, ok ? "PASS" : "FAIL");
+        if (!ok) {
+            hex("priv", priv, 66);
+            hex("sig ", sig, 132);
+            ++fails;
+        }
+    }
+
+    // Test 16: P-521 OpenSSL sign -> our verify
+    printf("=== Test 16: P-521 OpenSSL sign -> our verify ===\n");
+    for (int i = 0; i < 3; ++i) {
+        uint8_t priv[66], pub[132];
+        jpssl::ecdsa_p521_keygen(pub, priv);
+        const char* msg = "ossl sign p521 our verify";
+        uint8_t der[512];
+        size_t derlen = sizeof(der);
+        ossl521_sign(priv, (const uint8_t*)msg, strlen(msg), der, &derlen);
+        uint8_t sig[132];
+        der521_to_rs(der, derlen, sig);
+        bool ok = jpssl::ecdsa_p521_verify(pub, (const uint8_t*)msg, strlen(msg), sig);
+        printf("  iter %d: %s\n", i, ok ? "PASS" : "FAIL");
+        if (!ok) {
+            hex("priv", priv, 66);
+            hex("sig ", sig, 132);
+            ++fails;
+        }
+    }
+
+    // Test 17: P-521 tamper detection
+    printf("=== Test 17: P-521 tamper detection ===\n");
+    {
+        uint8_t priv[66], pub[132], sig[132];
+        jpssl::ecdsa_p521_keygen(pub, priv);
+        const char* msg = "original message p521";
+        jpssl::ecdsa_p521_sign(priv, (const uint8_t*)msg, strlen(msg), sig);
+        const char* bad = "modified message p521";
+        bool ok = jpssl::ecdsa_p521_verify(pub, (const uint8_t*)bad, strlen(bad), sig);
+        printf("  tampered msg rejected: %s\n", !ok ? "PASS" : "FAIL");
+        if (ok) ++fails;
+        sig[0] ^= 0xff;
+        ok = jpssl::ecdsa_p521_verify(pub, (const uint8_t*)msg, strlen(msg), sig);
+        printf("  bad sig rejected: %s\n", !ok ? "PASS" : "FAIL");
+        if (ok) ++fails;
+    }
+
     printf("\n=== Result: %d failures ===\n", fails);
     return fails ? 1 : 0;
 }

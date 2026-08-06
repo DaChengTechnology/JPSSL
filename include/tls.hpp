@@ -42,6 +42,7 @@ enum class ExtensionType { SERVER_NAME=0, SUPPORTED_VERSIONS=0x2b, KEY_SHARE=0x3
 enum class SignatureAlgorithm : uint16_t {
     RSA_PKCS1_SHA256=0x0401, RSA_PKCS1_SHA384=0x0501, RSA_PKCS1_SHA512=0x0601,
     ECDSA_SECP256R1_SHA256=0x0403, ECDSA_SECP384R1_SHA384=0x0503,
+    ECDSA_SECP521R1_SHA512=0x0603,
     RSA_PSS_RSAE_SHA256=0x0804, RSA_PSS_RSAE_SHA384=0x0805, RSA_PSS_RSAE_SHA512=0x0806,
     ED25519=0x0807, ED448=0x0808,
     SM2_SM3=0x0708
@@ -146,6 +147,7 @@ inline std::vector<uint16_t> tls_default_signature_algorithms() {
         (uint16_t)SignatureAlgorithm::ED448,
         (uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256,
         (uint16_t)SignatureAlgorithm::ECDSA_SECP384R1_SHA384,
+        (uint16_t)SignatureAlgorithm::ECDSA_SECP521R1_SHA512,
         (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256,
         (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384,
         (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512,
@@ -161,6 +163,7 @@ inline bool tls_scheme_allowed_for_cert_verify(uint16_t scheme) {
     switch (scheme) {
         case (uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256:
         case (uint16_t)SignatureAlgorithm::ECDSA_SECP384R1_SHA384:
+        case (uint16_t)SignatureAlgorithm::ECDSA_SECP521R1_SHA512:
         case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
         case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
         case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
@@ -224,6 +227,7 @@ struct tls_certificate {
         uint8_t ed448[57];
         uint8_t ecdsa_p256[64];
         uint8_t ecdsa_p384[96];
+        uint8_t ecdsa_p521[132];
         uint8_t sm2[64];           // SM2 未压缩公钥 (x||y)
     } pub;
     // 私钥
@@ -234,6 +238,7 @@ struct tls_certificate {
         uint8_t ed448[57];
         uint8_t ecdsa_p256[32];
         uint8_t ecdsa_p384[48];
+        uint8_t ecdsa_p521[66];
         uint8_t sm2[32];           // SM2 私钥
     } priv;
     SignatureAlgorithm sig_alg;

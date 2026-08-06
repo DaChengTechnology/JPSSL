@@ -60,8 +60,10 @@ inline const uint8_t OID_SHA512_WITH_RSA[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D
 inline const uint8_t OID_EC_PUBLIC_KEY[]        = {0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01};            // 1.2.840.10045.2.1
 inline const uint8_t OID_EC_SECP256R1[]         = {0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07};      // 1.2.840.10045.3.1.7
 inline const uint8_t OID_EC_SECP384R1[]         = {0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x22};      // 1.2.840.10045.3.1.22
+inline const uint8_t OID_EC_SECP521R1[]         = {0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x23};      // 1.2.840.10045.3.1.35
 inline const uint8_t OID_ECDSA_WITH_SHA256[]    = {0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x02};      // 1.2.840.10045.4.3.2
 inline const uint8_t OID_ECDSA_WITH_SHA384[]    = {0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x03};      // 1.2.840.10045.4.3.3
+inline const uint8_t OID_ECDSA_WITH_SHA512[]    = {0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x04};      // 1.2.840.10045.4.3.4
 inline const uint8_t OID_ED25519[]              = {0x2B,0x65,0x70};                                // 1.3.101.112
 inline const uint8_t OID_ED448[]                = {0x2B,0x65,0x71};                                // 1.3.101.113
 // SM2 / SM3 (GM/T 35275)
@@ -96,6 +98,7 @@ enum class KeyType : uint8_t {
     ECDSA_P256,
     ECDSA_P384,
     SM2,
+    ECDSA_P521,
 };
 
 // ═══════════════════════════════════════════════════════════════════════

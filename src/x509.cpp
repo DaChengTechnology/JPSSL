@@ -131,6 +131,9 @@ std::vector<uint8_t> encode_sig_algo(KeyType kt) {
         case KeyType::ECDSA_P384:
             append(inner, encode_oid(OID_ECDSA_WITH_SHA384, sizeof(OID_ECDSA_WITH_SHA384)));
             break;
+        case KeyType::ECDSA_P521:
+            append(inner, encode_oid(OID_ECDSA_WITH_SHA512, sizeof(OID_ECDSA_WITH_SHA512)));
+            break;
         case KeyType::SM2:
             append(inner, encode_oid(OID_SM2_WITH_SM3, sizeof(OID_SM2_WITH_SM3)));
             break;
@@ -160,6 +163,10 @@ std::vector<uint8_t> encode_spki(KeyType kt, const uint8_t* raw_key, size_t raw_
             append(alg_id_inner, encode_oid(OID_EC_PUBLIC_KEY, sizeof(OID_EC_PUBLIC_KEY)));
             append(alg_id_inner, encode_oid(OID_EC_SECP384R1, sizeof(OID_EC_SECP384R1)));
             break;
+        case KeyType::ECDSA_P521:
+            append(alg_id_inner, encode_oid(OID_EC_PUBLIC_KEY, sizeof(OID_EC_PUBLIC_KEY)));
+            append(alg_id_inner, encode_oid(OID_EC_SECP521R1, sizeof(OID_EC_SECP521R1)));
+            break;
         case KeyType::SM2:
             append(alg_id_inner, encode_oid(OID_EC_PUBLIC_KEY, sizeof(OID_EC_PUBLIC_KEY)));
             append(alg_id_inner, encode_oid(OID_SM2, sizeof(OID_SM2)));
@@ -180,7 +187,7 @@ std::vector<uint8_t> encode_spki(KeyType kt, const uint8_t* raw_key, size_t raw_
             pub_der = encode_bit_string(rsa_seq.data(), rsa_seq.size(), 0);
             break;
         }
-        case KeyType::ECDSA_P256: case KeyType::ECDSA_P384: case KeyType::SM2: {
+        case KeyType::ECDSA_P256: case KeyType::ECDSA_P384: case KeyType::ECDSA_P521: case KeyType::SM2: {
             std::vector<uint8_t> point; point.push_back(0x04);
             point.insert(point.end(), raw_key, raw_key + raw_key_len);
             pub_der = encode_bit_string(point.data(), point.size(), 0);
@@ -532,6 +539,7 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
                 auto co = tlv_to_oid(*curve_tlv);
                 if (oid_equal(co, OID_SM2, sizeof(OID_SM2))) cert.key_type = KeyType::SM2;
                 else if (oid_equal(co, OID_EC_SECP384R1, sizeof(OID_EC_SECP384R1))) cert.key_type = KeyType::ECDSA_P384;
+                else if (oid_equal(co, OID_EC_SECP521R1, sizeof(OID_EC_SECP521R1))) cert.key_type = KeyType::ECDSA_P521;
             }
         } else if (oid_equal(algo_oid, OID_ED25519, sizeof(OID_ED25519)))
             cert.key_type = KeyType::Ed25519;
@@ -543,7 +551,7 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
         cert.public_key = tlv_to_bit_string(*pub_tlv);
 
         if ((cert.key_type == KeyType::ECDSA_P256 || cert.key_type == KeyType::ECDSA_P384 ||
-             cert.key_type == KeyType::SM2)
+             cert.key_type == KeyType::ECDSA_P521 || cert.key_type == KeyType::SM2)
             && !cert.public_key.empty() && cert.public_key[0] == 0x04)
             cert.public_key.erase(cert.public_key.begin());
 
@@ -641,6 +649,7 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
             else if (oid_equal(sa_oid, OID_SHA384_WITH_RSA, sizeof(OID_SHA384_WITH_RSA))) cert.sign_key_type = KeyType::RSA_4096;
             else if (oid_equal(sa_oid, OID_ECDSA_WITH_SHA256, sizeof(OID_ECDSA_WITH_SHA256))) cert.sign_key_type = KeyType::ECDSA_P256;
             else if (oid_equal(sa_oid, OID_ECDSA_WITH_SHA384, sizeof(OID_ECDSA_WITH_SHA384))) cert.sign_key_type = KeyType::ECDSA_P384;
+            else if (oid_equal(sa_oid, OID_ECDSA_WITH_SHA512, sizeof(OID_ECDSA_WITH_SHA512))) cert.sign_key_type = KeyType::ECDSA_P521;
             else if (oid_equal(sa_oid, OID_ED25519, sizeof(OID_ED25519))) cert.sign_key_type = KeyType::Ed25519;
             else if (oid_equal(sa_oid, OID_ED448, sizeof(OID_ED448))) cert.sign_key_type = KeyType::Ed448;
             else if (oid_equal(sa_oid, OID_SM2_WITH_SM3, sizeof(OID_SM2_WITH_SM3))) cert.sign_key_type = KeyType::SM2;
@@ -737,6 +746,11 @@ bool x509_cert::verify_signature(const x509_cert& issuer) const {
             sha512_ctx ctx; sha384_init(&ctx); sha512_update(&ctx, tbs_data, tbs_len); sha512_final(&ctx, hash);
             return ecdsa_p384_verify(issuer.public_key.data(), hash, 48, signature.data());
         }
+        case KeyType::ECDSA_P521: {
+            uint8_t hash[64];
+            sha512_ctx ctx; sha512_init(&ctx); sha512_update(&ctx, tbs_data, tbs_len); sha512_final(&ctx, hash);
+            return ecdsa_p521_verify(issuer.public_key.data(), hash, 64, signature.data());
+        }
         case KeyType::SM2: {
             uint8_t hash[32];
             sm3_ctx ctx; sm3_init(&ctx); sm3_update(&ctx, tbs_data, tbs_len); sm3_final(&ctx, hash);
@@ -802,6 +816,11 @@ x509_cert x509_builder::build_and_sign(KeyType sign_key_type,
             uint8_t hash[48];
             sha512_ctx ctx; sha384_init(&ctx); sha512_update(&ctx, tbs_data, tbs_len); sha512_final(&ctx, hash);
             ecdsa_p384_sign(sign_priv_data, hash, 48, sig_buf); sig_len = 96; break;
+        }
+        case KeyType::ECDSA_P521: {
+            uint8_t hash[64];
+            sha512_ctx ctx; sha512_init(&ctx); sha512_update(&ctx, tbs_data, tbs_len); sha512_final(&ctx, hash);
+            ecdsa_p521_sign(sign_priv_data, hash, 64, sig_buf); sig_len = 132; break;
         }
         case KeyType::SM2: {
             uint8_t hash[32];

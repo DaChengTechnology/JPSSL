@@ -37,7 +37,7 @@
 │  ├─ hkdf.cpp               HKDF-SHA256/SHA384      │
 │  ├─ x25519.cpp             X25519 ECDH            │
 │  ├─ ed25519.cpp            Ed25519 签名/验证      │
-│  ├─ ecdsa.cpp              ECDSA P-256 签名/验证  │
+│  ├─ ecdsa.cpp              ECDSA P-256/384/521 签名/验证  │
 │  ├─ sm2.cpp                SM2 签名/验证/密钥交换  │
 │  ├─ sm3.cpp                SM3 密码杂凑算法        │
 │  ├─ sm3_win.asm           SM3 标量汇编 (MSVC x64)       │
@@ -263,6 +263,7 @@ jpssl-crypt rand 32
 | **X25519** | ECDH 密钥交换 | — | — |
 | **Ed25519** | 数字签名 (EdDSA) | — | — |
 | **ECDSA P-256** | 数字签名 (secp256r1) | — | — |
+| **ECDSA P-384/521** | 数字签名 (secp384r1 / secp521r1) | — | — |
 | **X.509 v3** | 证书 DER 编解码 (RFC 5280), 自签名/证书链, SAN/KeyUsage/BasicConstraints | — | — |
 | **SM2** | 数字签名/密钥交换 (sm2p256v1, GM/T 0003) | — | — |
 | **SM3** | 密码杂凑 (256-bit, GM/T 0004) | — | — |
@@ -491,7 +492,7 @@ x25519_scalar_mult(shared, alice_priv, bob_pub);
 ### TLS 1.2 / 1.3
 
 TLS 模块提供完整的 TLS 1.2 和 TLS 1.3 握手流程、记录层加解密、SNI 多域名证书管理、0-RTT 早数据。
-支持 AES-128/256-GCM、ChaCha20-Poly1305、AES-128-CCM 等密码套件，以及 Ed25519、ECDSA P-256、RSA-2048/4096 等多种证书签名算法。
+支持 AES-128/256-GCM、ChaCha20-Poly1305、AES-128-CCM 等密码套件，以及 Ed25519、ECDSA P-256/P-384/P-521、RSA-2048/4096（含 RSA-PSS SHA-256/384/512）等多种证书签名算法。
 
 ```cpp
 #include "tls.hpp"
@@ -906,9 +907,19 @@ ecdsa_p256_sign(priv, (const uint8_t*)"message", 7, sig);
 bool ok = ecdsa_p256_verify(pub, (const uint8_t*)"message", 7, sig);
 ```
 
+ECDSA P-384（SHA-384）与 P-521（SHA-512，即通常所称 "P512"）接口相同，
+密钥/公钥/签名为 48/96/96 与 66/132/132 字节：
+
+```cpp
+uint8_t pub[132], priv[66], sig[132];
+ecdsa_p521_keygen(pub, priv);
+ecdsa_p521_sign(priv, (const uint8_t*)"message", 7, sig);
+bool ok = ecdsa_p521_verify(pub, (const uint8_t*)"message", 7, sig);
+```
+
 ### X.509 v3 证书 (RFC 5280)
 
-`x509.hpp` 提供完整的 X.509 v3 证书 DER 编解码、自签名证书生成和证书链验证。支持 RSA-2048/4096、Ed25519、Ed448、ECDSA P-256、SM2 五种密钥类型。
+`x509.hpp` 提供完整的 X.509 v3 证书 DER 编解码、自签名证书生成和证书链验证。支持 RSA-2048/4096、Ed25519、Ed448、ECDSA P-256/P-384/P-521、SM2 七种密钥类型。
 
 ```cpp
 #include "x509.hpp"

@@ -899,4 +899,486 @@ bool ecdsa_p384_verify(const uint8_t pub[96], const uint8_t* msg, size_t msg_len
     return u384_eq(&v, &r);
 }
 
+// ── ECDSA P-521 (secp521r1) ──
+//  521 位大整数 = 9 × uint64_t, big-endian 对外接口
+
+// P-521 域参数 (FIPS 186-4, NIST secp521r1) - 大端字节序, 66 字节
+// p = 2^521 - 1
+static const uint8_t P521_P_BYTES[66] = {
+    0x01,
+    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xff
+};
+static const uint8_t P521_Gx_BYTES[66] = {
+    0x00,0xc6,0x85,0x8e,0x06,0xb7,0x04,0x04,0xe9,0xcd,0x9e,0x3e,0xcb,0x66,0x23,0x95,
+    0xb4,0x42,0x9c,0x64,0x81,0x39,0x05,0x3f,0xb5,0x21,0xf8,0x28,0xaf,0x60,0x6b,0x4d,
+    0x3d,0xba,0xa1,0x4b,0x5e,0x77,0xef,0xe7,0x59,0x28,0xfe,0x1d,0xc1,0x27,0xa2,0xff,
+    0xa8,0xde,0x33,0x48,0xb3,0xc1,0x85,0x6a,0x42,0x9b,0xf9,0x7e,0x7e,0x31,0xc2,0xe5,
+    0xbd,0x66
+};
+static const uint8_t P521_Gy_BYTES[66] = {
+    0x01,0x18,0x39,0x29,0x6a,0x78,0x9a,0x3b,0xc0,0x04,0x5c,0x8a,0x5f,0xb4,0x2c,0x7d,
+    0x1b,0xd9,0x98,0xf5,0x44,0x49,0x57,0x9b,0x44,0x68,0x17,0xaf,0xbd,0x17,0x27,0x3e,
+    0x66,0x2c,0x97,0xee,0x72,0x99,0x5e,0xf4,0x26,0x40,0xc5,0x50,0xb9,0x01,0x3f,0xad,
+    0x07,0x61,0x35,0x3c,0x70,0x86,0xa2,0x72,0xc2,0x40,0x88,0xbe,0x94,0x76,0x9f,0xd1,
+    0x66,0x50
+};
+static const uint8_t P521_N_BYTES[66] = {
+    0x01,
+    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xfa,0x51,0x86,0x87,0x83,0xbf,0x2f,0x96,0x6b,0x7f,0xcc,0x01,0x48,0xf7,0x09,0xa5,
+    0xd0,0x3b,0xb5,0xc9,0xb8,0x89,0x9c,0x47,0xae,0xbb,0x6f,0xb7,0x1e,0x91,0x38,0x64,
+    0x09
+};
+
+// 521 位无符号整数 (little-endian limbs, v[0] = 最低位)
+struct uint521 { uint64_t v[9]; };
+struct uint1042 { uint64_t v[18]; };
+
+// 全局域参数 (init521_params 填充)
+static uint521 G521_P, G521_N, G521_Gx, G521_Gy;
+static bool g521_init = false;
+
+static void u521_from_be(uint521* r, const uint8_t b[66]) {
+    for (int i = 0; i < 8; ++i) {
+        int j = 66 - 8 * (i + 1);
+        r->v[i] = ((uint64_t)b[j]   << 56) | ((uint64_t)b[j+1] << 48) |
+                  ((uint64_t)b[j+2] << 40) | ((uint64_t)b[j+3] << 32) |
+                  ((uint64_t)b[j+4] << 24) | ((uint64_t)b[j+5] << 16) |
+                  ((uint64_t)b[j+6] << 8)  |  (uint64_t)b[j+7];
+    }
+    r->v[8] = ((uint64_t)b[0] << 8) | (uint64_t)b[1];
+}
+static void u521_to_be(const uint521* a, uint8_t b[66]) {
+    for (int i = 0; i < 8; ++i) {
+        int j = 66 - 8 * (i + 1);
+        b[j]   = (uint8_t)(a->v[i] >> 56); b[j+1] = (uint8_t)(a->v[i] >> 48);
+        b[j+2] = (uint8_t)(a->v[i] >> 40); b[j+3] = (uint8_t)(a->v[i] >> 32);
+        b[j+4] = (uint8_t)(a->v[i] >> 24); b[j+5] = (uint8_t)(a->v[i] >> 16);
+        b[j+6] = (uint8_t)(a->v[i] >> 8);  b[j+7] = (uint8_t)(a->v[i]);
+    }
+    b[0] = (uint8_t)(a->v[8] >> 8);
+    b[1] = (uint8_t)(a->v[8]);
+}
+static bool u521_is_zero(const uint521* a) {
+    for (int i = 0; i < 9; ++i) if (a->v[i]) return false;
+    return true;
+}
+static bool u521_eq(const uint521* a, const uint521* b) {
+    for (int i = 0; i < 9; ++i) if (a->v[i] != b->v[i]) return false;
+    return true;
+}
+static bool u521_lt(const uint521* a, const uint521* b) {
+    for (int i = 8; i >= 0; --i) {
+        if (a->v[i] < b->v[i]) return true;
+        if (a->v[i] > b->v[i]) return false;
+    }
+    return false;
+}
+static uint64_t u521_add(uint521* r, const uint521* a, const uint521* b) {
+    uint64_t carry = 0;
+    for (int i = 0; i < 9; ++i) {
+        __uint128_t t = (__uint128_t)a->v[i] + b->v[i] + carry;
+        r->v[i] = (uint64_t)t;
+        carry = (uint64_t)(t >> 64);
+    }
+    return carry;
+}
+static uint64_t u521_sub(uint521* r, const uint521* a, const uint521* b) {
+    uint64_t borrow = 0;
+    for (int i = 0; i < 9; ++i) {
+        __uint128_t t = (__uint128_t)a->v[i] - b->v[i] - borrow;
+        r->v[i] = (uint64_t)t;
+        borrow = (t >> 64) ? 1 : 0;
+    }
+    return borrow;
+}
+static void u521_mul_full(uint1042* r, const uint521* a, const uint521* b) {
+    for (int i = 0; i < 18; ++i) r->v[i] = 0;
+    for (int i = 0; i < 9; ++i) {
+        uint64_t carry = 0;
+        for (int j = 0; j < 9; ++j) {
+            __uint128_t t = (__uint128_t)a->v[i] * b->v[j] + r->v[i+j] + carry;
+            r->v[i+j] = (uint64_t)t;
+            carry = (uint64_t)(t >> 64);
+        }
+        r->v[i+9] = carry;
+    }
+}
+
+// ── 模运算 (521 位, 参数化模数 m) ──
+
+// r = a mod (2^521 - 1): Mersenne 快速约减, a < 2^1042
+static void mersenne_reduce_521(uint521* r, const uint1042* a) {
+    // 第一次折叠: sum = (a mod 2^521) + (a >> 521), sum < 2^631
+    uint64_t sum[10];
+    uint64_t carry = 0;
+    for (int i = 0; i < 10; ++i) {
+        uint64_t lo = 0, hi = 0;
+        if (i < 8) lo = a->v[i];
+        else if (i == 8) lo = a->v[8] & 0x1FF;
+        if (i < 9) {
+            uint64_t cur = a->v[i + 8];
+            uint64_t nxt = (i + 9 < 18) ? a->v[i + 9] : 0;
+            hi = (cur >> 9) | (nxt << 55);
+        } else {
+            hi = a->v[17] >> 9;
+        }
+        __uint128_t t = (__uint128_t)lo + hi + carry;
+        sum[i] = (uint64_t)t;
+        carry = (uint64_t)(t >> 64);
+    }
+    // 第二次折叠: sum2 = (sum mod 2^521) + (sum >> 521), sum2 < 2^522
+    uint64_t sum2[10];
+    carry = 0;
+    for (int i = 0; i < 10; ++i) {
+        uint64_t lo = 0, hi = 0;
+        if (i < 8) lo = sum[i];
+        else if (i == 8) lo = sum[8] & 0x1FF;
+        if (i == 0) hi = (sum[8] >> 9) | (sum[9] << 55);
+        else if (i == 1) hi = sum[9] >> 9;
+        __uint128_t t = (__uint128_t)lo + hi + carry;
+        sum2[i] = (uint64_t)t;
+        carry = (uint64_t)(t >> 64);
+    }
+    // sum2 >= p 时减去 p 一次 (p = 2^521 - 1)
+    bool ge = false;
+    if (sum2[9] > 0) ge = true;
+    else {
+        for (int j = 8; j >= 0; --j) {
+            uint64_t pj = (j == 8) ? 0x1FF : ~0ULL;
+            if (sum2[j] > pj) { ge = true; break; }
+            if (sum2[j] < pj) { ge = false; break; }
+            if (j == 0) ge = true;
+        }
+    }
+    if (ge) {
+        uint64_t borrow = 0;
+        for (int j = 0; j < 10; ++j) {
+            uint64_t pj = (j == 8) ? 0x1FF : (j == 9 ? 0 : ~0ULL);
+            __uint128_t t = (__uint128_t)sum2[j] - pj - borrow;
+            sum2[j] = (uint64_t)t;
+            borrow = (t >> 64) ? 1 : 0;
+        }
+    }
+    for (int i = 0; i < 9; ++i) r->v[i] = sum2[i];
+}
+
+// r = (1042 位 a) mod m, 二进制长除法, 10-limb (640 位) 累加器
+static void mod521_reduce_1042(uint521* r, const uint1042* a, const uint521* m) {
+    if (m == &G521_P) { mersenne_reduce_521(r, a); return; }
+    uint64_t acc[10] = {0,0,0,0,0,0,0,0,0,0};
+    uint64_t ml[10] = {m->v[0],m->v[1],m->v[2],m->v[3],m->v[4],m->v[5],m->v[6],m->v[7],m->v[8],0};
+    for (int i = 17; i >= 0; --i) {
+        for (int bit = 63; bit >= 0; --bit) {
+            uint64_t carry = (a->v[i] >> bit) & 1;
+            for (int j = 0; j < 10; ++j) {
+                uint64_t nc = acc[j] >> 63;
+                acc[j] = (acc[j] << 1) | carry;
+                carry = nc;
+            }
+            bool ge = false;
+            if (acc[9] > 0) ge = true;
+            else {
+                for (int j = 8; j >= 0; --j) {
+                    if (acc[j] > ml[j]) { ge = true; break; }
+                    if (acc[j] < ml[j]) { ge = false; break; }
+                    if (j == 0) ge = true;
+                }
+            }
+            if (ge) {
+                uint64_t borrow = 0;
+                for (int j = 0; j < 10; ++j) {
+                    __uint128_t t = (__uint128_t)acc[j] - ml[j] - borrow;
+                    acc[j] = (uint64_t)t;
+                    borrow = (t >> 64) ? 1 : 0;
+                }
+            }
+        }
+    }
+    for (int i = 0; i < 9; ++i) r->v[i] = acc[i];
+}
+static void mod521_reduce_521(uint521* r, const uint521* a, const uint521* m) {
+    if (u521_lt(a, m)) { *r = *a; return; }
+    u521_sub(r, a, m);
+}
+static void mm521_add(uint521* r, const uint521* a, const uint521* b, const uint521* m) {
+    uint64_t carry = u521_add(r, a, b);
+    if (carry || !u521_lt(r, m)) u521_sub(r, r, m);
+}
+static void mm521_sub(uint521* r, const uint521* a, const uint521* b, const uint521* m) {
+    uint64_t borrow = u521_sub(r, a, b);
+    if (borrow) u521_add(r, r, m);
+}
+static void mm521_mul(uint521* r, const uint521* a, const uint521* b, const uint521* m) {
+    uint1042 prod;
+    u521_mul_full(&prod, a, b);
+    mod521_reduce_1042(r, &prod, m);
+}
+static void mm521_sqr(uint521* r, const uint521* a, const uint521* m) {
+    mm521_mul(r, a, a, m);
+}
+static void mm521_inv(uint521* r, const uint521* a, const uint521* m) {
+    uint521 two = {2,0,0,0,0,0,0,0,0};
+    uint521 exp;
+    u521_sub(&exp, m, &two);
+    uint521 base = *a;
+    uint521 result = {1,0,0,0,0,0,0,0,0};
+    for (int i = 8; i >= 0; --i) {
+        for (int bit = 63; bit >= 0; --bit) {
+            mm521_sqr(&result, &result, m);
+            if ((exp.v[i] >> bit) & 1)
+                mm521_mul(&result, &result, &base, m);
+        }
+    }
+    *r = result;
+}
+
+// ── P-521 Jacobian 点运算 ──
+
+struct jac521_point { uint521 X, Y, Z; };
+
+static void init521_params() {
+    if (g521_init) return;
+    u521_from_be(&G521_P,  P521_P_BYTES);
+    u521_from_be(&G521_N,  P521_N_BYTES);
+    u521_from_be(&G521_Gx, P521_Gx_BYTES);
+    u521_from_be(&G521_Gy, P521_Gy_BYTES);
+    g521_init = true;
+}
+
+static bool jac521_is_inf(const jac521_point* P) { return u521_is_zero(&P->Z); }
+static void jac521_inf(jac521_point* P) {
+    P->X = {1,0,0,0,0,0,0,0,0}; P->Y = {1,0,0,0,0,0,0,0,0}; P->Z = {0,0,0,0,0,0,0,0,0};
+}
+
+// 倍点 R = 2P, a = -3, EFD dbl-2001-b
+static void jac521_dbl(jac521_point* R, const jac521_point* P) {
+    if (jac521_is_inf(P)) { jac521_inf(R); return; }
+    const uint521* p = &G521_P;
+    uint521 A, B, C, D, E, t, X3, Y3, Z3;
+
+    mm521_sqr(&A, &P->X, p);
+    mm521_sqr(&B, &P->Y, p);
+    mm521_sqr(&C, &B, p);
+    mm521_add(&t, &P->X, &B, p);
+    mm521_sqr(&t, &t, p);
+    mm521_sub(&t, &t, &A, p);
+    mm521_sub(&t, &t, &C, p);
+    mm521_add(&D, &t, &t, p);
+    // E = 3*(X^2 - Z^4)  [a = -3]
+    mm521_sqr(&t, &P->Z, p);
+    mm521_sqr(&t, &t, p);
+    mm521_sub(&t, &A, &t, p);
+    mm521_add(&E, &t, &t, p);
+    mm521_add(&E, &E, &t, p);
+    // X3 = E^2 - 2D
+    mm521_sqr(&X3, &E, p);
+    mm521_add(&t, &D, &D, p);
+    mm521_sub(&X3, &X3, &t, p);
+    // Y3 = E*(D - X3) - 8C
+    mm521_sub(&t, &D, &X3, p);
+    mm521_mul(&Y3, &E, &t, p);
+    mm521_add(&t, &C, &C, p);
+    mm521_add(&t, &t, &t, p);
+    mm521_add(&t, &t, &t, p);
+    mm521_sub(&Y3, &Y3, &t, p);
+    // Z3 = 2*Y*Z
+    mm521_mul(&Z3, &P->Y, &P->Z, p);
+    mm521_add(&Z3, &Z3, &Z3, p);
+
+    R->X = X3; R->Y = Y3; R->Z = Z3;
+}
+
+// 点加 R = P + Q, EFD add-2007-bl
+static void jac521_add(jac521_point* R, const jac521_point* P, const jac521_point* Q) {
+    if (jac521_is_inf(P)) { *R = *Q; return; }
+    if (jac521_is_inf(Q)) { *R = *P; return; }
+    const uint521* p = &G521_P;
+    uint521 Z1Z1, Z2Z2, U1, U2, S1, S2, H, I, J, V, r, t, X3, Y3, Z3;
+
+    mm521_sqr(&Z1Z1, &P->Z, p);
+    mm521_sqr(&Z2Z2, &Q->Z, p);
+    mm521_mul(&U1, &P->X, &Z2Z2, p);
+    mm521_mul(&U2, &Q->X, &Z1Z1, p);
+    mm521_mul(&S1, &P->Y, &Q->Z, p);
+    mm521_mul(&S1, &S1, &Z2Z2, p);
+    mm521_mul(&S2, &Q->Y, &P->Z, p);
+    mm521_mul(&S2, &S2, &Z1Z1, p);
+
+    mm521_sub(&H, &U2, &U1, p);
+    mm521_sub(&t, &S2, &S1, p);
+    if (u521_is_zero(&H)) {
+        if (u521_is_zero(&t)) { jac521_dbl(R, P); return; }
+        jac521_inf(R); return;
+    }
+    mm521_add(&r, &t, &t, p);
+    mm521_add(&t, &H, &H, p);
+    mm521_sqr(&I, &t, p);
+    mm521_mul(&J, &H, &I, p);
+    mm521_mul(&V, &U1, &I, p);
+    // X3 = r^2 - J - 2V
+    mm521_sqr(&X3, &r, p);
+    mm521_sub(&X3, &X3, &J, p);
+    mm521_add(&t, &V, &V, p);
+    mm521_sub(&X3, &X3, &t, p);
+    // Y3 = r*(V - X3) - 2*S1*J
+    mm521_sub(&t, &V, &X3, p);
+    mm521_mul(&Y3, &r, &t, p);
+    mm521_mul(&t, &S1, &J, p);
+    mm521_add(&t, &t, &t, p);
+    mm521_sub(&Y3, &Y3, &t, p);
+    // Z3 = ((Z1+Z2)^2 - Z1Z1 - Z2Z2) * H
+    mm521_add(&t, &P->Z, &Q->Z, p);
+    mm521_sqr(&t, &t, p);
+    mm521_sub(&t, &t, &Z1Z1, p);
+    mm521_sub(&t, &t, &Z2Z2, p);
+    mm521_mul(&Z3, &t, &H, p);
+
+    R->X = X3; R->Y = Y3; R->Z = Z3;
+}
+
+// 标量乘法 R = k * P
+static void scalar521_mult(jac521_point* R, const uint521* k, const jac521_point* P) {
+    jac521_inf(R);
+    for (int i = 8; i >= 0; --i) {
+        for (int bit = 63; bit >= 0; --bit) {
+            jac521_dbl(R, R);
+            if ((k->v[i] >> bit) & 1)
+                jac521_add(R, R, P);
+        }
+    }
+}
+
+static void scalar521_mult_G(jac521_point* R, const uint521* k) {
+    jac521_point G;
+    G.X = G521_Gx; G.Y = G521_Gy; G.Z = {1,0,0,0,0,0,0,0,0};
+    scalar521_mult(R, k, &G);
+}
+
+static void jac521_to_affine(uint521* x, uint521* y, const jac521_point* P) {
+    if (jac521_is_inf(P)) {
+        if (x) memset(x, 0, sizeof(uint521));
+        if (y) memset(y, 0, sizeof(uint521));
+        return;
+    }
+    uint521 Zinv, Zinv2, Zinv3;
+    mm521_inv(&Zinv, &P->Z, &G521_P);
+    mm521_sqr(&Zinv2, &Zinv, &G521_P);
+    mm521_mul(&Zinv3, &Zinv2, &Zinv, &G521_P);
+    if (x) mm521_mul(x, &P->X, &Zinv2, &G521_P);
+    if (y) mm521_mul(y, &P->Y, &Zinv3, &G521_P);
+}
+
+// ── P-521 辅助 ──
+
+// e = bits2int(SHA-512(M)): 512 位哈希 < n (~521 位), 直接作为 521 位整数
+static void hash521_to_e(const uint8_t* msg, size_t msg_len, uint521* e) {
+    uint8_t h[64];
+    sha512(msg, msg_len, h);
+    uint8_t eb[66] = {0};
+    // e = bits2int(SHA-512(M)): 512 位哈希 < n (~521 位),
+    // 放在 66 字节大端数的低位, 高位 2 字节补零
+    memcpy(eb + 2, h, 64);
+    u521_from_be(e, eb);
+}
+
+static void rand521_scalar(uint521* k) {
+    uint8_t buf[66];
+    do {
+        os_rand_bytes(buf, 66);
+        buf[0] &= 0x01;   // 限制在 521 位以内
+        u521_from_be(k, buf);
+        if (!u521_lt(k, &G521_N)) u521_sub(k, k, &G521_N);
+    } while (u521_is_zero(k));
+}
+
+// ── P-521 ECDSA API ──
+
+void ecdsa_p521_keygen(uint8_t pub[132], uint8_t priv[66]) {
+    init521_params();
+    uint521 d;
+    rand521_scalar(&d);
+    u521_to_be(&d, priv);
+
+    jac521_point Q;
+    scalar521_mult_G(&Q, &d);
+    uint521 Qx, Qy;
+    jac521_to_affine(&Qx, &Qy, &Q);
+    u521_to_be(&Qx, pub);
+    u521_to_be(&Qy, pub + 66);
+}
+
+void ecdsa_p521_sign(const uint8_t priv[66], const uint8_t* msg, size_t msg_len, uint8_t sig[132]) {
+    init521_params();
+    uint521 d;
+    u521_from_be(&d, priv);
+
+    uint521 e;
+    hash521_to_e(msg, msg_len, &e);
+
+    uint521 r, s, k, k_inv, rd, ed, Rx;
+    jac521_point R;
+    do {
+        rand521_scalar(&k);
+        scalar521_mult_G(&R, &k);
+        jac521_to_affine(&Rx, nullptr, &R);
+        mod521_reduce_521(&r, &Rx, &G521_N);
+        if (u521_is_zero(&r)) continue;
+        mm521_inv(&k_inv, &k, &G521_N);
+        mm521_mul(&rd, &r, &d, &G521_N);
+        mm521_add(&ed, &e, &rd, &G521_N);
+        mm521_mul(&s, &k_inv, &ed, &G521_N);
+    } while (u521_is_zero(&s));
+
+    u521_to_be(&r, sig);
+    u521_to_be(&s, sig + 66);
+}
+
+bool ecdsa_p521_verify(const uint8_t pub[132], const uint8_t* msg, size_t msg_len, const uint8_t sig[132]) {
+    init521_params();
+    uint521 r, s;
+    u521_from_be(&r, sig);
+    u521_from_be(&s, sig + 66);
+
+    if (u521_is_zero(&r) || u521_is_zero(&s)) return false;
+    if (!u521_lt(&r, &G521_N)) return false;
+    if (!u521_lt(&s, &G521_N)) return false;
+
+    uint521 e;
+    hash521_to_e(msg, msg_len, &e);
+
+    uint521 w, u1, u2;
+    mm521_inv(&w, &s, &G521_N);
+    mm521_mul(&u1, &e, &w, &G521_N);
+    mm521_mul(&u2, &r, &w, &G521_N);
+
+    jac521_point u1G;
+    scalar521_mult_G(&u1G, &u1);
+
+    jac521_point Q;
+    u521_from_be(&Q.X, pub);
+    u521_from_be(&Q.Y, pub + 66);
+    Q.Z = {1,0,0,0,0,0,0,0,0};
+
+    jac521_point u2Q;
+    scalar521_mult(&u2Q, &u2, &Q);
+
+    jac521_point R;
+    jac521_add(&R, &u1G, &u2Q);
+
+    if (jac521_is_inf(&R)) return false;
+
+    uint521 Rx;
+    jac521_to_affine(&Rx, nullptr, &R);
+    uint521 v;
+    mod521_reduce_521(&v, &Rx, &G521_N);
+
+    return u521_eq(&v, &r);
+}
+
 } // namespace jpssl
