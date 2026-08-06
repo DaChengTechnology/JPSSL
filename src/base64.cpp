@@ -93,12 +93,16 @@ std::string base64_encode(const uint8_t* data, size_t len) {
 
     size_t i = 0;
     switch (b64_level()) {
+#ifdef JP_AVX512
     case 2:
         i = detail::base64_encode_avx512(data, len, out.data());
         break;
+#endif
+#ifdef JP_AVX2
     case 1:
         i = detail::base64_encode_avx2(data, len, out.data());
         break;
+#endif
     default:
         break;
     }
@@ -123,6 +127,7 @@ std::optional<std::vector<uint8_t>> base64_decode(const std::string& text) {
 
     size_t i = 0;
     switch (b64_level()) {
+#ifdef JP_AVX512
     case 2:
         if (n >= 68) {
             // 64-char SIMD chunks; the final 4-char group (possible '=' padding)
@@ -133,6 +138,8 @@ std::optional<std::vector<uint8_t>> base64_decode(const std::string& text) {
             i = n_simd;
         }
         break;
+#endif
+#ifdef JP_AVX2
     case 1:
         if (n >= 36) {
             const size_t n_simd = ((n - 4) / 32) * 32;
@@ -141,6 +148,7 @@ std::optional<std::vector<uint8_t>> base64_decode(const std::string& text) {
             i = n_simd;
         }
         break;
+#endif
     default:
         break;
     }

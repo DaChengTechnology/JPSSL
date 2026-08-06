@@ -27,6 +27,10 @@ endif()
 # ── 条件编译选项 ─────────────────────────────────────────────────────
 option(JP_ENABLE_AVX2   "Enable AVX2 acceleration"   ON)
 option(JP_ENABLE_AVX512 "Enable AVX512 acceleration" ON)
+option(JP_ENABLE_NEON   "Enable ARM NEON/crypto acceleration (aarch64)" ON)
+# ARMv8 / v8.1 / v8.2 / v9 架构等级（仅作用于 NEON 源文件）：
+#   空 = 默认 (armv8.2-a)；可设为 armv8-a / armv8.1-a / armv8.2-a / armv9-a
+set(JP_ARM_MARCH "" CACHE STRING "ARM architecture level for NEON sources (armv8-a/armv8.1-a/armv8.2-a/armv9-a)")
 
 # ── x86 硬件加速 ──────────────────────────────────────────────────────
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
@@ -82,43 +86,28 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════
 #  libjpssl_cpu — 纯 CPU 密码学库 (AES, ChaCha20, RSA, AVX/AES-NI)
 # ═══════════════════════════════════════════════════════════════════════
+# 跨平台可移植源（x86 与 ARM 均编译）
 set(CPU_SOURCES
     src/aes_cpu.cpp
     src/rand_os.cpp
-    src/aes_gcm_avx2.cpp
-    src/aes_gcm_avx512.cpp
-    src/aes_gcm_vaes.cpp
     src/aes_gcm_auto.cpp
     src/chacha20_poly1305.cpp
-    src/chacha20_avx2.cpp
-    src/chacha20_avx512.cpp
-    src/poly1305_avx2.cpp
     src/rsa.cpp
     src/sha256.cpp
-    src/sha256_sha_ni.cpp
     src/sha3.cpp
     src/sha1.cpp
-    src/sha1_avx2.cpp
-    src/sha1_avx512.cpp
     src/sha512_cpu.cpp
-    src/sha512_opt.cpp
     src/hmac.cpp
     src/hkdf.cpp
     src/x25519.cpp
-    src/x25519_avx512.cpp
     src/x448.cpp
-    src/x448_avx2.cpp
-    src/x448_avx512.cpp
     src/ed448.cpp
-    src/ed448_avx2.cpp
-    src/ed448_avx512.cpp
     src/ed448_batch_cpu.cpp
     src/ed448_batch_dispatch.cpp
     src/tls.cpp
     src/x509.cpp
     src/ed25519.cpp
     src/ed25519_r51.cpp
-    src/ed25519_avx512.cpp
     src/ed25519_batch_cpu.cpp
     src/ed25519_batch_dispatch.cpp
     src/aes_ccm.cpp
@@ -128,22 +117,65 @@ set(CPU_SOURCES
     src/sm3.cpp
     src/sm4.cpp
     src/base64.cpp
-    src/base64_avx2.cpp
-    src/base64_avx512.cpp
     src/ct.cpp
     src/tls_socket.cpp
     src/sm4_gcm.cpp
     src/sm4_ccm.cpp
     src/sm4_gcm_dispatch.cpp
-    src/rsa_batch_avx2.cpp
-    src/rsa_batch_avx512.cpp
     src/rsa_batch_dispatch.cpp
-    src/rsa_mont_asm.cpp
     src/rsa_prim.cpp
     src/rsa_oaep.cpp
     src/rsa_pss.cpp
     src/rsa_schemes.cpp
 )
+
+# x86-64 专属 SIMD 源（AVX2/AVX512/VAES/SHA-NI/ADX 汇编等）
+set(X86_SOURCES
+    src/aes_gcm_avx2.cpp
+    src/aes_gcm_avx512.cpp
+    src/aes_gcm_vaes.cpp
+    src/chacha20_avx2.cpp
+    src/chacha20_avx512.cpp
+    src/poly1305_avx2.cpp
+    src/sha256_sha_ni.cpp
+    src/sha1_avx2.cpp
+    src/sha1_avx512.cpp
+    src/sha512_opt.cpp
+    src/base64_avx2.cpp
+    src/base64_avx512.cpp
+    src/rsa_batch_avx2.cpp
+    src/rsa_batch_avx512.cpp
+    src/rsa_mont_asm.cpp
+    src/ed25519_avx512.cpp
+    src/x25519_avx512.cpp
+    src/ed448_avx2.cpp
+    src/ed448_avx512.cpp
+    src/x448_avx2.cpp
+    src/x448_avx512.cpp
+)
+
+# ARM (aarch64) NEON/crypto 加速源
+set(ARM_SOURCES
+    src/aes_gcm_neon.cpp
+    src/chacha20_neon.cpp
+    src/sha1_neon.cpp
+    src/sha256_neon.cpp
+    src/sha512_neon.cpp
+    src/sha3_neon.cpp
+    src/sm4_neon.cpp
+    src/sm3_neon.cpp
+)
+# SHA-512 / SHA-3 / SM4 / SM3 扩展 (FEAT_SHA512/FEAT_SHA3/FEAT_SM4/FEAT_SM3)
+# 是 ARMv8.2 可选特性；Apple Clang 的 intrinsic 需 -march=armv8.4-a+crypto
+# 才定义（armv9-a 也会定义）。这些文件单独用更高的 -march，运行时按
+# cpu_has_arm_sha512()/cpu_has_arm_sha3()/cpu_has_arm_sm4()/cpu_has_arm_sm3()
+# 分派，
+# 低版本机器安全回退到标量实现。
+set(ARM_CRYPTO_EXT_SOURCES
+    src/sha512_neon.cpp
+    src/sha3_neon.cpp
+    src/sm4_neon.cpp
+    src/sm3_neon.cpp)
 # 被 rsa.cpp include 的 .inc (宏模板/预制素数表): 构建规则为 unscanned
 # (无 /showIncludes 自动依赖), 必须用 OBJECT_DEPENDS 显式声明,
 # 否则修改 .inc 不会触发 rsa.cpp 重编。
@@ -159,6 +191,14 @@ if(MSVC)
     list(APPEND CPU_SOURCES src/sm2_mont_asm_win.asm)
     # SM3 标量压缩汇编
     list(APPEND CPU_SOURCES src/sm3_win.asm)
+endif()
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+    list(APPEND CPU_SOURCES ${X86_SOURCES})
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    if(JP_ENABLE_NEON)
+        list(APPEND CPU_SOURCES ${ARM_SOURCES})
+    endif()
 endif()
 
 add_library(jpssl_cpu STATIC ${CPU_SOURCES})
@@ -330,13 +370,64 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     endif()
 endif()
 
-if(JP_ENABLE_AVX2)
-    target_compile_definitions(jpssl_cpu PRIVATE JP_AVX2)
-    target_compile_definitions(jpssl_cpu_shared PRIVATE JP_AVX2)
+if(JP_ENABLE_AVX2 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+    # PUBLIC：让测试/示例代码知道该构建提供 AVX2 路径（aes.hpp 据此声明/不声明接口）
+    target_compile_definitions(jpssl_cpu PUBLIC JP_AVX2)
+    target_compile_definitions(jpssl_cpu_shared PUBLIC JP_AVX2)
 endif()
-if(JP_ENABLE_AVX512)
-    target_compile_definitions(jpssl_cpu PRIVATE JP_AVX512)
-    target_compile_definitions(jpssl_cpu_shared PRIVATE JP_AVX512)
+if(JP_ENABLE_AVX512 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+    target_compile_definitions(jpssl_cpu PUBLIC JP_AVX512)
+    target_compile_definitions(jpssl_cpu_shared PUBLIC JP_AVX512)
+endif()
+
+# ── ARM NEON / crypto 硬件加速 (aarch64: NEON 必选, AES/PMULL/SHA 扩展可选) ──
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    if(JP_ENABLE_NEON AND ARM_SOURCES)
+        target_compile_definitions(jpssl_cpu PUBLIC JP_NEON)
+        target_compile_definitions(jpssl_cpu_shared PUBLIC JP_NEON)
+
+        # 用户可通过 -DJP_ARM_MARCH=armv8-a / armv8.1-a / armv8.2-a / armv8.4-a / armv9-a
+        # 选择目标架构等级；默认 armv8.2-a+crypto（Apple Silicon 与主流 ARMv8.2 均支持）。
+        # armv8.4-a 直接覆盖 SHA-512/SHA-3/SM3/SM4 所需的 crypto 扩展（FEAT_*），
+        # 全部 NEON 源（含 SHA-1/SHA-256）按该等级编译。
+        # 仅对 NEON 源文件启用，避免抬高整个库的最低架构要求。
+        if(JP_ARM_MARCH)
+            string(REGEX MATCH "^(armv8-a|armv8\\.1-a|armv8\\.2-a|armv8\\.4-a|armv9-a)$" JP_ARM_MARCH_OK "${JP_ARM_MARCH}")
+            if(NOT JP_ARM_MARCH_OK)
+                message(FATAL_ERROR "JP_ARM_MARCH 必须是 armv8-a / armv8.1-a / armv8.2-a / armv8.4-a / armv9-a 之一（当前: ${JP_ARM_MARCH}）")
+            endif()
+            set(JP_NEON_ARCH_FLAGS "-march=${JP_ARM_MARCH}+crypto")
+            if(JP_ARM_MARCH STREQUAL "armv9-a")
+                # armv9-a 会开启 SVE/SVE2，而 Apple Silicon（M 系列，ARMv8.4-8.6）
+                # 不支持 SVE；NEON 源只用 AES/PMULL/SHA2 扩展，禁用 SVE 代码生成
+                # 以保证 armv9-a 构建在 Apple 芯片与 ARMv9 机器上都能运行。
+                if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+                    list(APPEND JP_NEON_ARCH_FLAGS
+                        -Xclang -target-feature -Xclang -sve
+                        -Xclang -target-feature -Xclang -sve2)
+                elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+                    list(APPEND JP_NEON_ARCH_FLAGS -mno-sve -mno-sve2)
+                endif()
+            endif()
+            set_source_files_properties(${ARM_SOURCES} PROPERTIES
+                COMPILE_OPTIONS "${JP_NEON_ARCH_FLAGS}")
+            if(JP_ARM_MARCH STREQUAL "armv8-a" OR JP_ARM_MARCH STREQUAL "armv8.1-a" OR JP_ARM_MARCH STREQUAL "armv8.2-a")
+                # SHA-512/SHA-3/SM4/SM3 intrinsic 需要至少 armv8.4-a（覆盖上方较低等级）
+                set_source_files_properties(${ARM_CRYPTO_EXT_SOURCES} PROPERTIES
+                    COMPILE_OPTIONS "-march=armv8.4-a+crypto")
+            endif()
+            message(STATUS "ARM NEON: 启用, -march=${JP_ARM_MARCH}+crypto (可用 -DJP_ARM_MARCH=armv8-a/armv8.1-a/armv8.4-a/armv9-a 调整)")
+        else()
+            set_source_files_properties(${ARM_SOURCES} PROPERTIES
+                COMPILE_FLAGS "-march=armv8.2-a+crypto")
+            # 覆盖：SHA-512/SHA-3/SM4/SM3 源用 armv8.4-a+crypto（COMPILE_FLAGS 整体替换）
+            set_source_files_properties(${ARM_CRYPTO_EXT_SOURCES} PROPERTIES
+                COMPILE_FLAGS "-march=armv8.4-a+crypto")
+            message(STATUS "ARM NEON: 启用, -march=armv8.2-a+crypto (可用 -DJP_ARM_MARCH=armv8-a/armv8.1-a/armv8.4-a/armv9-a 调整)")
+        endif()
+    else()
+        message(STATUS "ARM NEON: 已禁用 (使用 -DJP_ENABLE_NEON=ON 启用)")
+    endif()
 endif()
 if(JP_ENABLE_MUSA)
     target_compile_definitions(jpssl_cpu PRIVATE JP_MUSA)

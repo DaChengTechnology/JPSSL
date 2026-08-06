@@ -25,6 +25,11 @@ static void detect_best() {
 
     auto feats = cpu_features::detect();
 
+#if defined(JP_NEON)
+    if (feats.arm_aes && feats.arm_pmull) {
+        g_best_level = 4; // ARM NEON（AESE + PMULL，4 路并行）
+    } else
+#endif
     if (feats.avx512 && feats.vpclmulqdq_vaes) {
         g_best_level = 3; // AVX512 (8 路 VAES)
     } else if (feats.avx2 && feats.vpclmulqdq_vaes && feats.aesni) {
@@ -44,6 +49,11 @@ void aes_gcm_encrypt_auto(const aes_context& ctx,
                           uint8_t* tag, size_t tag_len) {
     detect_best();
     switch (g_best_level) {
+#if defined(JP_NEON)
+        case 4:
+            aes_gcm_encrypt_neon(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
+            break;
+#endif
 #ifdef JP_AVX512
         case 3:
             aes_gcm_encrypt_avx512(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
@@ -73,6 +83,11 @@ bool aes_gcm_decrypt_auto(const aes_context& ctx,
                           std::vector<uint8_t>& plaintext) {
     detect_best();
     switch (g_best_level) {
+#if defined(JP_NEON)
+        case 4:
+            return aes_gcm_decrypt_neon(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
+                                        plaintext);
+#endif
 #ifdef JP_AVX512
         case 3:
             return aes_gcm_decrypt_avx512(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
@@ -104,6 +119,11 @@ void aes_gcm_encrypt_inplace(const aes_context& ctx,
                              uint8_t* tag, size_t tag_len) {
     detect_best();
     switch (g_best_level) {
+#if defined(JP_NEON)
+        case 4:
+            aes_gcm_encrypt_neon_inplace(ctx, iv, iv_len, buf, data_len, aad, tag, tag_len);
+            return;
+#endif
 #ifdef JP_AVX512
         case 3:
             aes_gcm_encrypt_avx512_inplace(ctx, iv, iv_len, buf, data_len, aad, tag, tag_len);
@@ -136,6 +156,11 @@ bool aes_gcm_decrypt_inplace(const aes_context& ctx,
                              const uint8_t* tag, size_t tag_len) {
     detect_best();
     switch (g_best_level) {
+#if defined(JP_NEON)
+        case 4:
+            return aes_gcm_decrypt_neon_inplace(ctx, iv, iv_len, buf, data_len, aad,
+                                                tag, tag_len);
+#endif
 #ifdef JP_AVX512
         case 3:
             return aes_gcm_decrypt_avx512_inplace(ctx, iv, iv_len, buf, data_len, aad,

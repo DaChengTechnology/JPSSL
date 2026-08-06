@@ -836,12 +836,14 @@ inline void fe51_sq(fe51 r, const fe51 a) {
 // BMI2 (MULX) + ADX (ADCX/ADOX) 运行时检测。用 <cpuid.h> 的 __get_cpuid_count
 //（GCC 与 Clang 均提供的 GNU 扩展头），避免 clang 对 __builtin_cpu_supports
 // 特性字符串（如 "adx"）支持不全的问题。
+#if defined(__x86_64__)
 static inline bool fe51_adx_ok() {
     unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
     if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx) == 0) return false;
     return (ebx & (1u << 19)) != 0 &&   // ADX
            (ebx & (1u <<  8)) != 0;     // BMI2
 }
+#endif
 
 inline void fe51_mul(fe51 r, const fe51 a, const fe51 b) {
 #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__)) && !defined(JP_NO_FE51_ADX_ASM)

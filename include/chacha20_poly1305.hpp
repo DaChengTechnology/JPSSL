@@ -138,6 +138,13 @@ void chacha20_crypt_avx512(const uint8_t key[32], uint32_t counter,
                            const uint8_t nonce[12],
                            std::span<const uint8_t> input,
                            std::span<uint8_t> output);
+#if defined(JP_NEON) && defined(__aarch64__)
+/// ARM NEON 加速流加密（chacha20_neon.cpp，4 块并行）
+void chacha20_crypt_neon(const uint8_t key[32], uint32_t counter,
+                         const uint8_t nonce[12],
+                         std::span<const uint8_t> input,
+                         std::span<uint8_t> output);
+#endif
 
 inline void chacha20_stream_xor(const uint8_t key[32], const uint8_t nonce[12],
                                 std::span<const uint8_t> input,

@@ -16,6 +16,10 @@ extern "C" void sm3_compress_asm(uint32_t h[8], const uint8_t block[64]);
 
 namespace jpssl {
 
+// ARM NEON (FEAT_SM3) 压缩函数入口；默认 nullptr（标量）。
+// 由 src/sm3_neon.cpp 在支持 SM3 指令的机器上静态接管。
+void (*sm3_cf_ptr)(uint32_t[8], const uint8_t[64]) = nullptr;
+
 // ─── 常量 ──────────────────────────────────────────────────────────────
 
 // 初始值 IV（大端序）
@@ -58,6 +62,10 @@ static void load_be32(uint32_t dst[16], const uint8_t src[64]);
 
 // CF(V, B)：消息扩展 + 64 轮（8 轮/组展开）
 static void sm3_cf(uint32_t v[8], const uint8_t block[64]) {
+    if (sm3_cf_ptr) {
+        sm3_cf_ptr(v, block);
+        return;
+    }
 #if defined(JP_HAVE_SM3_ASM)
     sm3_compress_asm(v, block);
 #else

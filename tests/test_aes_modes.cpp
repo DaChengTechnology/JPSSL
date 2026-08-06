@@ -543,12 +543,20 @@ void test_gcm_all_paths() {
 
     const int key_bits[] = {128, 192, 256};
 
-    // 所有实现路径（AVX2/AVX512 对非 AES-128 会自动回退软件，结果仍须一致）
+    // 所有实现路径（AVX2/AVX512 对非 AES-128 会自动回退软件，结果仍须一致；
+    // x86-only 路径按构建特性守卫，ARM 上替换为 NEON 路径）
     const gcm_pair paths[] = {
         {aes_gcm_encrypt,        aes_gcm_decrypt,        "software"},
         {aes_gcm_encrypt_auto,   aes_gcm_decrypt_auto,   "auto"},
+#if defined(JP_AVX2)
         {aes_gcm_encrypt_avx2,   aes_gcm_decrypt_avx2,   "avx2"},
+#endif
+#if defined(JP_AVX512)
         {aes_gcm_encrypt_avx512, aes_gcm_decrypt_avx512, "avx512"},
+#endif
+#if defined(JP_NEON) && defined(__aarch64__)
+        {aes_gcm_encrypt_neon,   aes_gcm_decrypt_neon,   "neon"},
+#endif
     };
 
     // 已知问题：AVX2/AVX512 GCM 实现存在两处缺陷（见下），修复前硬件路径的

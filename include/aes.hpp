@@ -542,6 +542,7 @@ bool aes_gcm_decrypt_aesni(const aes_context& ctx,
 //  GCM 模式 - AVX2 / AVX512 硬件加速（PCLMULQDQ + VAES）
 // ═══════════════════════════════════════════════════════════════════════
 
+#if defined(JP_AVX2)
 /// AVX2 GCM 加密（4 路并行，需要 PCLMULQDQ + AES-NI）
 /// 自动分派：如果 CPU 不支持 AVX2，回退到软件实现
 void aes_gcm_encrypt_avx2(const aes_context& ctx,
@@ -558,7 +559,9 @@ bool aes_gcm_decrypt_avx2(const aes_context& ctx,
                           std::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext);
+#endif // JP_AVX2
 
+#if defined(JP_AVX512)
 /// AVX512 GCM 加密（8 路并行，需要 VAES + VPCLMULQDQ + AVX512F + AVX512VL）
 /// 自动分派：如果 CPU 不支持 AVX512，回退到 AVX2 / 软件
 void aes_gcm_encrypt_avx512(const aes_context& ctx,
@@ -575,7 +578,9 @@ bool aes_gcm_decrypt_avx512(const aes_context& ctx,
                             std::span<const uint8_t> aad,
                             const uint8_t* tag, size_t tag_len,
                             std::vector<uint8_t>& plaintext);
+#endif // JP_AVX512
 
+#if defined(__x86_64__)
 /// VAES GCM 加密（256-bit VAES，4 块并行，需要 VAES + VPCLMULQDQ + AVX2）
 /// 适用于 Alder Lake / Raptor Lake 等“AVX512 熔断但保留 256-bit VAES”的 CPU；
 /// 不满足条件时回退到软件实现
@@ -593,6 +598,25 @@ bool aes_gcm_decrypt_vaes(const aes_context& ctx,
                           std::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext);
+#endif // __x86_64__
+
+#if defined(JP_NEON) && defined(__aarch64__)
+/// ARM NEON AES-GCM 加密（AESE + PMULL，4 块并行；不满足条件时回退软件）
+void aes_gcm_encrypt_neon(const aes_context& ctx,
+                          const uint8_t* iv, size_t iv_len,
+                          std::span<const uint8_t> plaintext,
+                          std::span<const uint8_t> aad,
+                          std::vector<uint8_t>& ciphertext,
+                          uint8_t* tag, size_t tag_len = 16);
+
+/// ARM NEON AES-GCM 解密
+bool aes_gcm_decrypt_neon(const aes_context& ctx,
+                          const uint8_t* iv, size_t iv_len,
+                          std::span<const uint8_t> ciphertext,
+                          std::span<const uint8_t> aad,
+                          const uint8_t* tag, size_t tag_len,
+                          std::vector<uint8_t>& plaintext);
+#endif
 
 /// GCM 加密 — 自动选择最优实现（AVX512 > VAES-256 > AVX2 > AES-NI > 软件）
 /// 统一入口，内部根据 CPU 特性自动分派

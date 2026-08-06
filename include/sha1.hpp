@@ -42,6 +42,11 @@ void sha1_multi_avx2(const uint8_t* const msgs[8], size_t len, uint8_t out[8][20
 /// AVX-512 multi-buffer SHA-1: hashes 16 equal-length messages in parallel.
 void sha1_multi_avx512(const uint8_t* const msgs[16], size_t len, uint8_t out[16][20]);
 
+#if defined(JP_NEON) && defined(__aarch64__)
+/// ARMv8 SHA-1 扩展加速的单块变换（sha1_neon.cpp，SHA1C/P/M + SHA1SU0/1）
+void sha1_transform_neon(uint32_t h[5], const uint8_t data[64]);
+#endif
+
 /// Runtime-dispatched batch SHA-1 for `count` equal-length messages
 /// (AVX-512 16-way > AVX2 8-way > scalar).  `outs` must hold count * 20 bytes.
 void sha1_batch(const uint8_t* const* msgs, size_t len, uint8_t* outs, size_t count);

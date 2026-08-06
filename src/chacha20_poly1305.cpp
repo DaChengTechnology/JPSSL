@@ -128,15 +128,25 @@ void chacha20_crypt(const uint8_t key[32], uint32_t counter,
                     const uint8_t nonce[12],
                     std::span<const uint8_t> input,
                     std::span<uint8_t> output) {
-    // 运行时扩展检测：优先 AVX512，其次 AVX2，回退标量
+    // 运行时扩展检测：x86 优先 AVX512 → AVX2；ARM 走 NEON；回退标量
+#if defined(JP_AVX512)
     if (cpu_has_avx512()) {
         chacha20_crypt_avx512(key, counter, nonce, input, output);
         return;
     }
+#endif
+#if defined(JP_AVX2)
     if (cpu_has_avx2()) {
         chacha20_crypt_avx2(key, counter, nonce, input, output);
         return;
     }
+#endif
+#if defined(JP_NEON)
+    if (cpu_has_neon()) {
+        chacha20_crypt_neon(key, counter, nonce, input, output);
+        return;
+    }
+#endif
     uint8_t block[64];
     size_t pos = 0;
 
@@ -381,6 +391,7 @@ static void poly1305_init64(Poly1305State64& st, const uint8_t key[32]) {
 // Feed n bytes. For the AEAD layout (AAD || pad(AAD) || ct || pad(ct) ...)
 // the trailing partial block is zero-padded to 16 and gets the 2^128 pad bit.
 static void poly1305_feed64(Poly1305State64& st, const uint8_t* p, size_t n) {
+#if defined(JP_AVX2)
     static const bool has_avx2 = cpu_has_avx2();
     // AVX2 路径只处理完整的 64 字节块；剩余不足 64B 的交给标量路径，
     // 避免 16B 尾部块在 AVX2 中把零填充块也纳入多项式。
@@ -412,6 +423,7 @@ static void poly1305_feed64(Poly1305State64& st, const uint8_t* p, size_t n) {
         st.h2 &= 0x3ffffffffffULL;
         st.use_avx = false;
     }
+#endif // JP_AVX2
     if (st.use_avx) {
         // 已走 AVX2 路径但遇到非 16 倍数输入：把 AVX2 哈希转回标量
         uint64_t h0 = st.avx.h0, h1 = st.avx.h1, h2 = st.avx.h2,
@@ -458,15 +470,38 @@ static void chacha20_crypt_feed_poly(
     const size_t n = in.size();
     size_t pos = 0;
 
+#if defined(JP_AVX512)
     bool use512 = cpu_has_avx512();
+#else
+    bool use512 = false;
+#endif
+#if defined(JP_AVX2)
     bool use256 = cpu_has_avx2();
+#else
+    bool use256 = false;
+#endif
+#if defined(JP_NEON)
+    bool use_neon = cpu_has_neon();
+#else
+    bool use_neon = false;
+#endif
     auto gen = [&](size_t p, size_t len) {
         uint32_t ctr = 1 + (uint32_t)(p / 64);
+#if defined(JP_AVX512)
         if (use512)
             chacha20_crypt_avx512(key, ctr, nonce, in.subspan(p, len), out.subspan(p, len));
-        else if (use256)
+        else
+#endif
+#if defined(JP_AVX2)
+        if (use256)
             chacha20_crypt_avx2(key, ctr, nonce, in.subspan(p, len), out.subspan(p, len));
         else
+#endif
+#if defined(JP_NEON)
+        if (use_neon)
+            chacha20_crypt_neon(key, ctr, nonce, in.subspan(p, len), out.subspan(p, len));
+        else
+#endif
             chacha20_crypt(key, ctr, nonce, in.subspan(p, len), out.subspan(p, len));
     };
 

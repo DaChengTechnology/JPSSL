@@ -18,6 +18,11 @@
 #include <smmintrin.h>   // SSE4.1 (_mm_extract_epi32, _mm_insert_epi32)
 #endif
 
+#if defined(__aarch64__) && defined(JP_NEON) && \
+    (defined(__ARM_FEATURE_AES) || defined(__ARM_FEATURE_CRYPTO))
+#include <arm_neon.h>
+#endif
+
 namespace jpssl {
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -214,6 +219,58 @@ static bool g_use_pclmul = false;
 #endif // __x86_64__
 
 // ═══════════════════════════════════════════════════════════════════════
+//  ARM NEON AES（AESE/AESD，aarch64 + FEAT_AES）
+// ═══════════════════════════════════════════════════════════════════════
+
+#if defined(__aarch64__) && defined(JP_NEON) && \
+    (defined(__ARM_FEATURE_AES) || defined(__ARM_FEATURE_CRYPTO))
+
+static bool neon_aes_available() {
+    static const bool ready = cpu_has_arm_aes();
+    return ready;
+}
+
+/// NEON 单块加密。
+///
+/// AESE(x,k) = ShiftRows(SubBytes(x ^ k))，与 AES-NI
+/// （ShiftRows(SubBytes(x)) ^ k）相反，但 OpenSSL/BoringSSL aesv8-armx 的密钥
+/// 扩展（aes_hw_set_encrypt_key）输出的仍是标准 FIPS-197 轮密钥（Rcon 以
+/// 0x00000001 每字 splat，经 XOR 链自然抵消）。配套的加密循环结构为：
+///   AESE(rk0), AESMC, ..., AESE(rk_{nr-1}), EOR(rk_nr)
+/// 即先不做初始 AddRoundKey，最后一轮 AESE 后单独 XOR 末轮密钥。
+static void neon_encrypt_block(const aes_context& ctx,
+                               const uint8_t plain[16], uint8_t cipher[16]) {
+    uint8x16_t state = vld1q_u8(plain);
+    const uint8_t* rk = ctx.enc_rk.data();
+    const int rounds = ctx.rounds;
+    for (int r = 0; r < rounds - 1; ++r) {
+        state = vaeseq_u8(state, vld1q_u8(rk + r * 16));
+        state = vaesmcq_u8(state);
+    }
+    state = vaeseq_u8(state, vld1q_u8(rk + (rounds - 1) * 16));
+    state = veorq_u8(state, vld1q_u8(rk + rounds * 16));
+    vst1q_u8(cipher, state);
+}
+
+/// NEON 单块解密（dec_rk_aesni：标准 enc 逆序 + 中间轮 InvMixColumns）：
+///   AESD(rk0), AESIMC, ..., AESD(rk_{nr-1}), EOR(rk_nr)
+static void neon_decrypt_block(const aes_context& ctx,
+                               const uint8_t cipher[16], uint8_t plain[16]) {
+    uint8x16_t state = vld1q_u8(cipher);
+    const uint8_t* rk = ctx.dec_rk_aesni.data();
+    const int rounds = ctx.rounds;
+    for (int r = 0; r < rounds - 1; ++r) {
+        state = vaesdq_u8(state, vld1q_u8(rk + r * 16));
+        state = vaesimcq_u8(state);
+    }
+    state = vaesdq_u8(state, vld1q_u8(rk + (rounds - 1) * 16));
+    state = veorq_u8(state, vld1q_u8(rk + rounds * 16));
+    vst1q_u8(plain, state);
+}
+
+#endif // __aarch64__ && JP_NEON && __ARM_FEATURE_AES
+
+// ═══════════════════════════════════════════════════════════════════════
 //  密钥扩展
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -291,6 +348,25 @@ void aes_context::init_impl(std::span<const uint8_t> key, AesKeySize ks) {
     }
 #endif
 
+#if defined(__aarch64__) && defined(JP_NEON) && \
+    (defined(__ARM_FEATURE_AES) || defined(__ARM_FEATURE_CRYPTO))
+    if (neon_aes_available()) {
+        // 标准 FIPS-197 轮密钥（标量路径 + AESE 循环共用：aesv8 密钥扩展
+        // 输出的就是标准轮密钥）
+        key_expansion(key.data(), ks, enc_rk.data());
+        for (int r = 0; r <= rounds; ++r)
+            std::memcpy(dec_rk.data() + r * 16, enc_rk.data() + (rounds - r) * 16, 16);
+        // NEON 解密轮密钥（与 AES-NI dec_rk_aesni 相同布局：逆序 + InvMixColumns）
+        std::memcpy(dec_rk_aesni.data() + 0 * 16, enc_rk.data() + rounds * 16, 16);
+        for (int r = 1; r < rounds; ++r) {
+            uint8x16_t w = vaesimcq_u8(vld1q_u8(enc_rk.data() + r * 16));
+            vst1q_u8(dec_rk_aesni.data() + (rounds - r) * 16, w);
+        }
+        std::memcpy(dec_rk_aesni.data() + rounds * 16, enc_rk.data() + 0 * 16, 16);
+        return;
+    }
+#endif
+
     // 软件回退
     key_expansion(key.data(), ks, enc_rk.data());
     for (int r = 0; r <= rounds; ++r) {
@@ -309,6 +385,13 @@ void aes_encrypt_block(const aes_context& ctx,
 #ifdef __x86_64__
     if (g_use_aesni) {
         aesni_encrypt_block(ctx, plain, cipher);
+        return;
+    }
+#endif
+#if defined(__aarch64__) && defined(JP_NEON) && \
+    (defined(__ARM_FEATURE_AES) || defined(__ARM_FEATURE_CRYPTO))
+    if (neon_aes_available()) {
+        neon_encrypt_block(ctx, plain, cipher);
         return;
     }
 #endif
@@ -390,6 +473,13 @@ void aes_decrypt_block(const aes_context& ctx,
 #ifdef __x86_64__
     if (g_use_aesni) {
         aesni_decrypt_block(ctx, cipher, plain);
+        return;
+    }
+#endif
+#if defined(__aarch64__) && defined(JP_NEON) && \
+    (defined(__ARM_FEATURE_AES) || defined(__ARM_FEATURE_CRYPTO))
+    if (neon_aes_available()) {
+        neon_decrypt_block(ctx, cipher, plain);
         return;
     }
 #endif

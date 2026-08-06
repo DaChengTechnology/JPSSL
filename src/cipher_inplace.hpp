@@ -125,4 +125,18 @@ bool aes_gcm_decrypt_avx512_inplace(const aes_context& ctx,
                                     std::span<const uint8_t> aad,
                                     const uint8_t* tag, size_t tag_len);
 
+#if defined(JP_NEON) && defined(__aarch64__)
+// ARM NEON AES-GCM 就地后端（aes_gcm_neon.cpp）
+void aes_gcm_encrypt_neon_inplace(const aes_context& ctx,
+                                  const uint8_t* iv, size_t iv_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  uint8_t* tag, size_t tag_len = 16);
+bool aes_gcm_decrypt_neon_inplace(const aes_context& ctx,
+                                  const uint8_t* iv, size_t iv_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  const uint8_t* tag, size_t tag_len);
+#endif
+
 } // namespace jpssl
