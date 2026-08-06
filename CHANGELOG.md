@@ -1,5 +1,32 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **TLS socket 托管外部 fd**：`tls_connection::attach(fd, take_ownership=true)`
+  接管调用方已创建的 socket（TCP 已连接 / accept 出的连接 / UDP 已 connect 或已 bind），
+  并在其上完成握手；`take_ownership=false` 借用模式不关闭外部句柄；
+  新增 `client_handshake()` 在已托管 socket 上发起客户端握手（不重建传输），
+  `tls_listener::attach()` 托管外部监听 socket。
+- **TLS over UDP（数据报模式）**：每条 TLS record 封装为一个 UDP 数据报
+  （UDP 发送原子性保证整包传输，单条 record ≤ 16KiB+256），握手与应用数据
+  统一走该约定，`send()` 大消息自动分片多数据报、`recv()` 自动合并还原；
+  服务端 `listen_udp()` + `accept_udp()`（首包 recvfrom 取对端地址、监听 socket
+  本身 connect 固定对端以保持源端口、随后转交连接），客户端 attach UDP fd 后
+  `client_handshake()` 即用；`attach` 对 `SOCK_DGRAM` 自动启用，也可
+  `set_datagram_mode()` 显式覆盖。
+
+> ⚠️ **该 UDP 数据报模式是自研简化封装，非标准协议，存在缺陷**：
+> 报文格式与标准 `DTLS`（RFC 6347/9147）、`QUIC`（RFC 9000）不互通，
+> 无法与 OpenSSL/Wireshark 等标准实现互操作；缺少 DTLS 的 cookie 抗 DoS、
+> 握手分片/重传/乱序重组与防重放，UDP 丢包即握手失败。
+> **标准 DTLS 1.2/1.3 与 QUIC + HTTP/3 列入后续版本计划**，届时将取代本模式。
+
+### Tests
+- `test_tls_socket` 新增外部 TCP fd 托管（attach + client_handshake 双向收发）、
+  借用模式（close() 不关闭外部 fd）、UDP 回环（含 40000 字节大消息跨数据报
+  自动合并）用例，共 79 项全部通过；TLS 相关测试套件无回归。
+
 ## [1.0.0] — 2026-08-06
 
 首个 1.0 正式版（CMake `project(jpssl VERSION 1.0.0)`）。

@@ -2499,6 +2499,84 @@ ECDSA/SHA-256 的国密证书透明实现（参考 GM/T《证书透明规范》�
   接受连接并自动完成服务端握手。
 
 - record 层自动处理半包/粘包、握手消息封装与加密 record 透传。
+
+### 外部 fd 托管
+
+`tls_connection` / `tls_listener` 均可托管调用方已创建的外部 socket 句柄
+（事件循环 / epoll / 自建连接等场景），并可选择是否持有句柄所有权：
+
+```cpp
+// 客户端：手动建立 TCP 连接后托管，再在已有 socket 上做 TLS 握手
+int fd = socket(AF_INET, SOCK_STREAM, 0);
+connect(fd, ...);                       // 调用方自己建连
+tls::tls_connection conn;
+conn.attach(fd, /*take_ownership=*/true, &err);
+conn.client_handshake("example.com", &trust, &err);  // 不重建 TCP
+conn.send("GET / HTTP/1.1\r\n\r\n", &err);
+
+// 借用模式：close() 不关闭外部 fd，生命周期由调用方管理
+tls::tls_connection borrowed;
+borrowed.attach(fd, false, &err);       // owns_socket() == false
+borrowed.server_handshake(cert_mgr, &err);
+borrowed.close();                        // fd 仍有效，调用方自行释放
+```
+
+- `attach(fd, take_ownership=true)`：接管已 connect 的 TCP / accept 出的连接 /
+  已 connect 或已 bind 的 UDP socket；对 `SOCK_DGRAM` 句柄自动启用数据报模式。
+- `client_handshake(host, ...)`：在已托管的 socket 上执行客户端握手
+  （原 `connect()` 会自行建立 TCP 连接，不适用于外部 fd）。
+- `tls_listener::attach(fd, ...)`：托管外部监听 socket（TCP 已 listen / UDP 已 bind）。
+
+### UDP 链接（数据报模式）— ⚠️ 非标准，存在缺陷，仅限自研两端互通
+
+`tls_connection` 支持在 UDP 上承载 TLS（数据报模式）：每条 TLS record
+（含握手消息）封装为一个 UDP 数据报发送——UDP 发送是原子的，整包成功或失败，
+单条 record 上限 16KiB+256 远小于 64KiB 数据报上限；`send()` 对大消息自动分片
+为多个数据报，`recv()` 自动合并还原，握手与 TCP 模式共用同一套 record 逻辑。
+
+```cpp
+// 服务端：绑定 UDP 端口，接收首个 ClientHello 后固定对端并完成握手
+tls::tls_listener udp_listener;
+udp_listener.listen_udp(8443, "0.0.0.0", &err);
+tls::tls_connection conn;
+udp_listener.accept_udp(conn, cert_mgr, &err);   // 监听 socket 转交给 conn
+conn.send("hello over udp", &err);
+
+// 客户端：手动创建已 connect 的 UDP socket 后托管
+int ufd = socket(AF_INET, SOCK_DGRAM, 0);
+connect(ufd, ...);                      // 固定服务端地址
+tls::tls_connection client;
+client.attach(ufd, true, &err);         // 自动检测 SOCK_DGRAM -> 数据报模式
+client.client_handshake("example.com", &trust, &err);
+std::vector<uint8_t> resp;
+client.recv(resp, &err);
+```
+
+- `is_datagram()`：是否数据报模式（`attach` 对 UDP 自动启用，也可用
+  `set_datagram_mode(true)` 显式覆盖，仅接受 `SOCK_DGRAM` 句柄）。
+- `tls_listener::listen_udp(port, addr)` + `accept_udp(conn, cert_mgr)`：
+  UDP 服务端入口。`accept_udp` 用监听 socket 本身 `connect` 固定对端
+  （保持源端口不变，客户端才能收到回复），随后把 socket 转交给 `conn`，
+  一个 UDP listener 同一时刻服务一个客户端。
+#### ⚠️ 已知缺陷（与标准 DTLS / QUIC 不互通）
+
+本数据报模式是**自研的简化封装，不是标准 DTLS，也不是 QUIC**：
+
+- **非标准协议，无互操作性**：报文格式与 `DTLS`（RFC 6347/9147）和
+  `QUIC`（RFC 9000）完全不同，无法与 OpenSSL、Wireshark、浏览器等标准
+  实现互通，仅限本库客户端与服务端之间使用。
+- **无抗 DoS 机制**：缺少 DTLS 的 `HelloVerifyRequest` 无状态 cookie，
+  服务端对任意伪造源地址的 ClientHello 都会建立会话状态。
+- **无握手分片 / 重传 / 乱序重组**：握手消息不按 `message_seq` 分片编号，
+  无 flight 超时重传；UDP 丢包（尤其大证书链跨多个数据报时）直接导致
+  握手失败（受 `set_handshake_timeout` 约束），由调用方重试整个握手。
+- **无防重放**：应用数据记录不带 epoch/sequence 滑动窗口，重放的旧数据报
+  会被当作新数据接受。
+
+**未来计划**：后续版本将实现标准 `DTLS 1.2/1.3`（RFC 6347/9147，含 cookie、
+握手分片/重传/乱序重组、防重放）以及 `QUIC + HTTP/3`（RFC 9000/9114），
+届时本数据报模式将被标准协议取代。在此之前，UDP 场景请评估上述缺陷，
+并优先考虑使用 TCP + TLS 或标准 DTLS 实现。
 ### 非阻塞模式（事件循环）
 
 `tls_connection` / `tls_listener` 支持非阻塞模式，便于在单线程事件循环中复用同一线程服务大量连接：
