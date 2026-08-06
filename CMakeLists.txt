@@ -263,6 +263,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_include_directories(jpssl_cpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ios/bridge)
     target_include_directories(jpssl_cpu_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ios/bridge)
 endif()
+# threadpool submodule（协程线程池，header-only）：tls_co_executor 可选绑定
+# 子项目模式（JPSSL_USE_EXTERNAL_THREADPOOL=ON）下由父项目提供 threadpool 头文件路径，
+# 不重复 add_subdirectory，避免与父项目的 threadpool/logger target 冲突。
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/threadpool/CMakeLists.txt AND NOT JPSSL_USE_EXTERNAL_THREADPOOL)
+    add_subdirectory(threadpool)
+    target_link_libraries(jpssl_cpu PRIVATE threadpool)
+    target_link_libraries(jpssl_cpu_shared PRIVATE threadpool)
+endif()
 set_target_properties(jpssl_cpu_shared PROPERTIES
     OUTPUT_NAME jpssl_cpu
     VERSION ${PROJECT_VERSION}
@@ -525,7 +533,7 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════
 #  jpssl-test — 测试 & Benchmark 可执行文件（鸿蒙 NDK 不构建可执行文件）
 # ═══════════════════════════════════════════════════════════════════════
-if(JP_ENABLE_MUSA AND NOT WIN32 AND NOT JP_OHOS)
+if(NOT JPSSL_AS_SUBPROJECT AND JP_ENABLE_MUSA AND NOT WIN32 AND NOT JP_OHOS)
     musa_add_executable(jpssl-test src/main.cpp)
     target_include_directories(jpssl-test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -534,7 +542,7 @@ if(JP_ENABLE_MUSA AND NOT WIN32 AND NOT JP_OHOS)
     # GPU 测试函数由 #ifdef JP_MUSA 守卫，须对 main.cpp 可见
     target_compile_definitions(jpssl-test PRIVATE JP_MUSA)
     target_link_libraries(jpssl-test jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
-elseif(NOT JP_OHOS)
+elseif(NOT JPSSL_AS_SUBPROJECT AND NOT JP_OHOS)
     add_executable(jpssl-test src/main.cpp)
     target_include_directories(jpssl-test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -545,7 +553,7 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════
 #  命令行工具（鸿蒙 NDK 不构建可执行文件，跳过）
 # ═══════════════════════════════════════════════════════════════════════
-if(NOT JP_OHOS)
+if(NOT JPSSL_AS_SUBPROJECT AND NOT JP_OHOS)
     add_executable(jpssl-cert src/cmd/jpssl_cert.cpp)
     add_executable(jpssl-crypt src/cmd/jpssl_crypt.cpp)
     target_include_directories(jpssl-cert PRIVATE
@@ -570,18 +578,14 @@ if(NOT JP_OHOS)
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 endif()
-
 # ═══════════════════════════════════════════════════════════════════════
-#  单元测试 (CTest)
-if(NOT JP_OHOS)
+#  单元测试 (CTest) / 示例 —— 子项目模式（JPSSL_AS_SUBPROJECT=ON）下跳过
+# ═══════════════════════════════════════════════════════════════════════
+if(NOT JPSSL_AS_SUBPROJECT AND NOT JP_OHOS)
     add_subdirectory(tests)
-endif()
-
-# HTTPS + 国际 CT 示例
-if(NOT JP_OHOS)
     add_subdirectory(examples)
 endif()
 
-if(JP_ENABLE_BENCH AND NOT JP_OHOS)
+if(JP_ENABLE_BENCH AND NOT JPSSL_AS_SUBPROJECT AND NOT JP_OHOS)
     add_subdirectory(benchmarks)
 endif()

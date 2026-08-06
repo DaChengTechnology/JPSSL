@@ -1223,20 +1223,24 @@ std::vector<uint8_t> tls_encrypt_handshake(tls_session& s, const uint8_t* hs_msg
     for(int i=0;i<8;++i)nonce[4+i]^=(uint8_t)(seq>>(56-i*8));
     ++seq;
 
-    std::vector<uint8_t> ciphertext;uint8_t tag[16];
-    if(cipher_needs_sm4_ctx(s.cipher_suite)){
-        sm4_ctx_init_from_key(s.sm4, write_key);
-        sm4_gcm_encrypt(&s.sm4,nonce,12,inner,std::span<const uint8_t>(),ciphertext,tag,16);
-    }else{
-        aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
-        aes_gcm_encrypt_auto(ctx,nonce,12,inner,std::span<const uint8_t>(),ciphertext,tag,16);
-    }
-
     std::vector<uint8_t> record;
     record.push_back(0x17); // application_data (TLS 1.3 统一使用)
     record.push_back(0x03);record.push_back(0x03);
-    size_t rlen=ciphertext.size()+16;
+    size_t rlen=inner.size()+16;
     record.push_back((uint8_t)(rlen>>8));record.push_back((uint8_t)rlen);
+
+    // RFC 8446 5.2：TLS 1.3 AEAD 的 additional_data (AAD) = record 头 5 字节
+    uint8_t aad[5]={0x17,0x03,0x03,(uint8_t)(rlen>>8),(uint8_t)rlen};
+    std::span<const uint8_t> aad_span(aad,5);
+
+    std::vector<uint8_t> ciphertext;uint8_t tag[16];
+    if(cipher_needs_sm4_ctx(s.cipher_suite)){
+        sm4_ctx_init_from_key(s.sm4, write_key);
+        sm4_gcm_encrypt(&s.sm4,nonce,12,inner,aad_span,ciphertext,tag,16);
+    }else{
+        aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
+        aes_gcm_encrypt_auto(ctx,nonce,12,inner,aad_span,ciphertext,tag,16);
+    }
     record.insert(record.end(),ciphertext.begin(),ciphertext.end());
     record.insert(record.end(),tag,tag+16);
     return record;
@@ -1262,12 +1266,14 @@ static bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_
 
     std::vector<uint8_t> inner;
     bool ok = false;
+    // RFC 8446 5.2：AAD = record 头 5 字节
+    std::span<const uint8_t> aad_span(record,5);
     if(cipher_needs_sm4_ctx(s.cipher_suite)){
         sm4_ctx_init_from_key(s.sm4, read_key);
-        ok = sm4_gcm_decrypt(&s.sm4,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(),tag,16,inner);
+        ok = sm4_gcm_decrypt(&s.sm4,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
     }else{
         aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
-        ok = aes_gcm_decrypt_auto(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(),tag,16,inner);
+        ok = aes_gcm_decrypt_auto(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
     }
     if(!ok) return false;
 
@@ -1749,6 +1755,19 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     rand32(s.server_random);
     memcpy(s.client_random,client_hello+6,32);
 
+    // RFC 8446 4.1.3：ServerHello 必须回显 ClientHello 的 legacy_session_id
+    // （OpenSSL 等客户端会严格校验，不一致报 "invalid session id"）
+    size_t ch_sid_len = 0;
+    const uint8_t* ch_sid = nullptr;
+    if (ch_len >= 4 + 2 + 32 + 1) {
+        ch_sid_len = client_hello[4 + 2 + 32];
+        if (ch_sid_len > 0 && 4 + 2 + 32 + 1 + ch_sid_len <= ch_len) {
+            ch_sid = client_hello + 4 + 2 + 32 + 1;
+        } else {
+            ch_sid_len = 0;
+        }
+    }
+
     // ClientHello transcript 更新已移至 cipher_suite 选择之后
 
     { size_t cs_off = 4+2+32; uint8_t sid_len = client_hello[cs_off]; cs_off += 1+sid_len;
@@ -1889,7 +1908,10 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     server_flight.push_back(0);server_flight.push_back(0);server_flight.push_back(0);
     server_flight.push_back(0x03);server_flight.push_back(0x03);
     server_flight.insert(server_flight.end(),s.server_random,s.server_random+32);
-    server_flight.push_back(0);
+    // 回显 ClientHello 的 legacy_session_id（RFC 8446 4.1.3）
+    server_flight.push_back((uint8_t)ch_sid_len);
+    if (ch_sid_len > 0 && ch_sid)
+        server_flight.insert(server_flight.end(), ch_sid, ch_sid + ch_sid_len);
     uint16_t sel_cs = (uint16_t)s.cipher_suite;
     server_flight.push_back((uint8_t)(sel_cs>>8));server_flight.push_back((uint8_t)sel_cs);
     server_flight.push_back(0x00);

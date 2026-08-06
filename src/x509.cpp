@@ -570,8 +570,11 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
             size_t rsaoff = 0;
             auto rsa_seq = decode_tlv2(cert.public_key.data(), cert.public_key.size(), rsaoff);
             if (rsa_seq && rsa_seq->tag == ASN1Tag::SEQUENCE) {
-                auto mod_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), rsaoff);
-                auto exp_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), rsaoff);
+                // 注意：rsa_seq->value 是新 buffer，offset 必须从 0 重新开始，
+                // 不能复用解析外层 SEQUENCE 后的 rsaoff（此时指向 public_key 的末尾）
+                size_t inner_off = 0;
+                auto mod_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), inner_off);
+                auto exp_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), inner_off);
                 if (mod_tlv && exp_tlv && mod_tlv->tag == ASN1Tag::INTEGER && exp_tlv->tag == ASN1Tag::INTEGER) {
                     std::vector<uint8_t> raw;
                     const auto& m = mod_tlv->value;
