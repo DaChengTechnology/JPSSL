@@ -84,7 +84,9 @@ static void bench_aes128_gcm_paths() {
 
     double sw_enc = 0, sw_dec = 0;
     double avx2_enc = 0, avx2_dec = 0;
+#if defined(__x86_64__)
     double vaes_enc = 0, vaes_dec = 0;
+#endif
     double auto_enc = 0, auto_dec = 0;
     double ossl_enc = 0, ossl_dec = 0;
 
@@ -116,7 +118,8 @@ static void bench_aes128_gcm_paths() {
         TEST("AES-128-GCM AVX2 round-trip", ok);
     }
 
-    // ── VAES 路径 (256-bit VAES，2×YMM 4 块并行 + PCLMULQDQ) ──
+#if defined(__x86_64__)
+    // ── VAES 路径 (256-bit VAES，2×YMM 4 块并行 + PCLMULQDQ；仅 GCC/Clang 有实现) ──
     {
         std::vector<uint8_t> ct; uint8_t tag[16];
         vaes_enc = measure_ms([&]{
@@ -129,6 +132,7 @@ static void bench_aes128_gcm_paths() {
         });
         TEST("AES-128-GCM VAES round-trip", ok);
     }
+#endif
 
     // ── Auto 分派 ──
     {
@@ -180,7 +184,9 @@ static void bench_aes128_gcm_paths() {
     Path paths[] = {
         {"Software",   sw_enc,   sw_dec},
         {"AVX2",       avx2_enc, avx2_dec},
+#if defined(__x86_64__)
         {"VAES",       vaes_enc, vaes_dec},
+#endif
         {"Auto",       auto_enc, auto_dec},
         {"OpenSSL",    ossl_enc, ossl_dec},
     };

@@ -455,26 +455,25 @@ Z3     EQU 352
     adc     rcx, [rsp+B+8]
     adc     rdx, [rsp+B+16]
     adc     r8, [rsp+B+24]
-    mov     r9, 0
-    adc     r9, 0
-    jne     p256_dbl_sub1
-    cmp     r8, r15
-    ja      p256_dbl_sub1
-    jb      p256_dbl_no1
-    cmp     rdx, 0
-    ja      p256_dbl_sub1
-    jb      p256_dbl_no1
-    cmp     rcx, r14
-    ja      p256_dbl_sub1
-    jb      p256_dbl_no1
-    cmp     rax, -1
-    jb      p256_dbl_no1
-p256_dbl_sub1:
+    setc    r9b
+    movzx   r9d, r9b                ; r9 = carry_out
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
-    sbb     r8, r15
-p256_dbl_no1:
+    sbb     r8, r15                 ; rax..r8 = t; CF = borrow
+    setc    r10b
+    movzx   r10d, r10b              ; r10 = borrow
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     [rsp+T], rax
     mov     [rsp+T+8], rcx
     mov     [rsp+T+16], rdx
@@ -493,12 +492,21 @@ p256_dbl_no1:
     sbb     rcx, [rsp+A+8]
     sbb     rdx, [rsp+A+16]
     sbb     r8, [rsp+A+24]
-    jnc     p256_dbl_no2
-    add     rax, -1
-    adc     rcx, r14
-    adc     rdx, 0
-    adc     r8, r15
-p256_dbl_no2:
+    setc    r13b
+    movzx   r13d, r13b              ; r13 = borrow
+    mov     r9, rax
+    mov     r10, rcx
+    mov     r11, rdx
+    mov     r12, r8
+    add     r9, -1
+    adc     r10, r14
+    adc     r11, 0
+    adc     r12, r15                ; r9..r12 = a-b+p
+    neg     r13                     ; CF = borrow
+    cmovc   rax, r9
+    cmovc   rcx, r10
+    cmovc   rdx, r11
+    cmovc   r8, r12
     mov     [rsp+T], rax
     mov     [rsp+T+8], rcx
     mov     [rsp+T+16], rdx
@@ -512,12 +520,21 @@ p256_dbl_no2:
     sbb     rcx, [rsp+C+8]
     sbb     rdx, [rsp+C+16]
     sbb     r8, [rsp+C+24]
-    jnc     p256_dbl_no3
-    add     rax, -1
-    adc     rcx, r14
-    adc     rdx, 0
-    adc     r8, r15
-p256_dbl_no3:
+    setc    r13b
+    movzx   r13d, r13b              ; r13 = borrow
+    mov     r9, rax
+    mov     r10, rcx
+    mov     r11, rdx
+    mov     r12, r8
+    add     r9, -1
+    adc     r10, r14
+    adc     r11, 0
+    adc     r12, r15                ; r9..r12 = a-b+p
+    neg     r13                     ; CF = borrow
+    cmovc   rax, r9
+    cmovc   rcx, r10
+    cmovc   rdx, r11
+    cmovc   r8, r12
     mov     [rsp+T], rax
     mov     [rsp+T+8], rcx
     mov     [rsp+T+16], rdx
@@ -531,26 +548,25 @@ p256_dbl_no3:
     adc     rcx, rcx
     adc     rdx, rdx
     adc     r8, r8
-    mov     r9, 0
-    adc     r9, 0
-    jne     p256_dbl_sub4
-    cmp     r8, r15
-    ja      p256_dbl_sub4
-    jb      p256_dbl_no4
-    cmp     rdx, 0
-    ja      p256_dbl_sub4
-    jb      p256_dbl_no4
-    cmp     rcx, r14
-    ja      p256_dbl_sub4
-    jb      p256_dbl_no4
-    cmp     rax, -1
-    jb      p256_dbl_no4
-p256_dbl_sub4:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-p256_dbl_no4:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     [rsp+D], rax
     mov     [rsp+D+8], rcx
     mov     [rsp+D+16], rdx
@@ -574,12 +590,21 @@ p256_dbl_no4:
     sbb     rcx, [rsp+T+8]
     sbb     rdx, [rsp+T+16]
     sbb     r8, [rsp+T+24]
-    jnc     p256_dbl_no5
-    add     rax, -1
-    adc     rcx, r14
-    adc     rdx, 0
-    adc     r8, r15
-p256_dbl_no5:
+    setc    r13b
+    movzx   r13d, r13b              ; r13 = borrow
+    mov     r9, rax
+    mov     r10, rcx
+    mov     r11, rdx
+    mov     r12, r8
+    add     r9, -1
+    adc     r10, r14
+    adc     r11, 0
+    adc     r12, r15                ; r9..r12 = a-b+p
+    neg     r13                     ; CF = borrow
+    cmovc   rax, r9
+    cmovc   rcx, r10
+    cmovc   rdx, r11
+    cmovc   r8, r12
     mov     [rsp+T], rax
     mov     [rsp+T+8], rcx
     mov     [rsp+T+16], rdx
@@ -593,26 +618,25 @@ p256_dbl_no5:
     adc     rcx, rcx
     adc     rdx, rdx
     adc     r8, r8
-    mov     r9, 0
-    adc     r9, 0
-    jne     p256_dbl_sub6
-    cmp     r8, r15
-    ja      p256_dbl_sub6
-    jb      p256_dbl_no6
-    cmp     rdx, 0
-    ja      p256_dbl_sub6
-    jb      p256_dbl_no6
-    cmp     rcx, r14
-    ja      p256_dbl_sub6
-    jb      p256_dbl_no6
-    cmp     rax, -1
-    jb      p256_dbl_no6
-p256_dbl_sub6:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-p256_dbl_no6:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     [rsp+E], rax
     mov     [rsp+E+8], rcx
     mov     [rsp+E+16], rdx
@@ -626,26 +650,25 @@ p256_dbl_no6:
     adc     rcx, [rsp+T+8]
     adc     rdx, [rsp+T+16]
     adc     r8, [rsp+T+24]
-    mov     r9, 0
-    adc     r9, 0
-    jne     p256_dbl_sub7
-    cmp     r8, r15
-    ja      p256_dbl_sub7
-    jb      p256_dbl_no7
-    cmp     rdx, 0
-    ja      p256_dbl_sub7
-    jb      p256_dbl_no7
-    cmp     rcx, r14
-    ja      p256_dbl_sub7
-    jb      p256_dbl_no7
-    cmp     rax, -1
-    jb      p256_dbl_no7
-p256_dbl_sub7:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-p256_dbl_no7:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     [rsp+E], rax
     mov     [rsp+E+8], rcx
     mov     [rsp+E+16], rdx
@@ -664,26 +687,25 @@ p256_dbl_no7:
     adc     rcx, rcx
     adc     rdx, rdx
     adc     r8, r8
-    mov     r9, 0
-    adc     r9, 0
-    jne     p256_dbl_sub8
-    cmp     r8, r15
-    ja      p256_dbl_sub8
-    jb      p256_dbl_no8
-    cmp     rdx, 0
-    ja      p256_dbl_sub8
-    jb      p256_dbl_no8
-    cmp     rcx, r14
-    ja      p256_dbl_sub8
-    jb      p256_dbl_no8
-    cmp     rax, -1
-    jb      p256_dbl_no8
-p256_dbl_sub8:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-p256_dbl_no8:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     r9, [rsp+X3]
     mov     r10, [rsp+X3+8]
     mov     r11, [rsp+X3+16]
@@ -692,12 +714,21 @@ p256_dbl_no8:
     sbb     r10, rcx
     sbb     r11, rdx
     sbb     rbx, r8
-    jnc     p256_dbl_no9
-    add     r9, -1
-    adc     r10, r14
-    adc     r11, 0
-    adc     rbx, r15
-p256_dbl_no9:
+    setc    r13b
+    movzx   r13d, r13b              ; r13 = borrow
+    mov     r12, r9
+    mov     rax, r10
+    mov     rcx, r11
+    mov     rdx, rbx
+    add     r12, -1
+    adc     rax, r14
+    adc     rcx, 0
+    adc     rdx, r15                ; r12,rax,rcx,rdx = a-b+p
+    neg     r13                     ; CF = borrow
+    cmovc   r9, r12
+    cmovc   r10, rax
+    cmovc   r11, rcx
+    cmovc   rbx, rdx
     mov     [rsp+X3], r9
     mov     [rsp+X3+8], r10
     mov     [rsp+X3+16], r11
@@ -711,12 +742,21 @@ p256_dbl_no9:
     sbb     rcx, r10
     sbb     rdx, r11
     sbb     r8, rbx
-    jnc     p256_dbl_no10
-    add     rax, -1
-    adc     rcx, r14
-    adc     rdx, 0
-    adc     r8, r15
-p256_dbl_no10:
+    setc    r12b
+    movzx   r12d, r12b              ; r12 = borrow
+    mov     r9, rax
+    mov     r10, rcx
+    mov     r11, rdx
+    mov     r13, r8
+    add     r9, -1
+    adc     r10, r14
+    adc     r11, 0
+    adc     r13, r15                ; r9,r10,r11,r13 = a-b+p
+    neg     r12                     ; CF = borrow
+    cmovc   rax, r9
+    cmovc   rcx, r10
+    cmovc   rdx, r11
+    cmovc   r8, r13
     mov     [rsp+T], rax
     mov     [rsp+T+8], rcx
     mov     [rsp+T+16], rdx
@@ -735,26 +775,25 @@ p256_dbl_no10:
     adc     rcx, rcx
     adc     rdx, rdx
     adc     r8, r8
-    mov     r9, 0
-    adc     r9, 0
-    jne     p256_dbl_sub11
-    cmp     r8, r15
-    ja      p256_dbl_sub11
-    jb      p256_dbl_no11
-    cmp     rdx, 0
-    ja      p256_dbl_sub11
-    jb      p256_dbl_no11
-    cmp     rcx, r14
-    ja      p256_dbl_sub11
-    jb      p256_dbl_no11
-    cmp     rax, -1
-    jb      p256_dbl_no11
-p256_dbl_sub11:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-p256_dbl_no11:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
 mov     [rsp+T], rax
     mov     [rsp+T+8], rcx
     mov     [rsp+T+16], rdx
@@ -763,50 +802,48 @@ mov     [rsp+T], rax
     adc     rcx, rcx
     adc     rdx, rdx
     adc     r8, r8
-    mov     r9, 0
-    adc     r9, 0
-    jne     p256_dbl_sub12
-    cmp     r8, r15
-    ja      p256_dbl_sub12
-    jb      p256_dbl_no12
-    cmp     rdx, 0
-    ja      p256_dbl_sub12
-    jb      p256_dbl_no12
-    cmp     rcx, r14
-    ja      p256_dbl_sub12
-    jb      p256_dbl_no12
-    cmp     rax, -1
-    jb      p256_dbl_no12
-p256_dbl_sub12:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-p256_dbl_no12:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     add     rax, rax
     adc     rcx, rcx
     adc     rdx, rdx
     adc     r8, r8
-    mov     r9, 0
-    adc     r9, 0
-    jne     p256_dbl_sub13
-    cmp     r8, r15
-    ja      p256_dbl_sub13
-    jb      p256_dbl_no13
-    cmp     rdx, 0
-    ja      p256_dbl_sub13
-    jb      p256_dbl_no13
-    cmp     rcx, r14
-    ja      p256_dbl_sub13
-    jb      p256_dbl_no13
-    cmp     rax, -1
-    jb      p256_dbl_no13
-p256_dbl_sub13:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-p256_dbl_no13:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     r9, [rsp+Y3]
     mov     r10, [rsp+Y3+8]
     mov     r11, [rsp+Y3+16]
@@ -815,12 +852,21 @@ p256_dbl_no13:
     sbb     r10, rcx
     sbb     r11, rdx
     sbb     rbx, r8
-    jnc     p256_dbl_no14
-    add     r9, -1
-    adc     r10, r14
-    adc     r11, 0
-    adc     rbx, r15
-p256_dbl_no14:
+    setc    r13b
+    movzx   r13d, r13b              ; r13 = borrow
+    mov     r12, r9
+    mov     rax, r10
+    mov     rcx, r11
+    mov     rdx, rbx
+    add     r12, -1
+    adc     rax, r14
+    adc     rcx, 0
+    adc     rdx, r15                ; r12,rax,rcx,rdx = a-b+p
+    neg     r13                     ; CF = borrow
+    cmovc   r9, r12
+    cmovc   r10, rax
+    cmovc   r11, rcx
+    cmovc   rbx, rdx
     mov     [rsp+Y3], r9
     mov     [rsp+Y3+8], r10
     mov     [rsp+Y3+16], r11
@@ -839,26 +885,25 @@ p256_dbl_no14:
     adc     rcx, rcx
     adc     rdx, rdx
     adc     r8, r8
-    mov     r9, 0
-    adc     r9, 0
-    jne     p256_dbl_sub15
-    cmp     r8, r15
-    ja      p256_dbl_sub15
-    jb      p256_dbl_no15
-    cmp     rdx, 0
-    ja      p256_dbl_sub15
-    jb      p256_dbl_no15
-    cmp     rcx, r14
-    ja      p256_dbl_sub15
-    jb      p256_dbl_no15
-    cmp     rax, -1
-    jb      p256_dbl_no15
-p256_dbl_sub15:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-p256_dbl_no15:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     [rsp+Z3], rax
     mov     [rsp+Z3+8], rcx
     mov     [rsp+Z3+16], rdx
@@ -907,6 +952,8 @@ jpssl_p256_dbl ENDP
 ;   域乘调用 jpssl_p256_mul_adx。
 
 ; 宏：dst = a + b mod p（栈偏移；r14=p 字 1, r15=p 字 3）
+; 无分支归约：t = (a+b) - p mod 2^256，CF=borrow；
+; 结果 = t + p*(borrow & ~carry_out)（a,b<p 时 carry_out==1 ⟹ borrow==1 且取 t）。
 MODADD MACRO dst, a, b, sublab, nolab
     mov     rax, [rsp+a]
     mov     rcx, [rsp+a+8]
@@ -916,33 +963,32 @@ MODADD MACRO dst, a, b, sublab, nolab
     adc     rcx, [rsp+b+8]
     adc     rdx, [rsp+b+16]
     adc     r8, [rsp+b+24]
-    mov     r9, 0
-    adc     r9, 0
-    jne     sublab
-    cmp     r8, r15
-    ja      sublab
-    jb      nolab
-    cmp     rdx, 0
-    ja      sublab
-    jb      nolab
-    cmp     rcx, r14
-    ja      sublab
-    jb      nolab
-    cmp     rax, -1
-    jb      nolab
-sublab:
+    setc    r9b
+    movzx   r9d, r9b                ; r9 = carry_out
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
-    sbb     r8, r15
-nolab:
+    sbb     r8, r15                 ; rax..r8 = t; CF = borrow
+    setc    r10b
+    movzx   r10d, r10b              ; r10 = borrow
+    xor     r9d, 1                  ; r9 = ~carry_out
+    and     r9d, r10d               ; r9 = mask（0/1）
+    neg     r9                      ; mask 全 1 或 0
+    mov     r10, r9
+    and     r10, r14                ; p1 & mask
+    mov     r11, r9
+    and     r11, r15                ; p3 & mask
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     [rsp+dst], rax
     mov     [rsp+dst+8], rcx
     mov     [rsp+dst+16], rdx
     mov     [rsp+dst+24], r8
 ENDM
 
-; 宏：dst = a - b mod p
+; 宏：dst = a - b mod p（无分支：借位则加 p，setc 保存借位 + neg 重建 CF 后 cmovc 选择）
 MODSUB MACRO dst, a, b, sublab, nolab
     mov     rax, [rsp+a]
     mov     rcx, [rsp+a+8]
@@ -951,13 +997,22 @@ MODSUB MACRO dst, a, b, sublab, nolab
     sub     rax, [rsp+b]
     sbb     rcx, [rsp+b+8]
     sbb     rdx, [rsp+b+16]
-    sbb     r8, [rsp+b+24]
-    jnc     nolab
-    add     rax, -1
-    adc     rcx, r14
-    adc     rdx, 0
-    adc     r8, r15
-nolab:
+    sbb     r8, [rsp+b+24]          ; CF = borrow
+    setc    r9b
+    movzx   r9d, r9b
+    mov     r10, rax
+    mov     r11, rcx
+    mov     r12, rdx
+    mov     r13, r8
+    add     r10, -1
+    adc     r11, r14
+    adc     r12, 0
+    adc     r13, r15                ; r10..r13 = a-b+p
+    neg     r9                      ; CF = (borrow != 0)
+    cmovc   rax, r10
+    cmovc   rcx, r11
+    cmovc   rdx, r12
+    cmovc   r8, r13
     mov     [rsp+dst], rax
     mov     [rsp+dst+8], rcx
     mov     [rsp+dst+16], rdx
@@ -1154,26 +1209,25 @@ madd_h_nonzero:
     adc     rcx, rcx
     adc     rdx, rdx
     adc     r8, r8
-    mov     r9, 0
-    adc     r9, 0
-    jne     madd_sub3
-    cmp     r8, r15
-    ja      madd_sub3
-    jb      madd_no3
-    cmp     rdx, 0
-    ja      madd_sub3
-    jb      madd_no3
-    cmp     rcx, r14
-    ja      madd_sub3
-    jb      madd_no3
-    cmp     rax, -1
-    jb      madd_no3
-madd_sub3:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-madd_no3:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     [rsp+MR2], rax
     mov     [rsp+MR2+8], rcx
     mov     [rsp+MR2+16], rdx
@@ -1187,26 +1241,25 @@ madd_no3:
     adc     rcx, rcx
     adc     rdx, rdx
     adc     r8, r8
-    mov     r9, 0
-    adc     r9, 0
-    jne     madd_sub4
-    cmp     r8, r15
-    ja      madd_sub4
-    jb      madd_no4
-    cmp     rdx, 0
-    ja      madd_sub4
-    jb      madd_no4
-    cmp     rcx, r14
-    ja      madd_sub4
-    jb      madd_no4
-    cmp     rax, -1
-    jb      madd_no4
-madd_sub4:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-madd_no4:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     [rsp+MI], rax
     mov     [rsp+MI+8], rcx
     mov     [rsp+MI+16], rdx
@@ -1239,26 +1292,25 @@ madd_no4:
     adc     rcx, rcx
     adc     rdx, rdx
     adc     r8, r8
-    mov     r9, 0
-    adc     r9, 0
-    jne     madd_sub6
-    cmp     r8, r15
-    ja      madd_sub6
-    jb      madd_no6
-    cmp     rdx, 0
-    ja      madd_sub6
-    jb      madd_no6
-    cmp     rcx, r14
-    ja      madd_sub6
-    jb      madd_no6
-    cmp     rax, -1
-    jb      madd_no6
-madd_sub6:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-madd_no6:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     r9, [rsp+MX3]
     mov     r10, [rsp+MX3+8]
     mov     r11, [rsp+MX3+16]
@@ -1267,12 +1319,21 @@ madd_no6:
     sbb     r10, rcx
     sbb     r11, rdx
     sbb     rbx, r8
-    jnc     madd_no7
-    add     r9, -1
-    adc     r10, r14
-    adc     r11, 0
-    adc     rbx, r15
-madd_no7:
+    setc    r12b
+    movzx   r12d, r12b              ; r12 = borrow
+    mov     r13, r9
+    mov     rax, r10
+    mov     rcx, r11
+    mov     rdx, rbx
+    add     r13, -1
+    adc     rax, r14
+    adc     rcx, 0
+    adc     rdx, r15                ; r13,rax,rcx,rdx = a-b+p
+    neg     r12                     ; CF = borrow
+    cmovc   r9, r13
+    cmovc   r10, rax
+    cmovc   r11, rcx
+    cmovc   rbx, rdx
     mov     [rsp+MX3], r9
     mov     [rsp+MX3+8], r10
     mov     [rsp+MX3+16], r11
@@ -1295,26 +1356,25 @@ madd_no7:
     adc     rcx, rcx
     adc     rdx, rdx
     adc     r8, r8
-    mov     r9, 0
-    adc     r9, 0
-    jne     madd_sub9
-    cmp     r8, r15
-    ja      madd_sub9
-    jb      madd_no9
-    cmp     rdx, 0
-    ja      madd_sub9
-    jb      madd_no9
-    cmp     rcx, r14
-    ja      madd_sub9
-    jb      madd_no9
-    cmp     rax, -1
-    jb      madd_no9
-madd_sub9:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-madd_no9:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     r9, [rsp+MY3]
     mov     r10, [rsp+MY3+8]
     mov     r11, [rsp+MY3+16]
@@ -1323,12 +1383,21 @@ madd_no9:
     sbb     r10, rcx
     sbb     r11, rdx
     sbb     rbx, r8
-    jnc     madd_no10
-    add     r9, -1
-    adc     r10, r14
-    adc     r11, 0
-    adc     rbx, r15
-madd_no10:
+    setc    r12b
+    movzx   r12d, r12b              ; r12 = borrow
+    mov     r13, r9
+    mov     rax, r10
+    mov     rcx, r11
+    mov     rdx, rbx
+    add     r13, -1
+    adc     rax, r14
+    adc     rcx, 0
+    adc     rdx, r15                ; r13,rax,rcx,rdx = a-b+p
+    neg     r12                     ; CF = borrow
+    cmovc   r9, r13
+    cmovc   r10, rax
+    cmovc   r11, rcx
+    cmovc   rbx, rdx
     mov     [rsp+MY3], r9
     mov     [rsp+MY3+8], r10
     mov     [rsp+MY3+16], r11
@@ -1346,26 +1415,25 @@ madd_no10:
     adc     rcx, rcx
     adc     rdx, rdx
     adc     r8, r8
-    mov     r9, 0
-    adc     r9, 0
-    jne     madd_sub11
-    cmp     r8, r15
-    ja      madd_sub11
-    jb      madd_no11
-    cmp     rdx, 0
-    ja      madd_sub11
-    jb      madd_no11
-    cmp     rcx, r14
-    ja      madd_sub11
-    jb      madd_no11
-    cmp     rax, -1
-    jb      madd_no11
-madd_sub11:
+    setc    r9b
+    movzx   r9d, r9b
     sub     rax, -1
     sbb     rcx, r14
     sbb     rdx, 0
     sbb     r8, r15
-madd_no11:
+    setc    r10b
+    movzx   r10d, r10b
+    xor     r9d, 1
+    and     r9d, r10d
+    neg     r9
+    mov     r10, r9
+    and     r10, r14
+    mov     r11, r9
+    and     r11, r15
+    add     rax, r9
+    adc     rcx, r10
+    adc     rdx, 0
+    adc     r8, r11
     mov     [rsp+MZ3], rax
     mov     [rsp+MZ3+8], rcx
     mov     [rsp+MZ3+16], rdx
@@ -1468,6 +1536,375 @@ madd_done:
     pop     rbp
     ret
 jpssl_p256_madd ENDP
+
+; ============================================================================
+; jpssl_p256_inv_adx(rcx=r[4], rdx=a[4]): r = a^{-1} mod p (Montgomery domain)
+;
+; Exponentiation with exponent p-2, using the addchain v0.4.0 sequence from
+; crypto/internal/nistec/fiat/p256_invert.go (12 mul + 255 sq):
+;   _10=x^2 _11=x^3 _110=x^6 _111=x^7 _111000=x^56 _111111=x^63
+;   x12=x^4095 x15=x^32767 x16=x^65535 x32=x^(2^32-1) i53=x^(2^47-2^15)
+;   x47=x^(2^47-1) i263=(x47+i263) ... return (x47+i263)^4*x = x^(p-2)
+; Every step calls jpssl_p256_mul_adx, whose output is fully reduced (< p).
+; Input a may alias output r (a is copied to the stack first).
+; ============================================================================
+jpssl_p256_inv_adx PROC
+X      EQU 0
+T0     EQU 32
+T1     EQU 64
+T2     EQU 96
+T3     EQU 128
+T4     EQU 160
+T5     EQU 192
+T6     EQU 224
+T7     EQU 256
+T8     EQU 288
+T9     EQU 320
+T10    EQU 352
+T11    EQU 384
+T12    EQU 416
+FRSZ   EQU 448
+
+MODMUL MACRO dst:REQ, s1:REQ, s2:REQ
+    lea     rcx, dst
+    lea     rdx, s1
+    lea     r8, s2
+    call    jpssl_p256_mul_adx
+ENDM
+
+    push    rbp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    push    rsi
+    push    rdi
+    sub     rsp, FRSZ
+
+    mov     rdi, rcx                ; rdi = output pointer
+    ; copy a -> [rsp+X] (input may alias output)
+    mov     rax, [rdx]
+    mov     rcx, [rdx+8]
+    mov     r9, [rdx+16]
+    mov     r10, [rdx+24]
+    mov     [rsp+X], rax
+    mov     [rsp+X+8], rcx
+    mov     [rsp+X+16], r9
+    mov     [rsp+X+24], r10
+
+    ; T0 = x^2
+    MODMUL [rsp+T0], [rsp+X], [rsp+X]
+    ; T1 = x^3
+    MODMUL [rsp+T1], [rsp+T0], [rsp+X]
+    ; T2 = x^6
+    MODMUL [rsp+T2], [rsp+T1], [rsp+T1]
+    ; T3 = x^7
+    MODMUL [rsp+T3], [rsp+T2], [rsp+X]
+    ; T4 = x^56
+    MODMUL [rsp+T4], [rsp+T3], [rsp+T3]
+    MODMUL [rsp+T4], [rsp+T4], [rsp+T4]
+    MODMUL [rsp+T4], [rsp+T4], [rsp+T4]
+    ; T5 = x^63
+    MODMUL [rsp+T5], [rsp+T3], [rsp+T4]
+    ; T6 = x^4095
+    MODMUL [rsp+T6], [rsp+T5], [rsp+T5]
+    MODMUL [rsp+T6], [rsp+T6], [rsp+T6]
+    MODMUL [rsp+T6], [rsp+T6], [rsp+T6]
+    MODMUL [rsp+T6], [rsp+T6], [rsp+T6]
+    MODMUL [rsp+T6], [rsp+T6], [rsp+T6]
+    MODMUL [rsp+T6], [rsp+T6], [rsp+T6]
+    MODMUL [rsp+T6], [rsp+T6], [rsp+T5]
+    ; T7 = x^32767
+    MODMUL [rsp+T7], [rsp+T6], [rsp+T6]
+    MODMUL [rsp+T7], [rsp+T7], [rsp+T7]
+    MODMUL [rsp+T7], [rsp+T7], [rsp+T7]
+    MODMUL [rsp+T7], [rsp+T7], [rsp+T3]
+    ; T8 = x^65535
+    MODMUL [rsp+T8], [rsp+T7], [rsp+T7]
+    MODMUL [rsp+T8], [rsp+T8], [rsp+X]
+
+    ; T9 = x^(2^32-1) : 16 squarings then mul by T8
+    MODMUL [rsp+T9], [rsp+T8], [rsp+T8]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T8]
+
+    ; T10 = x^(2^47-2^15) : 15 squarings from T9
+    MODMUL [rsp+T10], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+
+    ; T11 = x^(2^47-1)
+    MODMUL [rsp+T11], [rsp+T7], [rsp+T10]
+
+    ; T12 = x^(2^64-2^32+1) : 17 squarings of T10 then mul by X
+    MODMUL [rsp+T12], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+X]
+
+    ; T12 = T12^(2^143) : 143 squarings
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T11]
+
+    ; T12 = T12^(2^47) : 47 squarings
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+
+    ; result = T11*T12, then ^4, then * x
+    MODMUL [rsp+T12], [rsp+T11], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+X]
+
+    ; store result to [rdi]
+    mov     rax, [rsp+T12]
+    mov     rcx, [rsp+T12+8]
+    mov     rdx, [rsp+T12+16]
+    mov     r8, [rsp+T12+24]
+    mov     [rdi], rax
+    mov     [rdi+8], rcx
+    mov     [rdi+16], rdx
+    mov     [rdi+24], r8
+
+    add     rsp, FRSZ
+    pop     rdi
+    pop     rsi
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+jpssl_p256_inv_adx ENDP
 
 END
 

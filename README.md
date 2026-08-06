@@ -2346,6 +2346,64 @@ ECDSA/SHA-256 的国密证书透明实现（参考 GM/T《证书透明规范》�
   接受连接并自动完成服务端握手。
 
 - record 层自动处理半包/粘包、握手消息封装与加密 record 透传。
+### 非阻塞模式（事件循环）
+
+`tls_connection` / `tls_listener` 支持非阻塞模式，便于在单线程事件循环中复用同一线程服务大量连接：
+
+```cpp
+tls_listener listener;
+listener.listen(443, "0.0.0.0");
+listener.set_nonblocking(true);          // 无连接时 accept 返回 would-block
+
+for (;;) {
+    tls_connection conn;
+    if (!listener.accept(conn, cert_mgr)) {
+        if (listener.would_block()) { listener.wait_readable(100); continue; }
+        break;                           // 真实错误
+    }
+    // accept 出的连接继承非阻塞状态
+    std::vector<uint8_t> msg;
+    if (!conn.recv(msg)) {
+        if (conn.would_block()) { conn.wait_readable(100); continue; } // 暂无数据
+        break;
+    }
+    if (!conn.send("HTTP/1.1 200 OK\r\n\r\n")) {
+        if (conn.would_block()) conn.wait_writable(100);
+    }
+}
+```
+
+- `set_nonblocking(true)` 可在 `connect` / `listen` 之前调用，socket 创建时自动应用；非阻塞 `connect` 走 `EINPROGRESS` + poll 等待可写 + `SO_ERROR` 检查。
+- `send()` / `recv()` 遇 `EAGAIN/EWOULDBLOCK` 立即返回 `false`，经 `would_block()` 判定后连接保持打开，配合 `wait_readable()` / `wait_writable()` 重试。
+- 握手阶段为有界等待（`set_handshake_timeout`，默认 30 秒），不会永久阻塞。
+- 可运行示例：`examples/tls_socket/nonblocking_echo`（非阻塞监听 + 收发事件循环回环）。
+
+### 协程 I/O（C++20）
+
+应用数据收发可写成协程：`co_send` / `co_recv` 在 socket 暂不可用时挂起，由执行器 `tls_co_executor` 在可读/可写时恢复，不阻塞任何线程：
+
+```cpp
+tls_co_executor ex;                      // 单线程 poll 驱动执行器，多连接共享
+
+tls_connection conn;
+conn.set_nonblocking(true);
+conn.attach_co_executor(&ex);
+
+tls_co_task<void> session() {            // 顶层协程任务（由持有者析构清理）
+    bool ok = co_await conn.co_send("GET / HTTP/1.1\r\n\r\n");
+    std::vector<uint8_t> resp;
+    co_await conn.co_recv(resp);
+}
+auto task = session();
+ex.run();                                // 驱动：poll 就绪并恢复挂起协程
+```
+
+- `tls_co_task<T>`：泛型协程任务（热启动 + 对称转换，零外部依赖）。
+- `tls_co_executor`：单线程 poll 驱动执行器，多个连接共享；`run_once()` / `run()` 在 socket 就绪时恢复挂起协程。
+- `co_send` / `co_recv` 语义与 `send` / `recv` 一致（自动分片/合并 record、跳过 NewSessionTicket）；使用前需 `set_nonblocking(true)` 并 `attach_co_executor(&ex)`。
+- 可运行示例：`examples/tls_socket/coroutine_echo`（双端协程回环）。
+
+
 
 
 

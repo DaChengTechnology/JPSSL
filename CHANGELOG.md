@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.9.14] — 2026-08-06
+
+### Added
+- **TLS socket 非阻塞模式**（`tls_connection` / `tls_listener`）：`set_nonblocking(bool)` 可在 `connect`/`listen` 之前调用（socket 创建时自动应用）；应用数据 `send()`/`recv()` 遇 `EAGAIN/EWOULDBLOCK` 时立即返回 `false` 并经 `would_block()` 判定，连接保持打开，配合 `wait_readable()`/`wait_writable()` 在事件循环中重试。握手阶段为有界等待（`set_handshake_timeout`，默认 30 秒），不永久阻塞。
+- **非阻塞 TCP connect / accept**：connect 走 `EINPROGRESS` + poll 等待可写 + `SO_ERROR` 检查；listener 非阻塞时 `accept()` 无连接即返回 would-block（`wait_readable()` 配合），accept 出的连接 socket 继承监听器的非阻塞状态。
+- **ALPN 协商（RFC 7301，扩展类型 0x0010）**：`tls_session` 新增 `alpn_protos`（客户端：按偏好序发送列表；服务端：本地支持列表）与 `alpn_selected`（协商结果）；客户端在 ClientHello 携带 ALPN 扩展，服务端按客户端偏好序选择后在 EncryptedExtensions 回传（服务端只选一个协议），客户端校验所选协议属于自己提议列表；配套 `tls_parse_alpn_list` / `tls_select_alpn` 工具函数。
+- **协程 I/O（C++20 coroutine，零外部依赖）**：
+  - `tls_co_task<T>` 泛型协程任务（热启动 + 对称转换，顶层任务由持有者析构清理）。
+  - `tls_co_executor` 单线程 poll 驱动执行器（POSIX `poll` / Windows `select`），多个连接可共享；`run_once()` / `run()` 在 socket 就绪时恢复挂起协程。
+  - `tls_connection::co_send()` / `co_recv()`：内部非阻塞 I/O，would-block 时挂起协程、可读/可写后由执行器恢复；`co_recv` 语义与 `recv()` 一致（合并多 record、跳过 NewSessionTicket）；与同步 `send()` / `recv()` 共用 rbuf_ 缓冲模型，续读无缝。
+  - 使用前需 `set_nonblocking(true)` + `attach_co_executor(&ex)`。
+
+### Fixed
+- **`connect`/`server_handshake`/`accept` 不再清空会话预配置**：原 `session_ = tls_session{}` 会丢弃调用方预先设置的 ALPN 协议列表、签名方案（`sig_algs` / `sig_algs_cert`）与密钥交换组（`ks_group`），改为 `reset_session_preserving_config` 保留配置。
+- **非阻塞 connect 识别 `EINPROGRESS`**：`is_would_block()` 的 POSIX 分支补充 `errno == EINPROGRESS`（此前只认 `EAGAIN/EWOULDBLOCK`），非阻塞 connect 在等待阶段不再被误判为失败。
+- **协程发送/接收逐条加密**：`co_send` 先 `tls_encrypt`（自动分片）再写出；`co_recv` 走统一 rbuf_ 缓冲模型，mid-record would-block 续读不丢字节。
+
+### Tests
+- `test_tls_socket` 新增 21 条断言：ALPN（匹配/无交集/服务端未配置/客户端偏好序）、非阻塞（listener 非阻塞 accept 的 would-block、非阻塞 connect+握手、recv would-block、wait_readable 后重试、非阻塞继承）与协程回环（`co_send` / `co_recv` 双向交换 + 挂起-恢复），累计 37 条全部通过。
+- 回归：`test_tls`（156 断言）、`test_tls_sm`（RFC 8998 全部）、`test_tls_large_msg`、`test_tls_stability` 全部通过。
+
 ## [0.9.13] — 2026-08-06
 
 ### Added

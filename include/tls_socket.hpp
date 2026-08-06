@@ -29,6 +29,7 @@
 
 #include "tls.hpp"
 
+#include <coroutine>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -67,6 +68,163 @@ bool tls_socket_init(std::string* error = nullptr);
 class tls_listener;
 
 // ============================================================================
+// 协程基础设施（C++20 coroutine，零外部依赖）
+// ============================================================================
+
+/// 泛型协程任务。co_await 后得到返回值 T。
+/// 顶层任务（无人 co_await）用局部变量持有，完成（含挂起等待时）
+/// 由析构清理协程帧；嵌套任务由外层 co_await 的 await_resume 清理。
+template <typename T>
+struct tls_co_task {
+    struct promise_type {
+        T value{};
+        std::coroutine_handle<> consumer{}; // 被谁 co_await（对称转换目标）
+
+        tls_co_task get_return_object() {
+            return tls_co_task{std::coroutine_handle<promise_type>::from_promise(*this)};
+        }
+        std::suspend_never initial_suspend() noexcept { return {}; } // 热启动
+
+        struct final_awaiter {
+            bool await_ready() const noexcept { return false; }
+            std::coroutine_handle<> await_suspend(
+                std::coroutine_handle<promise_type> h) noexcept {
+                // 有 consumer 则对称转换过去，否则挂起等待外层析构清理
+                return h.promise().consumer
+                           ? h.promise().consumer
+                           : std::noop_coroutine();
+            }
+            void await_resume() noexcept {}
+        };
+        final_awaiter final_suspend() noexcept { return {}; }
+
+        void return_value(T v) { value = std::move(v); }
+        void unhandled_exception() noexcept { std::terminate(); }
+    };
+
+    std::coroutine_handle<promise_type> h_ = nullptr;
+
+    explicit tls_co_task(std::coroutine_handle<promise_type> h) : h_(h) {}
+    tls_co_task(tls_co_task&& o) noexcept : h_(o.h_) { o.h_ = nullptr; }
+    tls_co_task& operator=(tls_co_task&& o) noexcept {
+        if (this != &o) {
+            if (h_) h_.destroy();
+            h_ = o.h_;
+            o.h_ = nullptr;
+        }
+        return *this;
+    }
+    tls_co_task(const tls_co_task&) = delete;
+    tls_co_task& operator=(const tls_co_task&) = delete;
+    ~tls_co_task() { if (h_ && h_.done()) h_.destroy(); }
+
+    bool await_ready() const noexcept { return !h_ || h_.done(); }
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<> awaiting) noexcept {
+        h_.promise().consumer = awaiting;
+        // 任务为热启动（initial_suspend 不挂起）：若内层已挂起在内部等待
+        // （由执行器驱动恢复），此处绝不能 resume 它（双重 resume 是 UB）；
+        // 仅在内层已完成时 resume 触发 final 对称转换回到 awaiting，
+        // 否则外层直接挂起，等内层完成时由 final_awaiter 转回。
+        if (h_.done()) return h_;
+        return std::noop_coroutine();
+    }
+    T await_resume() {
+        T v = std::move(h_.promise().value);
+        if (h_) {
+            // 销毁后必须置空：临时任务对象（co_await 全表达式结束）的析构还会检查 h_，
+            // 不置空会对已销毁的协程帧二次 destroy（double-free / 堆损坏）。
+            h_.destroy();
+            h_ = nullptr;
+        }
+        return v;
+    }
+};
+
+/// void 特化：无返回值。
+template <>
+struct tls_co_task<void> {
+    struct promise_type {
+        std::coroutine_handle<> consumer{};
+        tls_co_task get_return_object() {
+            return tls_co_task{std::coroutine_handle<promise_type>::from_promise(*this)};
+        }
+        std::suspend_never initial_suspend() noexcept { return {}; }
+        struct final_awaiter {
+            bool await_ready() const noexcept { return false; }
+            std::coroutine_handle<> await_suspend(
+                std::coroutine_handle<promise_type> h) noexcept {
+                return h.promise().consumer
+                           ? h.promise().consumer
+                           : std::noop_coroutine();
+            }
+            void await_resume() noexcept {}
+        };
+        final_awaiter final_suspend() noexcept { return {}; }
+        void return_void() noexcept {}
+        void unhandled_exception() noexcept { std::terminate(); }
+    };
+    std::coroutine_handle<promise_type> h_ = nullptr;
+    explicit tls_co_task(std::coroutine_handle<promise_type> h) : h_(h) {}
+    tls_co_task(tls_co_task&& o) noexcept : h_(o.h_) { o.h_ = nullptr; }
+    tls_co_task& operator=(tls_co_task&& o) noexcept {
+        if (this != &o) {
+            if (h_) h_.destroy();
+            h_ = o.h_;
+            o.h_ = nullptr;
+        }
+        return *this;
+    }
+    tls_co_task(const tls_co_task&) = delete;
+    tls_co_task& operator=(const tls_co_task&) = delete;
+    ~tls_co_task() { if (h_ && h_.done()) h_.destroy(); }
+    bool await_ready() const noexcept { return !h_ || h_.done(); }
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<> awaiting) noexcept {
+        h_.promise().consumer = awaiting;
+        // 见模板版本注释：热启动任务已挂起时不可 resume，仅完成时触发对称转换
+        if (h_.done()) return h_;
+        return std::noop_coroutine();
+    }
+    void await_resume() {
+        if (h_) {
+            h_.destroy();
+            h_ = nullptr;  // 同模板版：防临时任务对象析构二次 destroy
+        }
+    }
+};
+
+/// 协程执行器：单线程 poll 驱动。多个 tls_connection 可共享一个执行器，
+/// co_await 挂起的协程在 socket 就绪时由 run_once()/run() 恢复。
+/// 非线程安全：注册与驱动须在同一线程。
+class tls_co_executor {
+public:
+    tls_co_executor() = default;
+    ~tls_co_executor() = default;
+    tls_co_executor(const tls_co_executor&) = delete;
+    tls_co_executor& operator=(const tls_co_executor&) = delete;
+
+    /// 注册一次等待（tls_connection 协程 I/O 内部调用，勿手动调用）。
+    void add_waiter(int fd, bool for_write, std::coroutine_handle<> h);
+
+    /// 单次驱动：poll 所有注册 fd，就绪的协程恢复执行。
+    /// timeout_ms < 0 表示无限等待；返回本次是否恢复了协程。
+    bool run_once(int timeout_ms = -1);
+
+    /// 循环驱动，直到没有等待中的协程。
+    void run(int timeout_ms = 100);
+
+    /// 当前等待中的协程数量。
+    size_t pending() const { return waiters_.size(); }
+
+private:
+    struct waiter {
+        int fd;
+        bool for_write;
+        std::coroutine_handle<> h;
+    };
+    std::vector<waiter> waiters_;
+};
+
+// ============================================================================
 // TLS over TCP 连接（客户端或服务端，握手完成后即可收发应用数据）
 // ============================================================================
 
@@ -88,6 +246,32 @@ public:
     bool server_handshake(const tls_certificate_manager& cert_manager,
                           std::string* error = nullptr);
 
+    /// 设置/取消非阻塞模式（可在 connect 之前或之后调用；
+    /// connect 之前调用时，TCP 连接建立也采用非阻塞方式）。
+    ///
+    /// 非阻塞模式语义：
+    ///   - send()/recv()：当内核缓冲区暂不可用（EAGAIN/EWOULDBLOCK）时
+    ///     立即返回 false，error 为 "would block"，可通过 would_block()
+    ///     判定；连接保持打开，配合 wait_readable()/wait_writable()
+    ///     在事件循环中重试。
+    ///   - 握手（connect/server_handshake/accept）：内部有界等待
+    ///     （set_handshake_timeout 配置，默认 30 秒），不会永久阻塞，
+    ///     但为保持握手状态机完整，暂不支持“一步一停”的分步握手。
+    bool set_nonblocking(bool enable, std::string* error = nullptr);
+    bool is_nonblocking() const { return nonblocking_; }
+
+    /// 最近一次 I/O 是否因资源暂不可用而返回（仅非阻塞模式有效）。
+    bool would_block() const { return would_block_; }
+
+    /// 等待 socket 可读 / 可写（事件循环用）。timeout_ms < 0 表示无限等待；
+    /// 返回 true 表示就绪，false 表示超时或 socket 无效。
+    bool wait_readable(int timeout_ms) const;
+    bool wait_writable(int timeout_ms) const;
+
+    /// 配置握手阶段 I/O 的有界等待超时（毫秒，默认 30000）。
+    /// 仅在非阻塞模式下生效；阻塞模式保持原有无限阻塞语义。
+    void set_handshake_timeout(int timeout_ms) { handshake_timeout_ms_ = timeout_ms; }
+
     /// 发送应用数据（自动按 <=16KiB 分片为多条 TLS record 后写入 socket，
     /// 对端 recv 会自动合并为完整消息返回）
     bool send(const uint8_t* data, size_t len, std::string* error = nullptr);
@@ -96,6 +280,25 @@ public:
     /// 读取应用数据：一次 send() 拆分出的多条 record 会自动合并返回。
     /// 对端关闭 / 致命错误 / 收到 alert 时返回 false。
     bool recv(std::vector<uint8_t>& out, std::string* error = nullptr);
+
+    // ---- 协程 I/O（C++20 coroutine）----
+    /// 绑定协程执行器。co_send()/co_recv() 前必须调用（多个连接可共享
+    /// 一个执行器）。协程 I/O 要求连接处于非阻塞模式（set_nonblocking(true)）。
+    void attach_co_executor(tls_co_executor* ex) { executor_ = ex; }
+    tls_co_executor* co_executor() const { return executor_; }
+
+    /// 协程发送：完整发送 len 字节；写缓冲暂满时协程挂起，socket 可写后
+    /// 由执行器恢复继续发送。返回是否全部发送成功。
+    tls_co_task<bool> co_send(const uint8_t* data, size_t len,
+                              std::string* error = nullptr);
+    tls_co_task<bool> co_send(const std::string& data,
+                              std::string* error = nullptr);
+
+    /// 协程接收：语义与 recv() 一致（自动合并一次 send() 拆分出的多条 record）；
+    /// 无数据到达时协程挂起，可读后由执行器恢复。返回 false 表示对端关闭 /
+    /// 致命错误 / 收到 alert。
+    tls_co_task<bool> co_recv(std::vector<uint8_t>& out,
+                              std::string* error = nullptr);
 
     void close();
     bool is_open() const { return open_; }
@@ -112,19 +315,31 @@ private:
     bool do_server_handshake(const tls_certificate_manager& cert_manager, std::string* error);
 
     bool write_all(const uint8_t* data, size_t len, std::string* error);
-    bool read_bytes(uint8_t* out, size_t n, std::string* error);
-    /// 读取一条完整 TLS record；payload 不含 5 字节 record 头。
+    /// 从 socket 读入数据追加到 rbuf_ 尾部，直到 rbuf_.size() >= min_total。
+    /// 非阻塞应用数据阶段遇 EAGAIN 时返回 false 并置 would_block_（已读部分保留在 rbuf_）。
+    bool fill_rbuf(size_t min_total, std::string* error);
+    /// 读取一条完整 TLS record（从 rbuf_ 消费，续读无缝）；payload 不含 5 字节 record 头。
     bool read_record(uint8_t& type, std::vector<uint8_t>& payload, std::string* error);
     /// 检查 socket / 内部缓冲区是否还有已到达的数据（用于 recv 合并多条 record）
     bool more_data_pending() const;
+    /// 协程版：从 socket 读入数据追加到 rbuf_，直到 rbuf_.size() >= min_total。
+    /// would-block 时挂起等待可读（由执行器恢复）。
+    tls_co_task<bool> co_fill_rbuf(size_t min_total, std::string* error);
+    /// 协程版：读取一条完整 TLS record（从 rbuf_ 消费，续读无缝）。
+    tls_co_task<bool> co_read_record(uint8_t& type, std::vector<uint8_t>& payload,
+                                     std::string* error);
 
     void set_tcp_nodelay();
 
     socket_handle_t sock_ = INVALID_SOCKET_HANDLE;
     bool open_ = false;
+    bool nonblocking_ = false;       // 非阻塞模式标志
+    bool would_block_ = false;       // 最近一次 I/O 是否 would-block
+    bool handshake_pending_ = false; // 当前是否处于握手阶段（影响 EAGAIN 处理）
+    int handshake_timeout_ms_ = 30000; // 握手阶段有界等待超时
     tls_session session_;
     std::vector<uint8_t> rbuf_;   // 接收缓冲（处理半包）
-    size_t rbuf_off_ = 0;         // 已消费偏移
+    tls_co_executor* executor_ = nullptr; // 协程执行器（co_send/co_recv 用）
 };
 
 // ============================================================================
@@ -146,6 +361,18 @@ public:
     bool accept(tls_connection& conn, const tls_certificate_manager& cert_manager,
                 std::string* error = nullptr);
 
+    /// 设置/取消监听 socket 的非阻塞模式。非阻塞时 accept() 在无待处理
+    /// 连接时返回 false 并置 would_block()（可配合 wait_readable() 重试）。
+    /// 注意：accept 出的连接 socket 会继承监听器的非阻塞状态。
+    bool set_nonblocking(bool enable, std::string* error = nullptr);
+    bool is_nonblocking() const { return nonblocking_; }
+
+    /// 最近一次 accept 是否因暂无可接受连接而返回（仅非阻塞模式有效）。
+    bool would_block() const { return would_block_; }
+
+    /// 等待监听 socket 可读（即存在待 accept 的连接），事件循环用。
+    bool wait_readable(int timeout_ms) const;
+
     /// 实际绑定的本地端口（port == 0 时有用）。
     uint16_t local_port() const;
 
@@ -156,6 +383,8 @@ public:
 private:
     socket_handle_t sock_ = INVALID_SOCKET_HANDLE;
     bool open_ = false;
+    bool nonblocking_ = false;
+    bool would_block_ = false;
 };
 
 } // namespace jpssl::tls

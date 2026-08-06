@@ -17,6 +17,7 @@
 #include "cpu_features.hpp"
 #include <cstring>
 #include <random>
+#include <vector>
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -31,6 +32,7 @@ extern "C" void jpssl_p256_mul_adx(uint64_t r[4], const uint64_t a[4], const uin
 extern "C" void jpssl_p256_ord_mul_adx(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
 extern "C" void jpssl_p256_dbl(uint64_t r[12], const uint64_t p[12]);
 extern "C" void jpssl_p256_madd(uint64_t r[12], const uint64_t p[12], const uint64_t q[12]);
+extern "C" void jpssl_p256_inv_adx(uint64_t r[4], const uint64_t a[4]);
 #endif
 
 namespace {
@@ -409,7 +411,14 @@ static void mont_pow(bn<N>* r, const bn<N>* base, const mod_ctx<N>& M,
 // r = a^{-1} mod m（Fermat：a^{m-2}，m 为奇素数）
 template <int N>
 static void mod_inv(bn<N>* r, const bn<N>* a, const mod_ctx<N>& M) {
-#if defined(__aarch64__)
+#if defined(_MSC_VER) && defined(_M_X64)
+    if (N == 4 && M.special == 1 && g_p256_adx_ok) {
+        // P-256 素数域专用加法链求逆：255 sq + 12 mul（addchain v0.4.0，
+        // 与 crypto/internal/nistec/fiat/p256_invert.go 同源），比 Fermat 链快 ~1.5 倍
+        jpssl_p256_inv_adx((uint64_t*)r->v, (const uint64_t*)a->v);
+        return;
+    }
+#elif defined(__aarch64__)
     // P-256 素数域 Fermat 求逆（加法链，OpenSSL ecp_nistz256_mod_inverse）
     if (N == 4 && M.special == 1 && g_p256_arm_ok) {
         uint64_t p2[4], p4[4], p8[4], p16[4], p32[4], res[4];
@@ -1204,6 +1213,126 @@ bool ecdsa_p256_ecdh(uint8_t shared[32], const uint8_t priv[32], const uint8_t p
 bool ecdsa_p384_ecdh(uint8_t shared[48], const uint8_t priv[48], const uint8_t pub[96]) {
     ensure384();
     return ecdh_impl<6, 48>(shared, priv, pub, C384, 96);
+}
+
+// 批量仿射化：n 个 Jacobian 点 → n 个仿射点，整批仅一次 Fermat 求逆
+// （Montgomery 批量求逆：1 次求逆 + 3(n-1) 次乘法）。Z=0 的点逐个求逆回退。
+template <int N>
+static void batch_affine_many(jac_point<N>* pts, aff_point<N>* out, int n,
+                              const mod_ctx<N>& M) {
+    if (n <= 0) return;
+    std::vector<bn<N>> pre((size_t)n);
+    bn<N> acc = M.one;
+    bool any_zero = false;
+    for (int i = 0; i < n; ++i) {
+        pre[(size_t)i] = acc;
+        if (bn_is_zero(&pts[i].Z)) any_zero = true;
+        mont_mul(&acc, &acc, &pts[i].Z, M);
+    }
+    if (any_zero) {
+        for (int i = 0; i < n; ++i) {
+            if (bn_is_zero(&pts[i].Z)) {
+                out[i].X = M.one;
+                out[i].Y = M.one;
+                continue;
+            }
+            bn<N> zinv, z2, z3;
+            mod_inv(&zinv, &pts[i].Z, M);
+            mont_sqr(&z2, &zinv, M);
+            mont_mul(&z3, &z2, &zinv, M);
+            mont_mul(&out[i].X, &pts[i].X, &z2, M);
+            mont_mul(&out[i].Y, &pts[i].Y, &z3, M);
+        }
+        return;
+    }
+    bn<N> inv;
+    mod_inv(&inv, &acc, M);
+    for (int i = n - 1; i >= 0; --i) {
+        bn<N> zinv, z2, z3;
+        mont_mul(&zinv, &inv, &pre[(size_t)i], M);
+        mont_mul(&inv, &inv, &pts[i].Z, M);
+        mont_sqr(&z2, &zinv, M);
+        mont_mul(&z3, &z2, &zinv, M);
+        mont_mul(&out[i].X, &pts[i].X, &z2, M);
+        mont_mul(&out[i].Y, &pts[i].Y, &z3, M);
+    }
+}
+
+// 批量 ECDH：块内先构建各条奇倍表（Jacobian），统一一次求逆仿射化，
+// 各自 wNAF 标量乘后再统一一次求逆，输出 X 坐标。
+template <int N, int BYTES>
+static bool ecdh_batch_impl(uint8_t* shared, const uint8_t* priv, const uint8_t* pub,
+                            int count, const ecdsa_curve<N>& C, int windows) {
+    const int CHUNK = 16;
+    for (int off = 0; off < count; off += CHUNK) {
+        int n = (count - off < CHUNK) ? count - off : CHUNK;
+        jac_point<N> odd[CHUNK][8];
+        aff_point<N> qt[CHUNK][8];
+        bn<N> d[CHUNK];
+        for (int i = 0; i < n; ++i) {
+            bn_from_be<N, BYTES>(&d[i], priv + (size_t)(off + i) * BYTES);
+            if (bn_is_zero(&d[i]) || !bn_lt(&d[i], &C.order)) return false;
+            const uint8_t* p = pub + (size_t)(off + i) * (2 * BYTES);
+            bn<N> qx, qy;
+            bn_from_be<N, BYTES>(&qx, p);
+            bn_from_be<N, BYTES>(&qy, p + BYTES);
+            mod_reduce(&qx, &qx, C.MP);
+            mod_reduce(&qy, &qy, C.MP);
+            aff_point<N> Q;
+            to_mont(&Q.X, &qx, C.MP);
+            to_mont(&Q.Y, &qy, C.MP);
+            jac_point<N> R;
+            R.X = Q.X; R.Y = Q.Y; R.Z = C.MP.one;
+            jac_point<N> Qj = R;
+#if defined(__aarch64__)
+            const bool saved_pt_madd_asm = g_pt_madd_asm;
+            g_pt_madd_asm = false;  // 同点相加（首轮 H==0）走 C++
+#endif
+            for (int k = 0; k < 8; ++k) {
+                odd[i][k] = R;
+                if (k < 7) {
+                    pt_madd(&R, &R, &Qj, C.MP);
+                    pt_madd(&R, &R, &Qj, C.MP);
+                }
+            }
+#if defined(__aarch64__)
+            g_pt_madd_asm = saved_pt_madd_asm;
+#endif
+        }
+        // 奇倍表统一仿射化（整块一次求逆）
+        {
+            std::vector<jac_point<N>> flat((size_t)(8 * n));
+            std::vector<aff_point<N>> fout((size_t)(8 * n));
+            for (int i = 0; i < n; ++i)
+                for (int k = 0; k < 8; ++k) flat[(size_t)(i * 8 + k)] = odd[i][k];
+            batch_affine_many(flat.data(), fout.data(), 8 * n, C.MP);
+            for (int i = 0; i < n; ++i)
+                for (int k = 0; k < 8; ++k) qt[i][k] = fout[(size_t)(i * 8 + k)];
+        }
+        jac_point<N> R[CHUNK];
+        for (int i = 0; i < n; ++i)
+            wnaf_scalar_mult(&R[i], &d[i], qt[i], C.MP);
+        aff_point<N> A[CHUNK];
+        batch_affine_many(R, A, n, C.MP);
+        for (int i = 0; i < n; ++i) {
+            bn<N> x;
+            from_mont(&x, &A[i].X, C.MP);
+            bn_to_be<N, BYTES>(&x, shared + (size_t)(off + i) * BYTES);
+        }
+    }
+    return true;
+}
+
+bool ecdsa_p256_ecdh_batch(uint8_t* shared, const uint8_t* priv, const uint8_t* pub, int count) {
+    if (count <= 0) return false;
+    ensure256();
+    return ecdh_batch_impl<4, 32>(shared, priv, pub, count, C256, 64);
+}
+
+bool ecdsa_p384_ecdh_batch(uint8_t* shared, const uint8_t* priv, const uint8_t* pub, int count) {
+    if (count <= 0) return false;
+    ensure384();
+    return ecdh_batch_impl<6, 48>(shared, priv, pub, count, C384, 96);
 }
 
 // ── P-256 API ──

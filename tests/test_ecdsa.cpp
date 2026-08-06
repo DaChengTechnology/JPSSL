@@ -607,6 +607,50 @@ int main() {
         EC_POINT_free(peer2); EC_KEY_free(k384); EC_GROUP_free(g384);
     }
 
+    // Test 19: 批量 ECDH 与逐条 / OpenSSL 对拍（P-256/P-384）
+    printf("=== Test 19: batch ECDH vs per-op / OpenSSL ===\n");
+    {
+        const int N = 17;  // 故意非 16 的倍数，覆盖尾部块
+        uint8_t priv[N][32], pub[N][64], sh_batch[N][32], sh_seq[N][32];
+        for (int i = 0; i < N; ++i) jpssl::ecdsa_p256_keygen(pub[i], priv[i]);
+        bool bok = jpssl::ecdsa_p256_ecdh_batch((uint8_t*)sh_batch, (uint8_t*)priv, (uint8_t*)pub, N);
+        bool all_seq = true;
+        for (int i = 0; i < N; ++i)
+            if (!jpssl::ecdsa_p256_ecdh(sh_seq[i], priv[i], pub[i])) all_seq = false;
+        bool match = bok && all_seq && memcmp(sh_batch, sh_seq, sizeof sh_batch) == 0;
+        printf("  P-256 batch==per-op: %s\n", match ? "PASS" : "FAIL");
+        if (!match) ++fails;
+
+        uint8_t priv4[N][48], pub4[N][96], sb4[N][48], ss4[N][48];
+        for (int i = 0; i < N; ++i) jpssl::ecdsa_p384_keygen(pub4[i], priv4[i]);
+        bool bok4 = jpssl::ecdsa_p384_ecdh_batch((uint8_t*)sb4, (uint8_t*)priv4, (uint8_t*)pub4, N);
+        bool all4 = true;
+        for (int i = 0; i < N; ++i)
+            if (!jpssl::ecdsa_p384_ecdh(ss4[i], priv4[i], pub4[i])) all4 = false;
+        bool match4 = bok4 && all4 && memcmp(sb4, ss4, sizeof sb4) == 0;
+        printf("  P-384 batch==per-op: %s\n", match4 ? "PASS" : "FAIL");
+        if (!match4) ++fails;
+
+        // OpenSSL 对拍（取第一条）
+        uint8_t os[32];
+        EC_GROUP* g256 = EC_GROUP_new_by_curve_name(NID_X9_62_prime256v1);
+        EC_KEY* k256 = EC_KEY_new();
+        EC_KEY_set_group(k256, g256);
+        BIGNUM* d = BN_bin2bn(priv[0], 32, nullptr);
+        EC_KEY_set_private_key(k256, d);
+        EC_POINT* peer = EC_POINT_new(g256);
+        BIGNUM* px = BN_bin2bn(pub[0], 32, nullptr);
+        BIGNUM* py = BN_bin2bn(pub[0] + 32, 32, nullptr);
+        BN_CTX* ctx = BN_CTX_new();
+        EC_POINT_set_affine_coordinates(g256, peer, px, py, ctx);
+        int n = ECDH_compute_key(os, 32, peer, k256, nullptr);
+        bool ossl = n == 32 && memcmp(sh_batch[0], os, 32) == 0;
+        printf("  P-256 batch[0] vs OpenSSL: %s\n", ossl ? "PASS" : "FAIL");
+        if (!ossl) ++fails;
+        BN_free(d); BN_free(px); BN_free(py); BN_CTX_free(ctx);
+        EC_POINT_free(peer); EC_KEY_free(k256); EC_GROUP_free(g256);
+    }
+
     printf("\n=== Result: %d failures ===\n", fails);
     return fails ? 1 : 0;
 }
