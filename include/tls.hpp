@@ -36,7 +36,7 @@ enum class HandshakeType {
     CERTIFICATE_REQUEST=13, SERVER_HELLO_DONE=14, CERT_VERIFY=15,
     CLIENT_KEY_EXCHANGE=16, FINISHED=20
 };
-enum class ExtensionType { SERVER_NAME=0, SUPPORTED_VERSIONS=0x2b, KEY_SHARE=0x33, SUPPORTED_GROUPS=0x0a, SIGNATURE_ALGORITHMS=0x0d, SIGNATURE_ALGORITHMS_CERT=0x32, PRE_SHARED_KEY=41, PSK_KEY_EXCHANGE_MODES=45, EARLY_DATA=42 };
+enum class ExtensionType { SERVER_NAME=0, ALPN=0x0010, SUPPORTED_VERSIONS=0x2b, KEY_SHARE=0x33, SUPPORTED_GROUPS=0x0a, SIGNATURE_ALGORITHMS=0x0d, SIGNATURE_ALGORITHMS_CERT=0x32, PRE_SHARED_KEY=41, PSK_KEY_EXCHANGE_MODES=45, EARLY_DATA=42 };
 // TLS signature schemes (RFC 8446 sec 4.2.3, RFC 8998 sec 4.3)
 // rsa_pkcs1_* may only be used to verify certificate-chain signatures in TLS 1.3.
 enum class SignatureAlgorithm : uint16_t {
@@ -143,6 +143,14 @@ struct tls_session {
     std::vector<uint16_t> sig_algs_cert;
     // 本次握手协商出的签名方案（CertificateVerify / ServerKeyExchange）
     uint16_t selected_sig_alg = 0;
+
+    // ALPN（RFC 7301，扩展类型 0x0010）：
+    //   客户端：按偏好序要发送的协议列表（如 {"h2","http/1.1"}）
+    //   服务端：本地支持的协议列表（用于与客户端列表匹配选择）
+    // 任一为空表示不进行 ALPN 协商。
+    std::vector<std::string> alpn_protos;
+    // 本次握手协商出的协议（两端一致），为空表示未协商 ALPN。
+    std::string alpn_selected;
 };
 
 // 默认支持的签名方案全量列表（RFC 8446 + RFC 8998，客户端偏好序）
@@ -280,6 +288,18 @@ private:
 //  SNI 解析
 // ═══════════════════════════════════════════════════════════════════════
 std::string tls_parse_server_name(const uint8_t* extensions, size_t ext_len);
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ALPN 工具 (RFC 7301, 扩展类型 0x0010)
+// ═══════════════════════════════════════════════════════════════════════
+// 解析 ProtocolNameList（2 字节总长 + 若干 1 字节长度前缀的协议名）。
+// 数据格式非法时返回空列表。
+std::vector<std::string> tls_parse_alpn_list(const uint8_t* data, size_t len);
+
+// 按客户端偏好序选择双方共同支持的协议；无交集时返回空字符串。
+// client_list 为 ClientHello 中携带的协议列表，server_list 为服务端本地支持列表。
+std::string tls_select_alpn(const std::vector<std::string>& client_list,
+                            const std::vector<std::string>& server_list);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  TLS 1.3 完整握手 API

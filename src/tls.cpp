@@ -525,6 +525,33 @@ std::string tls_parse_server_name(const uint8_t* extensions, size_t ext_len){
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  ALPN 解析与选择 (RFC 7301, 扩展类型 0x0010)
+// ═══════════════════════════════════════════════════════════════════════
+std::vector<std::string> tls_parse_alpn_list(const uint8_t* data, size_t len) {
+    std::vector<std::string> out;
+    if (len < 2) return out;
+    size_t list_len = ((size_t)data[0] << 8) | data[1];
+    if (2 + list_len > len) return out;
+    size_t off = 2;
+    size_t end = 2 + list_len;
+    while (off < end) {
+        uint8_t plen = data[off++];
+        if (off + plen > end) { out.clear(); return out; }
+        out.emplace_back((const char*)data + off, plen);
+        off += plen;
+    }
+    return out;
+}
+
+std::string tls_select_alpn(const std::vector<std::string>& client_list,
+                            const std::vector<std::string>& server_list) {
+    for (const auto& c : client_list)
+        for (const auto& s : server_list)
+            if (c == s) return c;
+    return {};
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  TLS 1.3 密钥派生
 // ═══════════════════════════════════════════════════════════════════════
 static void tls13_derive_handshake_keys(tls_session& s, const uint8_t* shared_secret, size_t shared_len){
@@ -795,11 +822,27 @@ static bool tls13_verify_cert_verify(const tls_certificate& cert, tls_session& s
 // ═══════════════════════════════════════════════════════════════════════
 //  构建 EncryptedExtensions
 // ═══════════════════════════════════════════════════════════════════════
-static std::vector<uint8_t> tls13_make_encrypted_extensions(){
+// alpn_selected 非空时携带 ALPN 扩展（RFC 7301：服务端只选择一个协议）。
+static std::vector<uint8_t> tls13_make_encrypted_extensions(
+    const std::string& alpn_selected) {
     std::vector<uint8_t> msg;
+    std::vector<uint8_t> ext;
+    if (!alpn_selected.empty()) {
+        ext.push_back(0x00);ext.push_back(0x10); // ALPN 扩展类型
+        uint16_t list_len = (uint16_t)(1 + alpn_selected.size());
+        ext.push_back((uint8_t)((2 + list_len) >> 8));
+        ext.push_back((uint8_t)(2 + list_len));
+        ext.push_back((uint8_t)(list_len >> 8));
+        ext.push_back((uint8_t)list_len);
+        ext.push_back((uint8_t)alpn_selected.size());
+        ext.insert(ext.end(), alpn_selected.begin(), alpn_selected.end());
+    }
+    uint16_t ext_total = (uint16_t)ext.size();
     msg.push_back((uint8_t)HandshakeType::ENCRYPTED_EXTENSIONS);
-    msg.push_back(0);msg.push_back(0);msg.push_back(2); // extensions length
-    msg.push_back(0);msg.push_back(0); // empty extensions
+    msg.push_back(0);msg.push_back(0);
+    msg.push_back((uint8_t)(2 + ext_total)); // extensions 区总长
+    msg.push_back((uint8_t)(ext_total >> 8));msg.push_back((uint8_t)ext_total);
+    msg.insert(msg.end(), ext.begin(), ext.end());
     return msg;
 }
 
@@ -1031,6 +1074,23 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         ext.insert(ext.end(),client_pub,client_pub+32);
     }
 
+    // ALPN (RFC 7301)：客户端按偏好序发送协议列表
+    if (!s.alpn_protos.empty()) {
+        size_t list_len = 0;
+        for (const auto& p : s.alpn_protos) list_len += 1 + p.size();
+        if (list_len <= 65535) {
+            ext.push_back(0x00);ext.push_back(0x10); // ALPN 扩展类型
+            ext.push_back((uint8_t)((2 + list_len) >> 8));
+            ext.push_back((uint8_t)(2 + list_len));
+            ext.push_back((uint8_t)(list_len >> 8));
+            ext.push_back((uint8_t)list_len);
+            for (const auto& p : s.alpn_protos) {
+                ext.push_back((uint8_t)p.size());
+                ext.insert(ext.end(), p.begin(), p.end());
+            }
+        }
+    }
+
     uint16_t ext_len_total=ext.size();
     client_hello.push_back((uint8_t)(ext_len_total>>8));client_hello.push_back((uint8_t)ext_len_total);
     client_hello.insert(client_hello.end(),ext.begin(),ext.end());
@@ -1188,6 +1248,36 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
         switch(htype){
             case (uint8_t)HandshakeType::ENCRYPTED_EXTENSIONS:
                 tls_transcript_update(s,hmsg,4+hlen);
+                // ALPN (RFC 7301)：EncryptedExtensions 中服务端返回的 ALPN 扩展
+                // （ProtocolNameList 必须恰好包含一个协议，且必须属于客户端提议列表）
+                s.alpn_selected.clear();
+                {
+                    size_t eo = 4; // 跳过握手头
+                    if (eo + 2 <= 4 + hlen) {
+                        size_t ee_ext_total = ((size_t)hmsg[eo] << 8) | hmsg[eo + 1];
+                        size_t off = eo + 2;
+                        size_t end = off + ee_ext_total;
+                        if (end <= 4 + hlen) {
+                            while (off + 4 <= end) {
+                                uint16_t etype =
+                                    (uint16_t)((hmsg[off] << 8) | hmsg[off + 1]);
+                                size_t elen = ((size_t)hmsg[off + 2] << 8) | hmsg[off + 3];
+                                if (off + 4 + elen > end) break;
+                                if (etype == 0x0010) {
+                                    auto list = tls_parse_alpn_list(hmsg + off + 4, elen);
+                                    if (list.size() == 1) s.alpn_selected = list[0];
+                                }
+                                off += 4 + elen;
+                            }
+                        }
+                    }
+                    if (!s.alpn_protos.empty() && !s.alpn_selected.empty()) {
+                        bool ok = false;
+                        for (const auto& p : s.alpn_protos)
+                            if (p == s.alpn_selected) { ok = true; break; }
+                        if (!ok) return false; // 服务端选择了客户端未提议的协议
+                    }
+                }
                 break;
             case (uint8_t)HandshakeType::CERTIFICATE: {
                 tls_transcript_update(s,hmsg,4+hlen);
@@ -1285,6 +1375,19 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     }
     const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
     if(!cert)return false;
+
+    // ALPN (RFC 7301)：解析客户端协议列表并与本地支持列表匹配选择
+    s.alpn_selected.clear();
+    if (!s.alpn_protos.empty()) {
+        const uint8_t* alpn_data = nullptr;
+        size_t alpn_len = 0;
+        if (client_hello_find_extension(client_hello, ch_len, 0x0010,
+                                        alpn_data, alpn_len)) {
+            std::vector<std::string> client_alpn =
+                tls_parse_alpn_list(alpn_data, alpn_len);
+            s.alpn_selected = tls_select_alpn(client_alpn, s.alpn_protos);
+        }
+    }
 
     // 提取 client_pub（支持 X25519、X448 和 curveSM2）和 supported_groups
     uint8_t client_pub_x25519[32]; bool found_x25519=false;
@@ -1497,7 +1600,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     init_cipher_ctx(s, s.server_write_key);
 
     // 构建 EncryptedExtensions
-    auto ee=tls13_make_encrypted_extensions();
+    auto ee=tls13_make_encrypted_extensions(s.alpn_selected);
     tls_transcript_update(s,ee.data(),ee.size());
 
     // 构建 Certificate
