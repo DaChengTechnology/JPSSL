@@ -695,6 +695,63 @@ std::vector<std::string> x509_cert::dns_names() const {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  签名格式兼容辅助
+// ═══════════════════════════════════════════════════════════════════════
+namespace {
+
+// 把 DER 编码的 ECDSA-Sig-Value (SEQUENCE { INTEGER r, INTEGER s }) 解码为定长 raw r||s。
+// field_len: 曲线字段字节数 (P-256=32, P-384=48, P-521=66, SM2=32)。
+// 返回 raw 长度为 2*field_len。支持短/长格式 DER 长度。
+bool ecdsa_der_sig_to_raw(const std::vector<uint8_t>& der, size_t field_len,
+                          std::vector<uint8_t>& raw) {
+    if (der.size() < 2 || der[0] != 0x30) return false;
+    // 解码 SEQUENCE 长度（短格式 / 长格式）
+    size_t total = 0;
+    size_t hdr = 2;  // 已消费的字节数（tag + 长度字段）
+    if (der[1] < 0x80) {
+        total = der[1];
+    } else {
+        size_t n = der[1] & 0x7f;
+        if (n == 0 || n > 4 || 2 + n > der.size()) return false;
+        for (size_t i = 0; i < n; ++i) total = (total << 8) | der[2 + i];
+        hdr = 2 + n;
+    }
+    if (hdr + total != der.size()) return false;  // 长度必须精确匹配
+    const uint8_t* p = der.data() + hdr;
+    size_t rem = total;
+    auto read_int = [&](std::vector<uint8_t>& out) -> bool {
+        if (rem < 2 || p[0] != 0x02) return false;
+        size_t l = p[1];
+        if (l > rem - 2) return false;
+        out.assign(p + 2, p + 2 + l);
+        p += 2 + l;
+        rem -= 2 + l;
+        return true;
+    };
+    std::vector<uint8_t> r, s;
+    if (!read_int(r) || !read_int(s)) return false;
+    auto norm = [field_len](std::vector<uint8_t>& v) -> bool {
+        while (v.size() > 1 && v[0] == 0) v.erase(v.begin());  // 去前导零
+        if (v.size() > field_len) return false;
+        v.insert(v.begin(), field_len - v.size(), 0);          // 左补零到定长
+        return true;
+    };
+    if (!norm(r) || !norm(s)) return false;
+    raw = r;
+    raw.insert(raw.end(), s.begin(), s.end());
+    return raw.size() == field_len * 2;
+}
+
+// 统一取 raw 签名: 已是定长 raw 直接用, 否则尝试 DER 解码
+bool sig_to_raw(const std::vector<uint8_t>& sig, size_t field_len,
+                std::vector<uint8_t>& raw) {
+    if (sig.size() == field_len * 2) { raw = sig; return true; }
+    return ecdsa_der_sig_to_raw(sig, field_len, raw);
+}
+
+} // anonymous namespace
+
+// ═══════════════════════════════════════════════════════════════════════
 //  verify_signature
 // ═══════════════════════════════════════════════════════════════════════
 bool x509_cert::verify_signature(const x509_cert& issuer) const {
@@ -747,24 +804,36 @@ bool x509_cert::verify_signature(const x509_cert& issuer) const {
         case KeyType::Ed448:
             return ed448_verify(issuer.public_key.data(), tbs_data, tbs_len, signature.data());
         case KeyType::ECDSA_P256: {
-            uint8_t hash[32];
-            sha256_ctx ctx; sha256_init(&ctx); sha256_update(&ctx, tbs_data, tbs_len); sha256_final(&ctx, hash);
-            return ecdsa_p256_verify(issuer.public_key.data(), hash, 32, signature.data());
+            std::vector<uint8_t> raw;
+            if (!sig_to_raw(signature, 32, raw)) return false;
+            return ecdsa_p256_verify(issuer.public_key.data(), tbs_data, tbs_len, raw.data());
         }
         case KeyType::ECDSA_P384: {
-            uint8_t hash[48];
-            sha512_ctx ctx; sha384_init(&ctx); sha512_update(&ctx, tbs_data, tbs_len); sha512_final(&ctx, hash);
-            return ecdsa_p384_verify(issuer.public_key.data(), hash, 48, signature.data());
+            std::vector<uint8_t> raw;
+            if (!sig_to_raw(signature, 48, raw)) return false;
+            return ecdsa_p384_verify(issuer.public_key.data(), tbs_data, tbs_len, raw.data());
         }
         case KeyType::ECDSA_P521: {
-            uint8_t hash[64];
-            sha512_ctx ctx; sha512_init(&ctx); sha512_update(&ctx, tbs_data, tbs_len); sha512_final(&ctx, hash);
-            return ecdsa_p521_verify(issuer.public_key.data(), hash, 64, signature.data());
+            std::vector<uint8_t> raw;
+            if (!sig_to_raw(signature, 66, raw)) return false;
+            return ecdsa_p521_verify(issuer.public_key.data(), tbs_data, tbs_len, raw.data());
         }
         case KeyType::SM2: {
-            uint8_t hash[32];
-            sm3_ctx ctx; sm3_init(&ctx); sm3_update(&ctx, tbs_data, tbs_len); sm3_final(&ctx, hash);
-            return sm2_verify(issuer.public_key.data(), hash, 32, signature.data(), nullptr);
+            std::vector<uint8_t> raw;
+            if (!sig_to_raw(signature, 32, raw)) return false;
+            // SM2 证书签名：e = SM3(ZA || M)，ZA 基于用户 ID。
+            // 兼容两种主流实现：
+            //   a) OpenSSL 3.0 x509 生成时使用空用户 ID（实测 openssl 3.0.13）；
+            //   b) 国密标准（GB/T 32918.5 / GM/T 0015）默认用户 ID "1234567812345678"。
+            // 签名方未在证书中携带 ID，验证时两种 ZA 都尝试，任一通过即可。
+            uint8_t za[2][32];
+            const uint8_t* pub = issuer.public_key.data();
+            sm2_compute_za(nullptr, 0, pub, pub + 32, za[0]);
+            static const char kDefaultId[] = "1234567812345678";
+            sm2_compute_za((const uint8_t*)kDefaultId, sizeof(kDefaultId) - 1, pub, pub + 32, za[1]);
+            for (int i = 0; i < 2; ++i)
+                if (sm2_verify(pub, tbs_data, tbs_len, raw.data(), za[i])) return true;
+            return false;
         }
     }
     return false;
@@ -818,24 +887,21 @@ x509_cert x509_builder::build_and_sign(KeyType sign_key_type,
         case KeyType::Ed448:
             ed448_sign(sign_priv_data, tbs_data, tbs_len, sig_buf); sig_len = 114; break;
         case KeyType::ECDSA_P256: {
-            uint8_t hash[32];
-            sha256_ctx ctx; sha256_init(&ctx); sha256_update(&ctx, tbs_data, tbs_len); sha256_final(&ctx, hash);
-            ecdsa_p256_sign(sign_priv_data, hash, 32, sig_buf); sig_len = 64; break;
+            ecdsa_p256_sign(sign_priv_data, tbs_data, tbs_len, sig_buf); sig_len = 64; break;
         }
         case KeyType::ECDSA_P384: {
-            uint8_t hash[48];
-            sha512_ctx ctx; sha384_init(&ctx); sha512_update(&ctx, tbs_data, tbs_len); sha512_final(&ctx, hash);
-            ecdsa_p384_sign(sign_priv_data, hash, 48, sig_buf); sig_len = 96; break;
+            ecdsa_p384_sign(sign_priv_data, tbs_data, tbs_len, sig_buf); sig_len = 96; break;
         }
         case KeyType::ECDSA_P521: {
-            uint8_t hash[64];
-            sha512_ctx ctx; sha512_init(&ctx); sha512_update(&ctx, tbs_data, tbs_len); sha512_final(&ctx, hash);
-            ecdsa_p521_sign(sign_priv_data, hash, 64, sig_buf); sig_len = 132; break;
+            ecdsa_p521_sign(sign_priv_data, tbs_data, tbs_len, sig_buf); sig_len = 132; break;
         }
         case KeyType::SM2: {
-            uint8_t hash[32];
-            sm3_ctx ctx; sm3_init(&ctx); sm3_update(&ctx, tbs_data, tbs_len); sm3_final(&ctx, hash);
-            sm2_sign(sign_priv_data, hash, 32, sig_buf, nullptr); sig_len = 64; break;
+            // SM2 证书签名：e = SM3(ZA || M)，ZA 基于用户 ID。
+            // 与 OpenSSL 3.0 x509 生成行为保持一致：使用空用户 ID（实测 3.0.13）。
+            // 也兼容国密标准默认 ID（"1234567812345678"）验证（verify_signature 双 ZA 尝试）。
+            uint8_t za[32];
+            sm2_compute_za(nullptr, 0, cert.public_key.data(), cert.public_key.data() + 32, za);
+            sm2_sign(sign_priv_data, tbs_data, tbs_len, sig_buf, za); sig_len = 64; break;
         }
     }
 
