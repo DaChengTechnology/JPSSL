@@ -317,6 +317,12 @@ struct tls_trust_store {
     static tls_trust_store from_pem(const std::string& pem);
     /// 从 PEM 文件解析全部证书。
     static tls_trust_store from_pem_file(const char* path);
+    /// 加载系统信任库（系统 CA bundle）：依次探测常见路径
+    ///   SSL_CERT_FILE 环境变量、/etc/ssl/certs/ca-certificates.crt、
+    ///   /etc/pki/tls/certs/ca-bundle.crt、/etc/ssl/ca-bundle.pem、
+    ///   /etc/ssl/cert.pem（macOS）等；结果做进程内缓存。
+    /// 未找到系统 bundle 时返回空 trust store。
+    static tls_trust_store from_system();
     size_t count() const { return ca_roots.size(); }
     bool empty() const { return ca_roots.empty(); }
 };

@@ -1253,6 +1253,11 @@ tls13_process_server_flight(client, server_flight.data(), server_flight.size(),
 
 auto trust = tls_trust_store::from_pem_file("ca.crt"); // 可含多张 CA 根
 
+// 方式 C（默认安全）：不传 trust_store（或 nullptr）→ 只信任系统信任库
+// tls13_process_server_flight(client, server_flight.data(), server_flight.size(),
+//                              client_finished, nullptr, nullptr);
+// tls_connection::connect(host, port) 默认即此行为。
+
 tls13_process_server_flight(client, server_flight.data(), server_flight.size(),
 
                              client_finished, nullptr, &trust);
@@ -1789,7 +1794,7 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 
 | `tls_key_type_to_sig_alg(kt)` | KeyType → TLS 签名方案映射 |
 
-| `tls_trust_store` | 客户端信任库：持有 CA 根证书列表（from_pem / from_pem_file） |
+| `tls_trust_store` | 客户端信任库：持有 CA 根证书列表（from_pem / from_pem_file / from_system 系统信任库） |
 
 | `tls_parse_server_name(extensions, len)` | 从扩展中解析 SNI 域名 |
 
@@ -2473,13 +2478,21 @@ ECDSA/SHA-256 的国密证书透明实现（参考 GM/T《证书透明规范》�
 
 
 
-- `tls::tls_connection`：客户端 `connect(host, port, trust_store)`（trust_store
+- `tls::tls_connection`：客户端 `connect(host, port, trust_store)` 或服务端
 
-  可为 `tls_certificate_manager*` 或 `tls_trust_store&`——后者对服务端证书链
+  `server_handshake(cert_manager)` 完成 TLS 1.3 握手；`send` / `recv` 收发加密应用数据。
 
-  执行 x509 验证）或服务端 `server_handshake(cert_manager)` 完成 TLS 1.3 握手；
+  客户端默认**只信任系统信任库**中的 CA 根证书：不传 trust_store（或传 nullptr）时，
 
-  `send` / `recv` 收发加密应用数据。
+  自动通过 `tls_trust_store::from_system()` 加载系统 CA bundle
+
+  （`SSL_CERT_FILE` 环境变量 → `/etc/ssl/certs/ca-certificates.crt` 等常见路径），
+
+  对服务端证书链执行 x509 验证（含主机名匹配），验证失败或系统信任库不可用则握手失败。
+
+  也可显式传 `tls_certificate_manager*`（按 SNI 查找预期证书的旧行为）或
+
+  `tls_trust_store&`（自定义 CA 根）。
 
 - `tls::tls_listener`：`listen(port)` + `accept(conn, cert_manager)`，
 

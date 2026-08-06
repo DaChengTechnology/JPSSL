@@ -6,6 +6,8 @@
 #include "cipher_inplace.hpp"   // 内部：零拷贝 AEAD（仅记录层使用）
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
+#include <mutex>
 #include <algorithm>
 namespace jpssl::tls {
 
@@ -733,6 +735,38 @@ tls_trust_store tls_trust_store::from_pem(const std::string& pem) {
 
 tls_trust_store tls_trust_store::from_pem_file(const char* path) {
     return from_pem(read_file_string(path));
+}
+
+// 常见系统 CA bundle 路径（按优先级顺序探测）
+static const char* const kSystemCaPaths[] = {
+    "/etc/ssl/certs/ca-certificates.crt",   // Debian / Ubuntu / Arch / Alpine
+    "/etc/pki/tls/certs/ca-bundle.crt",     // RHEL / Fedora / CentOS
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  // RHEL 备选
+    "/etc/ssl/ca-bundle.pem",               // SUSE
+    "/etc/ssl/cert.pem",                    // macOS (brew) / OpenBSD
+    "/etc/ssl/certs/ca-bundle.crt",         // 部分发行版
+    nullptr,
+};
+
+tls_trust_store tls_trust_store::from_system() {
+    static tls_trust_store cached;
+    static bool loaded = false;
+    static std::mutex mtx;
+    std::lock_guard<std::mutex> lock(mtx);
+    if (loaded) return cached;
+
+    // 1) SSL_CERT_FILE 环境变量优先
+    if (const char* env = std::getenv("SSL_CERT_FILE"); env && env[0]) {
+        auto ts = from_pem_file(env);
+        if (!ts.empty()) { cached = std::move(ts); loaded = true; return cached; }
+    }
+    // 2) 常见系统路径
+    for (const char* const* p = kSystemCaPaths; *p; ++p) {
+        auto ts = from_pem_file(*p);
+        if (!ts.empty()) { cached = std::move(ts); loaded = true; return cached; }
+    }
+    loaded = true;  // 缓存"未找到"结果，避免每次连接都探测
+    return cached;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
