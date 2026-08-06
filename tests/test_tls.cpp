@@ -526,6 +526,464 @@ void test_tls13_0rtt() {
     TEST("0-RTT: EoED parsed", eoed_ok);
 }
 
+// ========================================================================
+//  signature_algorithms / signature_algorithms_cert 测试
+// ========================================================================
+
+// 解析 ClientHello 扩展区
+static size_t ch_ext_offset(const std::vector<uint8_t>& ch) {
+    size_t off = 4 + 2 + 32;
+    uint8_t sid_len = ch[off++];
+    off += sid_len;
+    uint16_t cs_len = (uint16_t)((ch[off] << 8) | ch[off + 1]);
+    off += 2 + cs_len;
+    uint8_t cm_len = ch[off++];
+    off += cm_len;
+    return off;
+}
+
+// 查找并解析 signature_algorithms 类扩展（0x000d / 0x0032）
+static bool ch_find_sig_alg_ext(const std::vector<uint8_t>& ch, uint16_t want,
+                                std::vector<uint16_t>& out) {
+    size_t off = ch_ext_offset(ch);
+    if (off + 2 > ch.size()) return false;
+    size_t total = (size_t)((ch[off] << 8) | ch[off + 1]);
+    size_t p = off + 2, end = p + total;
+    if (end > ch.size()) return false;
+    while (p + 4 <= end) {
+        uint16_t type = (uint16_t)((ch[p] << 8) | ch[p + 1]);
+        size_t elen = (size_t)((ch[p + 2] << 8) | ch[p + 3]);
+        if (p + 4 + elen > end) return false;
+        if (type == want) {
+            out.clear();
+            size_t list_len = (size_t)((ch[p + 4] << 8) | ch[p + 5]);
+            for (size_t i = 0; i + 2 <= list_len; i += 2)
+                out.push_back((uint16_t)((ch[p + 6 + i] << 8) | ch[p + 6 + i + 1]));
+            return true;
+        }
+        p += 4 + elen;
+    }
+    return false;
+}
+
+void test_signature_algorithm_extensions() {
+    // 默认列表包含全部支持的方案
+    auto def = tls_default_signature_algorithms();
+    TEST("Default list size", def.size() == 11);
+    TEST("Default includes ed25519", std::find(def.begin(), def.end(), 0x0807) != def.end());
+    TEST("Default includes rsa_pss_rsae_sha256", std::find(def.begin(), def.end(), 0x0804) != def.end());
+    TEST("Default includes rsa_pkcs1_sha384", std::find(def.begin(), def.end(), 0x0501) != def.end());
+    TEST("Default includes ecdsa_p384", std::find(def.begin(), def.end(), 0x0503) != def.end());
+    TEST("Default includes sm2_sm3", std::find(def.begin(), def.end(), 0x0708) != def.end());
+
+    // TLS 1.3 ClientHello 携带两个扩展
+    tls_session c13; c13.server_name = "localhost";
+    std::vector<uint8_t> ch13;
+    TEST("TLS 1.3 make CH", tls13_make_client_hello(c13, ch13));
+    std::vector<uint16_t> algs, cert_algs;
+    TEST("TLS 1.3 CH has signature_algorithms",
+         ch_find_sig_alg_ext(ch13, 0x000d, algs));
+    TEST("TLS 1.3 CH sig list == default", algs == def);
+    TEST("TLS 1.3 CH has signature_algorithms_cert",
+         ch_find_sig_alg_ext(ch13, 0x0032, cert_algs));
+    TEST("TLS 1.3 CH cert list == default", cert_algs == def);
+
+    // 自定义列表生效，且 cert 列表被过滤为 sig 列表子集
+    tls_session c13b; c13b.server_name = "localhost";
+    c13b.sig_algs = {(uint16_t)SignatureAlgorithm::ED25519};
+    c13b.sig_algs_cert = {
+        (uint16_t)SignatureAlgorithm::ED25519,
+        (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA256
+    };
+    std::vector<uint8_t> ch13b;
+    tls13_make_client_hello(c13b, ch13b);
+    std::vector<uint16_t> algs_b, cert_algs_b;
+    ch_find_sig_alg_ext(ch13b, 0x000d, algs_b);
+    ch_find_sig_alg_ext(ch13b, 0x0032, cert_algs_b);
+    TEST("Custom sig list respected", algs_b.size() == 1 && algs_b[0] == 0x0807);
+    TEST("Custom cert list filtered to subset", cert_algs_b.size() == 1 && cert_algs_b[0] == 0x0807);
+
+    // TLS 1.2 ClientHello 同样携带两个扩展
+    tls_session c12; c12.server_name = "localhost";
+    std::vector<uint8_t> ch12;
+    TEST("TLS 1.2 make CH", tls12_make_client_hello(c12, ch12));
+    std::vector<uint16_t> algs12, cert_algs12;
+    TEST("TLS 1.2 CH has signature_algorithms",
+         ch_find_sig_alg_ext(ch12, 0x000d, algs12));
+    TEST("TLS 1.2 CH sig list == default", algs12 == def);
+    TEST("TLS 1.2 CH has signature_algorithms_cert",
+         ch_find_sig_alg_ext(ch12, 0x0032, cert_algs12));
+    TEST("TLS 1.2 CH cert list == default", cert_algs12 == def);
+
+    // PSK ClientHello 也携带两个扩展
+    tls_session cpsk; cpsk.server_name = "localhost";
+    cpsk.psk_valid = true;
+    cpsk.psk_identity_len = 4;
+    std::memcpy(cpsk.psk_identity, "tkt!", 4);
+    cpsk.psk_value[0] = 0xAA;
+    std::vector<uint8_t> chpsk;
+    TEST("PSK make CH", tls13_make_psk_client_hello(cpsk, chpsk));
+    std::vector<uint16_t> algs_psk, cert_algs_psk;
+    TEST("PSK CH has signature_algorithms",
+         ch_find_sig_alg_ext(chpsk, 0x000d, algs_psk));
+    TEST("PSK CH has signature_algorithms_cert",
+         ch_find_sig_alg_ext(chpsk, 0x0032, cert_algs_psk));
+}
+
+void test_tls13_full_handshake_ecdsa_p384() {
+    tls_certificate_manager cert_mgr;
+    auto server_cert = std::make_unique<tls_certificate>();
+    server_cert->subject_name = "localhost";
+    server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP384R1_SHA384;
+    ecdsa_p384_keygen(server_cert->pub.ecdsa_p384, server_cert->priv.ecdsa_p384);
+    cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+    tls_session client; client.server_name = "localhost";
+    std::vector<uint8_t> client_hello;
+    TEST("TLS 1.3 (P-384) make CH", tls13_make_client_hello(client, client_hello));
+
+    tls_session server;
+    std::vector<uint8_t> server_flight;
+    bool sh_ok = tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                          server_flight, cert_mgr);
+    TEST("TLS 1.3 (P-384) server flight", sh_ok);
+    TEST("TLS 1.3 (P-384) negotiated ecdsa_secp384r1_sha384",
+         server.selected_sig_alg == (uint16_t)SignatureAlgorithm::ECDSA_SECP384R1_SHA384);
+
+    std::vector<uint8_t> client_finished;
+    bool cf_ok = tls13_process_server_flight(client, server_flight.data(), server_flight.size(),
+                                             client_finished, &cert_mgr);
+    TEST("TLS 1.3 (P-384) client process", cf_ok);
+    bool fin = tls13_process_client_finished(server, client_finished.data(), client_finished.size());
+    TEST("TLS 1.3 (P-384) finished", fin);
+
+    const uint8_t data[] = "P-384 ECDSA TLS 1.3";
+    auto enc = tls_encrypt(client, ContentType::APPLICATION_DATA, data, sizeof(data) - 1);
+    ContentType ct; std::vector<uint8_t> dec;
+    TEST("TLS 1.3 (P-384) record round-trip",
+         tls_decrypt(server, enc.data(), enc.size(), ct, dec) && dec.size() == sizeof(data) - 1);
+}
+
+void test_tls13_full_handshake_rsa_pss() {
+    tls_certificate_manager cert_mgr;
+    auto server_cert = std::make_unique<tls_certificate>();
+    server_cert->subject_name = "localhost";
+    server_cert->sig_alg = SignatureAlgorithm::RSA_PSS_RSAE_SHA256;
+    rsa_keygen(server_cert->pub.rsa, server_cert->priv.rsa);
+    cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+    tls_session client; client.server_name = "localhost";
+    std::vector<uint8_t> client_hello;
+    TEST("TLS 1.3 (RSA-PSS) make CH", tls13_make_client_hello(client, client_hello));
+
+    tls_session server;
+    std::vector<uint8_t> server_flight;
+    bool sh_ok = tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                          server_flight, cert_mgr);
+    TEST("TLS 1.3 (RSA-PSS) server flight", sh_ok);
+    TEST("TLS 1.3 (RSA-PSS) negotiated rsa_pss_rsae_sha256",
+         server.selected_sig_alg == (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256);
+
+    std::vector<uint8_t> client_finished;
+    TEST("TLS 1.3 (RSA-PSS) client process",
+         tls13_process_server_flight(client, server_flight.data(), server_flight.size(),
+                                     client_finished, &cert_mgr));
+    TEST("TLS 1.3 (RSA-PSS) finished",
+         tls13_process_client_finished(server, client_finished.data(), client_finished.size()));
+
+    const uint8_t data[] = "RSA-PSS TLS 1.3";
+    auto enc = tls_encrypt(client, ContentType::APPLICATION_DATA, data, sizeof(data) - 1);
+    ContentType ct; std::vector<uint8_t> dec;
+    TEST("TLS 1.3 (RSA-PSS) record round-trip",
+         tls_decrypt(server, enc.data(), enc.size(), ct, dec) && dec.size() == sizeof(data) - 1);
+}
+
+// RSA-PKCS1 证书在 TLS 1.3 中必须改用 PSS 做 CertificateVerify（RFC 8446）
+void test_tls13_rsa_pkcs1_cert_uses_pss() {
+    tls_certificate_manager cert_mgr;
+    auto server_cert = std::make_unique<tls_certificate>();
+    server_cert->subject_name = "localhost";
+    server_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
+    rsa_keygen(server_cert->pub.rsa, server_cert->priv.rsa);
+    cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+    tls_session client; client.server_name = "localhost";
+    std::vector<uint8_t> client_hello;
+    tls13_make_client_hello(client, client_hello);
+
+    tls_session server;
+    std::vector<uint8_t> server_flight;
+    bool sh_ok = tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                          server_flight, cert_mgr);
+    TEST("TLS 1.3 (RSA pkcs1 cert) server flight", sh_ok);
+    TEST("TLS 1.3 (RSA pkcs1 cert) negotiated rsa_pss_rsae_sha256",
+         server.selected_sig_alg == (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256);
+    std::vector<uint8_t> client_finished;
+    TEST("TLS 1.3 (RSA pkcs1 cert) client process",
+         tls13_process_server_flight(client, server_flight.data(), server_flight.size(),
+                                     client_finished, &cert_mgr));
+    TEST("TLS 1.3 (RSA pkcs1 cert) finished",
+         tls13_process_client_finished(server, client_finished.data(), client_finished.size()));
+}
+
+void test_tls13_rejects_unadvertised_scheme() {
+    // 服务端 ECDSA P-256 证书，客户端只广告 ed25519 -> 服务端必须中止
+    {
+        tls_certificate_manager cert_mgr;
+        auto server_cert = std::make_unique<tls_certificate>();
+        server_cert->subject_name = "localhost";
+        server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
+        ecdsa_p256_keygen(server_cert->pub.ecdsa_p256, server_cert->priv.ecdsa_p256);
+        cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+        tls_session client; client.server_name = "localhost";
+        client.sig_algs = {(uint16_t)SignatureAlgorithm::ED25519};
+        client.sig_algs_cert = {(uint16_t)SignatureAlgorithm::ED25519};
+        std::vector<uint8_t> client_hello;
+        tls13_make_client_hello(client, client_hello);
+
+        tls_session server;
+        std::vector<uint8_t> server_flight;
+        TEST("Server aborts when no common scheme",
+             !tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                       server_flight, cert_mgr));
+    }
+    // 反向：服务端 Ed25519 证书，客户端只广告 ECDSA -> 中止
+    {
+        tls_certificate_manager cert_mgr;
+        auto server_cert = std::make_unique<tls_certificate>();
+        server_cert->subject_name = "localhost";
+        server_cert->sig_alg = SignatureAlgorithm::ED25519;
+        ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
+        cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+        tls_session client; client.server_name = "localhost";
+        client.sig_algs = {(uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256};
+        client.sig_algs_cert = {(uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256};
+        std::vector<uint8_t> client_hello;
+        tls13_make_client_hello(client, client_hello);
+
+        tls_session server;
+        std::vector<uint8_t> server_flight;
+        TEST("Server aborts when cert scheme unadvertised",
+             !tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                       server_flight, cert_mgr));
+    }
+}
+
+void test_signature_algorithms_cert_enforcement() {
+    // 证书链签名方案在客户端 sig_algs_cert 内 -> 握手成功
+    {
+        tls_certificate_manager cert_mgr;
+        auto server_cert = std::make_unique<tls_certificate>();
+        server_cert->subject_name = "localhost";
+        server_cert->sig_alg = SignatureAlgorithm::ED25519;
+        ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
+        cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+        tls_session client; client.server_name = "localhost";
+        client.sig_algs = {(uint16_t)SignatureAlgorithm::ED25519};
+        client.sig_algs_cert = {(uint16_t)SignatureAlgorithm::ED25519};
+        std::vector<uint8_t> client_hello;
+        tls13_make_client_hello(client, client_hello);
+
+        tls_session server;
+        std::vector<uint8_t> server_flight;
+        TEST("Handshake ok when cert scheme allowed",
+             tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                      server_flight, cert_mgr));
+    }
+    // 证书链签名方案不在客户端 sig_algs_cert 内 -> 服务端中止
+    {
+        tls_certificate_manager cert_mgr;
+        auto server_cert = std::make_unique<tls_certificate>();
+        server_cert->subject_name = "localhost";
+        server_cert->sig_alg = SignatureAlgorithm::ED25519;
+        ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
+        cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+        tls_session client; client.server_name = "localhost";
+        // 证书列表非空且为 sig_algs 子集，但不包含服务端 Ed25519 证书的链签名方案
+        client.sig_algs = {
+            (uint16_t)SignatureAlgorithm::ED25519,
+            (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA256
+        };
+        client.sig_algs_cert = {(uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA256};
+        std::vector<uint8_t> client_hello;
+        tls13_make_client_hello(client, client_hello);
+
+        tls_session server;
+        std::vector<uint8_t> server_flight;
+        TEST("Server aborts when cert chain scheme disallowed",
+             !tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                       server_flight, cert_mgr));
+    }
+    // 手工构造非子集的 signature_algorithms_cert -> 服务端中止
+    {
+        tls_certificate_manager cert_mgr;
+        auto server_cert = std::make_unique<tls_certificate>();
+        server_cert->subject_name = "localhost";
+        server_cert->sig_alg = SignatureAlgorithm::ED25519;
+        ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
+        cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+        tls_session client; client.server_name = "localhost";
+        client.sig_algs = {(uint16_t)SignatureAlgorithm::ED25519};
+        client.sig_algs_cert = {(uint16_t)SignatureAlgorithm::ED25519};
+        std::vector<uint8_t> client_hello;
+        tls13_make_client_hello(client, client_hello);
+        // 追加一个含非子集方案的 signature_algorithms_cert 扩展
+        std::vector<uint8_t> extra = {
+            0x00, 0x32,             // type
+            0x00, 0x06,             // ext data len
+            0x00, 0x04,             // list len: 2 schemes
+            0x08, 0x07,             // ed25519
+            0x04, 0x01              // rsa_pkcs1_sha256 (不在 sig_algs 内)
+        };
+        size_t eo = ch_ext_offset(client_hello);
+        uint16_t total = (uint16_t)((client_hello[eo] << 8) | client_hello[eo + 1]);
+        client_hello[eo] = (uint8_t)((total + extra.size()) >> 8);
+        client_hello[eo + 1] = (uint8_t)(total + extra.size());
+        client_hello.insert(client_hello.end(), extra.begin(), extra.end());
+        uint32_t hs_len = (uint32_t)client_hello.size() - 4;
+        client_hello[1] = (uint8_t)(hs_len >> 16);
+        client_hello[2] = (uint8_t)(hs_len >> 8);
+        client_hello[3] = (uint8_t)hs_len;
+
+        tls_session server;
+        std::vector<uint8_t> server_flight;
+        TEST("Server rejects non-subset signature_algorithms_cert",
+             !tls13_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                       server_flight, cert_mgr));
+    }
+}
+
+// 线级校验：CertificateVerify 签名的内容是 RFC 8446 上下文串 + 64 个 0x00 + Transcript-Hash
+void test_tls13_cert_verify_rfc8446_content() {
+    tls_certificate_manager cert_mgr;
+    auto server_cert = std::make_unique<tls_certificate>();
+    server_cert->subject_name = "localhost";
+    server_cert->sig_alg = SignatureAlgorithm::ED25519;
+    ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
+    cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+    tls_session client; client.server_name = "localhost";
+    std::vector<uint8_t> client_hello;
+    tls13_make_client_hello(client, client_hello);
+
+    tls_session server;
+    std::vector<uint8_t> server_flight;
+    TEST("server flight ok", tls13_make_server_flight(server, client_hello.data(),
+                                                      client_hello.size(), server_flight, cert_mgr));
+
+    // 用服务端握手密钥解密握手记录（此时 server_write_key 仍是握手流量密钥）
+    tls_session dec = server;
+    dec.is_server = false;
+    dec.server_seq = 0;
+    ContentType ct;
+    std::vector<uint8_t> hs;
+    size_t sh_len = (size_t)((server_flight[1] << 16) | (server_flight[2] << 8) | server_flight[3]);
+    bool dec_ok = tls_decrypt(dec, server_flight.data() + 4 + sh_len,
+                              server_flight.size() - 4 - sh_len, ct, hs);
+    TEST("decrypt handshake flight", dec_ok);
+
+    // 解析 Certificate / CertificateVerify 消息
+    const uint8_t* cert_msg = nullptr; size_t cert_len = 0;
+    const uint8_t* cv_msg = nullptr; size_t cv_len = 0;
+    size_t ho = 0;
+    while (ho + 4 <= hs.size()) {
+        size_t hlen = (size_t)((hs[ho + 1] << 16) | (hs[ho + 2] << 8) | hs[ho + 3]);
+        if (ho + 4 + hlen > hs.size()) break;
+        if (hs[ho] == 11) { cert_msg = hs.data() + ho; cert_len = 4 + hlen; }
+        if (hs[ho] == 15) { cv_msg = hs.data() + ho; cv_len = 4 + hlen; }
+        ho += 4 + hlen;
+    }
+    TEST("Certificate found", cert_msg != nullptr);
+    TEST("CertificateVerify found", cv_msg != nullptr);
+
+    if (cert_msg && cv_msg) {
+        uint16_t scheme = (uint16_t)((cv_msg[4] << 8) | cv_msg[5]);
+        size_t sig_len = (size_t)((cv_msg[6] << 8) | cv_msg[7]);
+        TEST("CV scheme is ed25519", scheme == (uint16_t)SignatureAlgorithm::ED25519);
+        TEST("CV sig length 64", sig_len == 64);
+
+        // 重建 pre-CertificateVerify transcript：CH || SH || EE || Certificate
+        tls_session s2;
+        s2.cipher_suite = server.cipher_suite;
+        tls_transcript_update(s2, client_hello.data(), client_hello.size());
+        tls_transcript_update(s2, server_flight.data(), 4 + sh_len);
+        tls_transcript_update(s2, hs.data(), (size_t)(hs[1] << 16 | hs[2] << 8 | hs[3]) + 4); // EE
+        tls_transcript_update(s2, cert_msg, cert_len);
+        tls_transcript_finalize(s2);
+
+        static const char* ctx = "TLS 1.3, server CertificateVerify";
+        std::vector<uint8_t> content;
+        content.insert(content.end(), ctx, ctx + strlen(ctx));
+        content.insert(content.end(), 64, 0);
+        content.insert(content.end(), s2.transcript_hash, s2.transcript_hash + tls_hash_len(s2.cipher_suite));
+
+        const tls_certificate* cert = cert_mgr.get_default_certificate();
+        TEST("CV verifies over RFC 8446 context content",
+             cert->verify_scheme(scheme, content.data(), content.size(), cv_msg + 8, sig_len));
+        // 若签名的只是裸 transcript 哈希，则无法通过上下文内容校验
+        TEST("CV rejects raw-hash content",
+             !cert->verify_scheme(scheme, s2.transcript_hash, tls_hash_len(s2.cipher_suite),
+                                  cv_msg + 8, sig_len));
+    }
+}
+
+// TLS 1.2 ECDHE：服务端按客户端 signature_algorithms 协商 ServerKeyExchange 签名方案
+void test_tls12_skx_scheme_selection() {
+    tls_certificate_manager cert_mgr;
+    auto server_cert = std::make_unique<tls_certificate>();
+    server_cert->subject_name = "localhost";
+    server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
+    ecdsa_p256_keygen(server_cert->pub.ecdsa_p256, server_cert->priv.ecdsa_p256);
+    cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+    tls_session client; client.server_name = "localhost";
+    std::vector<uint8_t> client_hello;
+    TEST("TLS 1.2 make CH", tls12_make_client_hello(client, client_hello));
+
+    tls_session server;
+    uint8_t pms[48] = {};
+    std::vector<uint8_t> server_response;
+    bool ok = tls12_make_server_flight(server, client_hello.data(), client_hello.size(),
+                                       server_response, nullptr, 0, pms, cert_mgr);
+    TEST("TLS 1.2 server flight", ok);
+    TEST("TLS 1.2 negotiated ecdsa_secp256r1_sha256",
+         server.selected_sig_alg == (uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256);
+}
+
+void test_sign_scheme_cert_verify_context() {
+    // 直接验证 sign_scheme / verify_scheme 对 RFC 8446 上下文内容的对称性
+    auto cert = std::make_unique<tls_certificate>();
+    cert->subject_name = "ctx.test";
+    cert->sig_alg = SignatureAlgorithm::ED25519;
+    ed25519_keygen(cert->pub.ed25519, cert->priv.ed25519);
+
+    uint8_t th[32] = {};
+    for (int i = 0; i < 32; ++i) th[i] = (uint8_t)(i * 7 + 1);
+    static const char* ctx = "TLS 1.3, server CertificateVerify";
+    std::vector<uint8_t> content;
+    content.insert(content.end(), ctx, ctx + strlen(ctx));
+    content.insert(content.end(), 64, 0);
+    content.insert(content.end(), th, th + 32);
+
+    uint8_t sig[64]; size_t sig_len = 0;
+    TEST("sign over context content",
+         cert->sign_scheme((uint16_t)SignatureAlgorithm::ED25519,
+                           content.data(), content.size(), sig, sig_len));
+    TEST("verify over context content",
+         cert->verify_scheme((uint16_t)SignatureAlgorithm::ED25519,
+                             content.data(), content.size(), sig, sig_len));
+    uint8_t raw_sig[64]; size_t raw_len = 0;
+    cert->sign_scheme((uint16_t)SignatureAlgorithm::ED25519, th, 32, raw_sig, raw_len);
+    TEST("raw-hash signature rejected against context content",
+         !cert->verify_scheme((uint16_t)SignatureAlgorithm::ED25519,
+                              content.data(), content.size(), raw_sig, raw_len));
+}
+
 
 // ========================================================================
 //  入口
@@ -545,6 +1003,15 @@ int main(int argc, char** argv) {
     RUN_TEST(test_sni_multi_domain);
     RUN_TEST(test_simplified_handshake_api);
     RUN_TEST(test_tls13_0rtt);
+    RUN_TEST(test_signature_algorithm_extensions);
+    RUN_TEST(test_tls13_full_handshake_ecdsa_p384);
+    RUN_TEST(test_tls13_full_handshake_rsa_pss);
+    RUN_TEST(test_tls13_rsa_pkcs1_cert_uses_pss);
+    RUN_TEST(test_tls13_rejects_unadvertised_scheme);
+    RUN_TEST(test_signature_algorithms_cert_enforcement);
+    RUN_TEST(test_tls13_cert_verify_rfc8446_content);
+    RUN_TEST(test_tls12_skx_scheme_selection);
+    RUN_TEST(test_sign_scheme_cert_verify_context);
 
     return test_summary();
 }

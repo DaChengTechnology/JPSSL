@@ -19,7 +19,7 @@
 #include "cpu_features.hpp"
 #include <cstring>
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
 #include <wmmintrin.h>   // AES-NI intrinsics
 #include <emmintrin.h>   // SSE2
 #include <smmintrin.h>   // SSE4.1 (_mm_extract_epi32 / _mm_insert_epi32)
@@ -30,7 +30,7 @@
 
 namespace jpssl {
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
 
 static inline uint32_t bswap32_u(uint32_t v) {
 #if defined(_MSC_VER)
@@ -135,7 +135,7 @@ static void aes_ccm_encrypt_impl(const aes_context& ctx,
     ccm_build_b0(ctr0, nonce, nonce_len, tag_len, false, q, 0);
     ctr0[0] = static_cast<uint8_t>(q - 1);   // 计数器块：仅保留 L 标志
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
     if (cpu_has_aesni()) {
         const __m128i* rk = (const __m128i*)ctx.enc_rk.data();
         int rounds = ctx.rounds;
@@ -291,7 +291,7 @@ static void aes_ccm_encrypt_impl(const aes_context& ctx,
     }
 }
 
-#endif // __x86_64__
+#endif // x86_64
 
 // ──────────────────────────────────────────────────────────────────────────
 //  公共 API（非零拷贝，vector 输出）
@@ -374,7 +374,7 @@ static bool aes_ccm_decrypt_impl(const aes_context& ctx,
     ccm_build_b0(ctr0, nonce, nonce_len, tag_len, false, q, 0);
     ctr0[0] = static_cast<uint8_t>(q - 1);
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
     if (cpu_has_aesni()) {
         const __m128i* rk = (const __m128i*)ctx.enc_rk.data();
         int rounds = ctx.rounds;

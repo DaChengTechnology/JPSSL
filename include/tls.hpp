@@ -36,8 +36,16 @@ enum class HandshakeType {
     CERTIFICATE_REQUEST=13, SERVER_HELLO_DONE=14, CERT_VERIFY=15,
     CLIENT_KEY_EXCHANGE=16, FINISHED=20
 };
-enum class ExtensionType { SERVER_NAME=0, SUPPORTED_VERSIONS=0x2b, KEY_SHARE=0x33, SUPPORTED_GROUPS=0x0a, SIGNATURE_ALGORITHMS=0x0d, PRE_SHARED_KEY=41, PSK_KEY_EXCHANGE_MODES=45, EARLY_DATA=42 };
-enum class SignatureAlgorithm { RSA_PKCS1_SHA256=0x0401, ECDSA_SECP256R1_SHA256=0x0403, ED25519=0x0807, ED448=0x0808, SM2_SM3=0x0708 };
+enum class ExtensionType { SERVER_NAME=0, SUPPORTED_VERSIONS=0x2b, KEY_SHARE=0x33, SUPPORTED_GROUPS=0x0a, SIGNATURE_ALGORITHMS=0x0d, SIGNATURE_ALGORITHMS_CERT=0x32, PRE_SHARED_KEY=41, PSK_KEY_EXCHANGE_MODES=45, EARLY_DATA=42 };
+// TLS signature schemes (RFC 8446 sec 4.2.3, RFC 8998 sec 4.3)
+// rsa_pkcs1_* may only be used to verify certificate-chain signatures in TLS 1.3.
+enum class SignatureAlgorithm : uint16_t {
+    RSA_PKCS1_SHA256=0x0401, RSA_PKCS1_SHA384=0x0501, RSA_PKCS1_SHA512=0x0601,
+    ECDSA_SECP256R1_SHA256=0x0403, ECDSA_SECP384R1_SHA384=0x0503,
+    RSA_PSS_RSAE_SHA256=0x0804, RSA_PSS_RSAE_SHA384=0x0805, RSA_PSS_RSAE_SHA512=0x0806,
+    ED25519=0x0807, ED448=0x0808,
+    SM2_SM3=0x0708
+};
 // TLS 1.3 NamedGroup (RFC 8446 §4.2.7, RFC 8998 §4.2.1)
 enum class NamedGroup : uint16_t { X25519=0x001d, X448=0x001e, curveSM2=0x0029 };
 
@@ -121,7 +129,49 @@ struct tls_session {
     uint8_t client_early_write_iv[12];
     uint64_t client_early_seq = 0;
     bool early_data_accepted = false;      // 服务端: 是否接受了 early_data
+
+    // 可配置的 signature_algorithms / signature_algorithms_cert 列表
+    // 为空时使用 tls_default_signature_algorithms() 全量默认值
+    std::vector<uint16_t> sig_algs;
+    std::vector<uint16_t> sig_algs_cert;
+    // 本次握手协商出的签名方案（CertificateVerify / ServerKeyExchange）
+    uint16_t selected_sig_alg = 0;
 };
+
+// 默认支持的签名方案全量列表（RFC 8446 + RFC 8998，客户端偏好序）
+// rsa_pkcs1_* 仅用于证书链签名验证；TLS 1.3 CertificateVerify 只允许 PSS/ECDSA/EdDSA/SM2
+inline std::vector<uint16_t> tls_default_signature_algorithms() {
+    return {
+        (uint16_t)SignatureAlgorithm::ED25519,
+        (uint16_t)SignatureAlgorithm::ED448,
+        (uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256,
+        (uint16_t)SignatureAlgorithm::ECDSA_SECP384R1_SHA384,
+        (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256,
+        (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384,
+        (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512,
+        (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA256,
+        (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA384,
+        (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA512,
+        (uint16_t)SignatureAlgorithm::SM2_SM3
+    };
+}
+
+// TLS 1.3 CertificateVerify 允许使用的方案（不含 rsa_pkcs1_*）
+inline bool tls_scheme_allowed_for_cert_verify(uint16_t scheme) {
+    switch (scheme) {
+        case (uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256:
+        case (uint16_t)SignatureAlgorithm::ECDSA_SECP384R1_SHA384:
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
+        case (uint16_t)SignatureAlgorithm::ED25519:
+        case (uint16_t)SignatureAlgorithm::ED448:
+        case (uint16_t)SignatureAlgorithm::SM2_SM3:
+            return true;
+        default:
+            return false;
+    }
+}
 
 // 根据 cipher suite 返回 hash 长度
 inline size_t tls_hash_len(CipherSuite cs) {
@@ -173,6 +223,7 @@ struct tls_certificate {
         uint8_t ed25519[32];
         uint8_t ed448[57];
         uint8_t ecdsa_p256[64];
+        uint8_t ecdsa_p384[96];
         uint8_t sm2[64];           // SM2 未压缩公钥 (x||y)
     } pub;
     // 私钥
@@ -182,12 +233,20 @@ struct tls_certificate {
         uint8_t ed25519[64];
         uint8_t ed448[57];
         uint8_t ecdsa_p256[32];
+        uint8_t ecdsa_p384[48];
         uint8_t sm2[32];           // SM2 私钥
     } priv;
     SignatureAlgorithm sig_alg;
 
+    // 按证书自身 sig_alg 签名/验签
     bool sign(const uint8_t* data, size_t data_len, uint8_t* sig, size_t& sig_len) const;
     bool verify(const uint8_t* data, size_t data_len, const uint8_t* sig, size_t sig_len) const;
+
+    // 按指定 TLS 签名方案签名/验签（客户端验证对端 CertificateVerify 时使用）
+    bool sign_scheme(uint16_t scheme, const uint8_t* data, size_t data_len,
+                     uint8_t* sig, size_t& sig_len) const;
+    bool verify_scheme(uint16_t scheme, const uint8_t* data, size_t data_len,
+                       const uint8_t* sig, size_t sig_len) const;
 };
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.10] — 2026-08-06
+
+### Added
+- **完整的 TLS `signature_algorithms` / `signature_algorithms_cert` 支持**（RFC 8446 §4.2.3、RFC 8998）：
+  - 完整签名方案枚举：rsa_pkcs1_sha256/384/512、rsa_pss_rsae_sha256/384/512、ecdsa_secp256r1_sha256、ecdsa_secp384r1_sha384、ed25519、ed448、sm2_sm3。
+  - `tls_session` 新增可配置的 `sig_algs` / `sig_algs_cert` 列表（空 = 全量默认），ClientHello（TLS 1.2/1.3/PSK）统一携带两个扩展，且 `signature_algorithms_cert` 自动裁剪为 `signature_algorithms` 的子集。
+  - TLS 1.3 服务端按客户端偏好序协商 CertificateVerify 方案，拒绝未广告/与证书密钥类型不匹配/`rsa_pkcs1_*` 方案，并通过 `signature_algorithms_cert` 校验证书链签名算法；客户端同样强制校验对端方案与证书链签名算法。
+  - TLS 1.2 ServerKeyExchange 签名方案按客户端列表协商（修复 `select_cipher_suite` 未映射 TLS 1.2 套件导致 ECDHE 分支从未启用的既有缺陷）。
+  - CertificateVerify 按 RFC 8446 §4.4.3 使用上下文串（"TLS 1.3, server/client CertificateVerify" + 64×0x00 + Transcript-Hash）签名/验签。
+  - 证书签名/验签重构为方案感知（`sign_scheme` / `verify_scheme`）：新增 RSA-PSS（SHA-256/384/512，saltLen=hLen）、RSA-PKCS1 SHA-384/512、ECDSA P-384 支持。
+- **X.509 ECDSA P-384**：`KeyType::ECDSA_P384`（OID secp384r1 / ecdsa-with-SHA384），编码/解析/自签名/链验证与 `tls_make_x509_self_signed` 集成。
+- **测试**：`test_tls` 新增 56 条断言（扩展内容、P-384/RSA-PSS/Ed448 握手、未广告方案拒绝、`signature_algorithms_cert` 强制、线级 RFC 8446 上下文校验、TLS 1.2 SKX 协商），累计 136 条全部通过；socket/stability/large_msg/x509/ecdsa/sm 测试全部通过。
+
+### Fixed
+- `src/aes_ccm.cpp` 的 `#ifdef __x86_64__` 守卫在 MSVC 下未生效（MSVC 定义 `_M_X64`），导致 Windows 构建失败；改为 `__x86_64__ || _M_X64`（与 `sha256_sha_ni.cpp` 既有修复一致）。
+
 ## [0.9.9] — 2026-08-05
 
 ### Added

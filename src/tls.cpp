@@ -29,6 +29,16 @@ static CipherSuite select_cipher_suite(uint16_t id){
         case 0x1304: return CipherSuite::TLS_AES_128_CCM_SHA256;
         case 0x00C6: return CipherSuite::TLS_SM4_GCM_SM3;
         case 0x00C7: return CipherSuite::TLS_SM4_CCM_SM3;
+        case 0x009C: return CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256;
+        case 0x009D: return CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384;
+        case 0x003D: return CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA256;
+        case 0x003E: return CipherSuite::TLS_RSA_WITH_AES_256_CBC_SHA256;
+        case 0xC02B: return CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256;
+        case 0xC02C: return CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384;
+        case 0xC02F: return CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256;
+        case 0xC030: return CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384;
+        case 0xCCA8: return CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256;
+        case 0xCCA9: return CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256;
         default: return CipherSuite::TLS_AES_128_GCM_SHA256;
     }
 }
@@ -74,6 +84,146 @@ static size_t client_hello_ext_offset(const uint8_t* ch, size_t ch_len){
     return off;
 }
 
+// 追加 signature_algorithms (0x000d) / signature_algorithms_cert (0x0032) 扩展
+static void append_sig_alg_extension(std::vector<uint8_t>& ext, uint16_t type,
+                                     const std::vector<uint16_t>& algs) {
+    if (algs.empty()) return;
+    size_t list_len = algs.size() * 2;
+    ext.push_back((uint8_t)(type >> 8));
+    ext.push_back((uint8_t)type);
+    ext.push_back((uint8_t)((2 + list_len) >> 8));
+    ext.push_back((uint8_t)(2 + list_len));
+    ext.push_back((uint8_t)(list_len >> 8));
+    ext.push_back((uint8_t)list_len);
+    for (uint16_t a : algs) {
+        ext.push_back((uint8_t)(a >> 8));
+        ext.push_back((uint8_t)a);
+    }
+}
+
+// 解析 SignatureSchemeList（2 字节长度 + 2*count 字节方案编码）
+static bool parse_sig_alg_list(const uint8_t* p, size_t len, std::vector<uint16_t>& out) {
+    if (len < 2) return false;
+    size_t list_len = ((size_t)p[0] << 8) | p[1];
+    if (2 + list_len != len || (list_len & 1)) return false;
+    out.clear();
+    for (size_t i = 0; i < list_len; i += 2)
+        out.push_back((uint16_t)((p[2 + i] << 8) | p[2 + i + 1]));
+    return true;
+}
+
+// 在 ClientHello 扩展区查找指定扩展
+static bool client_hello_find_extension(const uint8_t* ch, size_t ch_len, uint16_t want,
+                                        const uint8_t*& data, size_t& dlen) {
+    size_t ext_offset = client_hello_ext_offset(ch, ch_len);
+    if (ext_offset + 2 > ch_len) return false;
+    size_t total = ((size_t)ch[ext_offset] << 8) | ch[ext_offset + 1];
+    size_t off = ext_offset + 2;
+    size_t end = off + total;
+    if (end > ch_len) return false;
+    while (off + 4 <= end) {
+        uint16_t type = (uint16_t)((ch[off] << 8) | ch[off + 1]);
+        size_t elen = ((size_t)ch[off + 2] << 8) | ch[off + 3];
+        if (off + 4 + elen > end) return false;
+        if (type == want) { data = ch + off + 4; dlen = elen; return true; }
+        off += 4 + elen;
+    }
+    return false;
+}
+
+// 客户端应广告的 signature_algorithms 列表（配置为空时用全量默认）
+static std::vector<uint16_t> effective_sig_algs(const tls_session& s) {
+    if (s.sig_algs.empty()) return tls_default_signature_algorithms();
+    return s.sig_algs;
+}
+
+enum class SigKeyFamily { NONE, RSA, ECDSA_P256, ECDSA_P384, ED25519, ED448, SM2 };
+
+static SigKeyFamily sig_key_family(SignatureAlgorithm sa) {
+    switch (sa) {
+        case SignatureAlgorithm::RSA_PKCS1_SHA256:
+        case SignatureAlgorithm::RSA_PKCS1_SHA384:
+        case SignatureAlgorithm::RSA_PKCS1_SHA512:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
+            return SigKeyFamily::RSA;
+        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256: return SigKeyFamily::ECDSA_P256;
+        case SignatureAlgorithm::ECDSA_SECP384R1_SHA384: return SigKeyFamily::ECDSA_P384;
+        case SignatureAlgorithm::ED25519: return SigKeyFamily::ED25519;
+        case SignatureAlgorithm::ED448: return SigKeyFamily::ED448;
+        case SignatureAlgorithm::SM2_SM3: return SigKeyFamily::SM2;
+        default: return SigKeyFamily::NONE;
+    }
+}
+
+static bool scheme_in_list(const std::vector<uint16_t>& list, uint16_t scheme) {
+    for (uint16_t s : list) if (s == scheme) return true;
+    return false;
+}
+
+// 服务端协商签名方案：按对端偏好序选择双方都支持且与证书密钥类型匹配的方案
+static uint16_t select_signature_scheme(const std::vector<uint16_t>& peer_list,
+                                        const tls_certificate& cert,
+                                        const std::vector<uint16_t>& local_list,
+                                        bool tls13) {
+    const std::vector<uint16_t>& supported =
+        local_list.empty() ? tls_default_signature_algorithms() : local_list;
+    SigKeyFamily fam = sig_key_family(cert.sig_alg);
+    if (fam == SigKeyFamily::NONE) return 0;
+    for (uint16_t s : peer_list) {
+        if (!scheme_in_list(supported, s)) continue;
+        if (sig_key_family((SignatureAlgorithm)s) != fam) continue;
+        if (tls13 && !tls_scheme_allowed_for_cert_verify(s)) continue;
+        return s;
+    }
+    return 0;
+}
+
+// 证书链签名方案（用于 signature_algorithms_cert 校验）
+// 优先解析证书 DER 中的签名算法；自签名证书回退到 sig_alg 映射
+static uint16_t x509_key_type_chain_scheme(x509::KeyType kt) {
+    switch (kt) {
+        case x509::KeyType::RSA_2048:
+        case x509::KeyType::RSA_4096:
+            return (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA256;
+        case x509::KeyType::ECDSA_P256:
+            return (uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
+        case x509::KeyType::ECDSA_P384:
+            return (uint16_t)SignatureAlgorithm::ECDSA_SECP384R1_SHA384;
+        case x509::KeyType::Ed25519:
+            return (uint16_t)SignatureAlgorithm::ED25519;
+        case x509::KeyType::Ed448:
+            return (uint16_t)SignatureAlgorithm::ED448;
+        case x509::KeyType::SM2:
+            return (uint16_t)SignatureAlgorithm::SM2_SM3;
+        default:
+            return 0;
+    }
+}
+
+static uint16_t cert_chain_signature_scheme(const tls_certificate& cert) {
+    if (!cert.cert_data.empty()) {
+        auto parsed = x509::x509_cert::from_der(cert.cert_data);
+        if (parsed) return x509_key_type_chain_scheme(parsed->sign_key_type);
+    }
+    switch (cert.sig_alg) {
+        case SignatureAlgorithm::RSA_PKCS1_SHA256:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
+            return (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA256;
+        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256:
+            return (uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
+        case SignatureAlgorithm::ECDSA_SECP384R1_SHA384:
+            return (uint16_t)SignatureAlgorithm::ECDSA_SECP384R1_SHA384;
+        case SignatureAlgorithm::ED25519: return (uint16_t)SignatureAlgorithm::ED25519;
+        case SignatureAlgorithm::ED448: return (uint16_t)SignatureAlgorithm::ED448;
+        case SignatureAlgorithm::SM2_SM3: return (uint16_t)SignatureAlgorithm::SM2_SM3;
+        default: return 0;
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  transcript 辅助
 // ═══════════════════════════════════════════════════════════════════════
@@ -106,81 +256,268 @@ void tls_transcript_finalize(tls_session& s){
 // ═══════════════════════════════════════════════════════════════════════
 //  证书签名/验证
 // ═══════════════════════════════════════════════════════════════════════
-bool tls_certificate::sign(const uint8_t* data, size_t data_len, uint8_t* sig, size_t& sig_len) const {
-    switch(sig_alg){
-        case SignatureAlgorithm::ED25519:
-            sig_len=64;ed25519_sign(priv.ed25519,data,data_len,sig);return true;
-        case SignatureAlgorithm::ED448:
-            sig_len=114;ed448_sign(priv.ed448,data,data_len,sig);return true;
-        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256:
-            sig_len=64;ecdsa_p256_sign(priv.ecdsa_p256,data,data_len,sig);return true;
-        case SignatureAlgorithm::SM2_SM3:
-            sig_len=64;sm2_sign(priv.sm2,data,data_len,sig,nullptr);return true;
-        case SignatureAlgorithm::RSA_PKCS1_SHA256: {
-            sig_len=256;
-            uint8_t hash[32];
-            sha256_ctx ctx; sha256_init(&ctx);
-            sha256_update(&ctx, data, data_len);
-            sha256_final(&ctx, hash);
+// ═══════════════════════════════════════════════════════════════════════
+//  签名方案辅助（RFC 8446 §4.2.3 / RFC 8998）
+// ═══════════════════════════════════════════════════════════════════════
+static const uint8_t RSA_SHA384_DIGEST_INFO[] = {
+    0x30,0x41,0x30,0x0d,0x06,0x09,0x60,0x86,
+    0x48,0x01,0x65,0x03,0x04,0x02,0x02,0x05,
+    0x00,0x04,0x30
+};
+static const uint8_t RSA_SHA512_DIGEST_INFO[] = {
+    0x30,0x51,0x30,0x0d,0x06,0x09,0x60,0x86,
+    0x48,0x01,0x65,0x03,0x04,0x02,0x03,0x05,
+    0x00,0x04,0x40
+};
 
-            size_t di_len = sizeof(RSA_SHA256_DIGEST_INFO);
-            size_t pad_len = 256 - 3 - di_len - 32;
-            uint8_t padded[256];
-            padded[0] = 0x00; padded[1] = 0x01;
-            memset(padded + 2, 0xFF, pad_len);
-            padded[2 + pad_len] = 0x00;
-            memcpy(padded + 2 + pad_len + 1, RSA_SHA256_DIGEST_INFO, di_len);
-            memcpy(padded + 2 + pad_len + 1 + di_len, hash, 32);
-
-            rsa_bignum m = rsa_bignum::from_bytes(padded, 256);
-            rsa_bignum s;
-            bn_modpow(s, m, priv.rsa.d, priv.rsa.n);
-            s.to_bytes(sig);
-            return true;
-        }
-        default:return false;
+// 哈希类方案对应的摘要长度；0 表示未知/非哈希类方案
+static size_t scheme_hash_len(uint16_t scheme) {
+    switch (scheme) {
+        case (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA256:
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
+        case (uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256:
+            return 32;
+        case (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA384:
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
+        case (uint16_t)SignatureAlgorithm::ECDSA_SECP384R1_SHA384:
+            return 48;
+        case (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA512:
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
+            return 64;
+        default: return 0;
     }
 }
-bool tls_certificate::verify(const uint8_t* data, size_t data_len, const uint8_t* sig, size_t sig_len) const {
-    switch(sig_alg){
-        case SignatureAlgorithm::ED25519:
-            if(sig_len!=64)return false;
-            return ed25519_verify(pub.ed25519,data,data_len,sig);
-        case SignatureAlgorithm::ED448:
-            if(sig_len!=114)return false;
-            return ed448_verify(pub.ed448,data,data_len,sig);
-        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256:
-            if(sig_len!=64)return false;
-            return ecdsa_p256_verify(pub.ecdsa_p256,data,data_len,sig);
-        case SignatureAlgorithm::SM2_SM3:
-            if(sig_len!=64)return false;
-            return sm2_verify(pub.sm2,data,data_len,sig,nullptr);
-        case SignatureAlgorithm::RSA_PKCS1_SHA256: {
-            if(sig_len != 256) return false;
-            uint8_t hash[32];
-            sha256_ctx ctx; sha256_init(&ctx);
-            sha256_update(&ctx, data, data_len);
-            sha256_final(&ctx, hash);
 
+static bool hash_scheme(uint16_t scheme, const uint8_t* data, size_t len, uint8_t* out) {
+    switch (scheme) {
+        case (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA256:
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
+        case (uint16_t)SignatureAlgorithm::ECDSA_SECP256R1_SHA256: {
+            sha256_ctx c; sha256_init(&c);
+            sha256_update(&c, data, len); sha256_final(&c, out); return true;
+        }
+        case (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA384:
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
+        case (uint16_t)SignatureAlgorithm::ECDSA_SECP384R1_SHA384: {
+            sha512_ctx c; sha384_init(&c);
+            sha512_update(&c, data, len); sha512_final(&c, out); return true;
+        }
+        case (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA512:
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: {
+            sha512_ctx c; sha512_init(&c);
+            sha512_update(&c, data, len); sha512_final(&c, out); return true;
+        }
+        default: return false;
+    }
+}
+
+static const uint8_t* digest_info_for_scheme(uint16_t scheme, size_t& di_len) {
+    switch (scheme) {
+        case (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA256:
+            di_len = sizeof(RSA_SHA256_DIGEST_INFO); return RSA_SHA256_DIGEST_INFO;
+        case (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA384:
+            di_len = sizeof(RSA_SHA384_DIGEST_INFO); return RSA_SHA384_DIGEST_INFO;
+        case (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA512:
+            di_len = sizeof(RSA_SHA512_DIGEST_INFO); return RSA_SHA512_DIGEST_INFO;
+        default: di_len = 0; return nullptr;
+    }
+}
+
+// RSASSA-PKCS1-v1_5 签名（RSA-2048）
+static bool rsa_pkcs1_sign(const rsa_private_key& key, uint16_t scheme,
+                           const uint8_t* data, size_t len, uint8_t* sig, size_t& sig_len) {
+    size_t hl = scheme_hash_len(scheme);
+    size_t di_len = 0;
+    const uint8_t* di = digest_info_for_scheme(scheme, di_len);
+    if (hl == 0 || !di) return false;
+    uint8_t hash[64];
+    if (!hash_scheme(scheme, data, len, hash)) return false;
+    size_t pad_len = 256 - 3 - di_len - hl;
+    if (pad_len == 0) return false;
+    uint8_t padded[256];
+    padded[0] = 0x00; padded[1] = 0x01;
+    memset(padded + 2, 0xFF, pad_len);
+    padded[2 + pad_len] = 0x00;
+    memcpy(padded + 2 + pad_len + 1, di, di_len);
+    memcpy(padded + 2 + pad_len + 1 + di_len, hash, hl);
+    rsa_bignum m = rsa_bignum::from_bytes(padded, 256);
+    rsa_bignum s;
+    bn_modpow(s, m, key.d, key.n);
+    s.to_bytes(sig);
+    sig_len = 256;
+    return true;
+}
+
+// RSASSA-PSS 签名（RSA-2048，saltLen = hLen，RFC 8446 要求）
+static bool rsa_pss_sign(const rsa_private_key& key, uint16_t scheme,
+                         const uint8_t* data, size_t len, uint8_t* sig, size_t& sig_len) {
+    size_t hl = scheme_hash_len(scheme);
+    if (hl == 0 || hl > 64) return false;
+    uint8_t mHash[64];
+    if (!hash_scheme(scheme, data, len, mHash)) return false;
+    const size_t emLen = 256;
+    if (emLen < hl + hl + 2) return false;
+    uint8_t salt[64];
+    if (!jpssl::os_rand_bytes(salt, hl)) return false;
+    std::vector<uint8_t> Mprime(8 + hl + hl);
+    memset(Mprime.data(), 0, 8);
+    memcpy(Mprime.data() + 8, mHash, hl);
+    memcpy(Mprime.data() + 8 + hl, salt, hl);
+    uint8_t H[64];
+    if (!hash_scheme(scheme, Mprime.data(), Mprime.size(), H)) return false;
+    size_t psLen = emLen - hl - hl - 2;
+    std::vector<uint8_t> DB(emLen - hl - 1, 0);
+    DB[psLen] = 0x01;
+    memcpy(DB.data() + psLen + 1, salt, hl);
+    std::vector<uint8_t> dbMask(emLen - hl - 1);
+    switch (scheme) {
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256: mgf1_sha256(H, hl, dbMask.data(), dbMask.size()); break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384: mgf1_sha384(H, hl, dbMask.data(), dbMask.size()); break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: mgf1_sha512(H, hl, dbMask.data(), dbMask.size()); break;
+        default: return false;
+    }
+    for (size_t i = 0; i < dbMask.size(); ++i) DB[i] ^= dbMask[i];
+    DB[0] &= 0x7F;   // emBits = 2047
+    uint8_t EM[256];
+    memcpy(EM, DB.data(), emLen - hl - 1);
+    memcpy(EM + emLen - hl - 1, H, hl);
+    EM[emLen - 1] = 0xBC;
+    rsa_bignum embn = rsa_bignum::from_bytes(EM, 256);
+    rsa_bignum sbn;
+    bn_modpow(sbn, embn, key.d, key.n);
+    sbn.to_bytes(sig);
+    sig_len = 256;
+    return true;
+}
+
+static bool rsa_pss_verify(const rsa_public_key& pub, uint16_t scheme,
+                           const uint8_t* data, size_t len, const uint8_t* sig, size_t sig_len) {
+    if (sig_len != 256) return false;
+    size_t hl = scheme_hash_len(scheme);
+    if (hl == 0 || hl > 64) return false;
+    const size_t emLen = 256;
+    rsa_bignum sbn = rsa_bignum::from_bytes(sig, 256);
+    rsa_bignum mbn;
+    bn_modpow(mbn, sbn, pub.e, pub.n);
+    uint8_t EM[256];
+    mbn.to_bytes(EM);
+    if (EM[0] & 0x80) return false;
+    if (EM[emLen - 1] != 0xBC) return false;
+    size_t dbLen = emLen - hl - 1;
+    uint8_t maskedDB[256]; memcpy(maskedDB, EM, dbLen);
+    uint8_t H[64]; memcpy(H, EM + dbLen, hl);
+    std::vector<uint8_t> dbMask(dbLen);
+    switch (scheme) {
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256: mgf1_sha256(H, hl, dbMask.data(), dbMask.size()); break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384: mgf1_sha384(H, hl, dbMask.data(), dbMask.size()); break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: mgf1_sha512(H, hl, dbMask.data(), dbMask.size()); break;
+        default: return false;
+    }
+    uint8_t DB[256];
+    for (size_t i = 0; i < dbLen; ++i) DB[i] = maskedDB[i] ^ dbMask[i];
+    DB[0] &= 0x7F;
+    size_t psLen = emLen - hl - hl - 2;
+    if (psLen >= dbLen) return false;
+    for (size_t i = 0; i < psLen; ++i) if (DB[i] != 0) return false;
+    if (DB[psLen] != 0x01) return false;
+    uint8_t salt[64]; memcpy(salt, DB + psLen + 1, hl);
+    uint8_t mHash[64];
+    if (!hash_scheme(scheme, data, len, mHash)) return false;
+    std::vector<uint8_t> Mprime(8 + hl + hl);
+    memset(Mprime.data(), 0, 8);
+    memcpy(Mprime.data() + 8, mHash, hl);
+    memcpy(Mprime.data() + 8 + hl, salt, hl);
+    uint8_t H2[64];
+    if (!hash_scheme(scheme, Mprime.data(), Mprime.size(), H2)) return false;
+    return memcmp(H, H2, hl) == 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  证书签名/验证
+// ═══════════════════════════════════════════════════════════════════════
+bool tls_certificate::sign_scheme(uint16_t scheme, const uint8_t* data, size_t data_len,
+                                   uint8_t* sig, size_t& sig_len) const {
+    switch ((SignatureAlgorithm)scheme) {
+        case SignatureAlgorithm::ED25519:
+            sig_len = 64; ed25519_sign(priv.ed25519, data, data_len, sig); return true;
+        case SignatureAlgorithm::ED448:
+            sig_len = 114; ed448_sign(priv.ed448, data, data_len, sig); return true;
+        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256:
+            sig_len = 64; ecdsa_p256_sign(priv.ecdsa_p256, data, data_len, sig); return true;
+        case SignatureAlgorithm::ECDSA_SECP384R1_SHA384:
+            sig_len = 96; ecdsa_p384_sign(priv.ecdsa_p384, data, data_len, sig); return true;
+        case SignatureAlgorithm::SM2_SM3:
+            sig_len = 64; sm2_sign(priv.sm2, data, data_len, sig, nullptr); return true;
+        case SignatureAlgorithm::RSA_PKCS1_SHA256:
+        case SignatureAlgorithm::RSA_PKCS1_SHA384:
+        case SignatureAlgorithm::RSA_PKCS1_SHA512:
+            return rsa_pkcs1_sign(priv.rsa, scheme, data, data_len, sig, sig_len);
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
+            return rsa_pss_sign(priv.rsa, scheme, data, data_len, sig, sig_len);
+        default:
+            return false;
+    }
+}
+
+bool tls_certificate::sign(const uint8_t* data, size_t data_len, uint8_t* sig, size_t& sig_len) const {
+    return sign_scheme((uint16_t)sig_alg, data, data_len, sig, sig_len);
+}
+
+bool tls_certificate::verify_scheme(uint16_t scheme, const uint8_t* data, size_t data_len,
+                                    const uint8_t* sig, size_t sig_len) const {
+    if (sig_key_family((SignatureAlgorithm)scheme) != sig_key_family(sig_alg)) return false;
+    switch ((SignatureAlgorithm)scheme) {
+        case SignatureAlgorithm::ED25519:
+            if (sig_len != 64) return false;
+            return ed25519_verify(pub.ed25519, data, data_len, sig);
+        case SignatureAlgorithm::ED448:
+            if (sig_len != 114) return false;
+            return ed448_verify(pub.ed448, data, data_len, sig);
+        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256:
+            if (sig_len != 64) return false;
+            return ecdsa_p256_verify(pub.ecdsa_p256, data, data_len, sig);
+        case SignatureAlgorithm::ECDSA_SECP384R1_SHA384:
+            if (sig_len != 96) return false;
+            return ecdsa_p384_verify(pub.ecdsa_p384, data, data_len, sig);
+        case SignatureAlgorithm::SM2_SM3:
+            if (sig_len != 64) return false;
+            return sm2_verify(pub.sm2, data, data_len, sig, nullptr);
+        case SignatureAlgorithm::RSA_PKCS1_SHA256:
+        case SignatureAlgorithm::RSA_PKCS1_SHA384:
+        case SignatureAlgorithm::RSA_PKCS1_SHA512: {
+            if (sig_len != 256) return false;
+            size_t hl = scheme_hash_len(scheme);
+            size_t di_len = 0;
+            const uint8_t* di = digest_info_for_scheme(scheme, di_len);
+            uint8_t hash[64];
+            if (hl == 0 || !di || !hash_scheme(scheme, data, data_len, hash)) return false;
             rsa_bignum s = rsa_bignum::from_bytes(sig, 256);
             rsa_bignum m;
             bn_modpow(m, s, pub.rsa.e, pub.rsa.n);
             uint8_t padded[256];
             m.to_bytes(padded);
-
-            if(padded[0] != 0x00 || padded[1] != 0x01) return false;
+            if (padded[0] != 0x00 || padded[1] != 0x01) return false;
             size_t pos = 2;
-            while(pos < 256 && padded[pos] == 0xFF) ++pos;
-            if(pos >= 256 || padded[pos] != 0x00) return false;
+            while (pos < 256 && padded[pos] == 0xFF) ++pos;
+            if (pos >= 256 || padded[pos] != 0x00) return false;
             ++pos;
-            size_t di_len = sizeof(RSA_SHA256_DIGEST_INFO);
-            if(pos + di_len + 32 > 256) return false;
-            if(memcmp(padded + pos, RSA_SHA256_DIGEST_INFO, di_len) != 0) return false;
-            if(memcmp(padded + pos + di_len, hash, 32) != 0) return false;
-            return true;
+            if (pos + di_len + hl > 256) return false;
+            if (memcmp(padded + pos, di, di_len) != 0) return false;
+            return memcmp(padded + pos + di_len, hash, hl) == 0;
         }
-        default:return false;
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
+            return rsa_pss_verify(pub.rsa, scheme, data, data_len, sig, sig_len);
+        default:
+            return false;
     }
+}
+
+bool tls_certificate::verify(const uint8_t* data, size_t data_len, const uint8_t* sig, size_t sig_len) const {
+    return verify_scheme((uint16_t)sig_alg, data, data_len, sig, sig_len);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -430,17 +767,31 @@ static std::vector<uint8_t> tls13_make_certificate(const tls_certificate& cert){
     return msg;
 }
 
-static std::vector<uint8_t> tls13_make_cert_verify(const tls_certificate& cert, tls_session& s){
+// RFC 8446 §4.4.3: CertificateVerify 签名内容 =
+// 上下文串 ("TLS 1.3, server/client CertificateVerify") + 64 个 0x00 + Transcript-Hash
+static std::vector<uint8_t> tls13_cert_verify_content(tls_session& s, bool for_server) {
+    static const char* server_ctx = "TLS 1.3, server CertificateVerify";
+    static const char* client_ctx = "TLS 1.3, client CertificateVerify";
     tls_transcript_finalize(s);
-    size_t hl=tls_hash_len(s.cipher_suite);
+    size_t hl = tls_hash_len(s.cipher_suite);
+    const char* ctx = for_server ? server_ctx : client_ctx;
+    std::vector<uint8_t> content;
+    content.insert(content.end(), ctx, ctx + strlen(ctx));
+    content.insert(content.end(), 64, 0);
+    content.insert(content.end(), s.transcript_hash, s.transcript_hash + hl);
+    return content;
+}
+
+static std::vector<uint8_t> tls13_make_cert_verify(const tls_certificate& cert, tls_session& s){
     // RSA-2048 PKCS#1 签名为 256 字节；缓冲区按最大签名 (512B) 预留，
     // 避免 RSA 证书在 TLS 1.3 CertificateVerify 中发生栈溢出。
     uint8_t sig[512];size_t sig_len=0;
-    if(!cert.sign(s.transcript_hash,hl,sig,sig_len))return {};
+    std::vector<uint8_t> content = tls13_cert_verify_content(s, true);
+    if(!cert.sign_scheme(s.selected_sig_alg, content.data(), content.size(), sig, sig_len)) return {};
 
     std::vector<uint8_t> msg;
     msg.push_back((uint8_t)HandshakeType::CERT_VERIFY);
-    uint16_t alg=(uint16_t)cert.sig_alg;
+    uint16_t alg = s.selected_sig_alg;
     size_t body_len=2+2+sig_len;
     msg.push_back((uint8_t)(body_len>>16));msg.push_back((uint8_t)(body_len>>8));msg.push_back((uint8_t)body_len);
     msg.push_back((uint8_t)(alg>>8));msg.push_back((uint8_t)alg);
@@ -452,12 +803,13 @@ static std::vector<uint8_t> tls13_make_cert_verify(const tls_certificate& cert, 
 static bool tls13_verify_cert_verify(const tls_certificate& cert, tls_session& s, const uint8_t* hs_msg, size_t hs_len){
     if(hs_len<8 || hs_msg[0]!=(uint8_t)HandshakeType::CERT_VERIFY)return false;
     uint16_t alg=(hs_msg[4]<<8)|hs_msg[5];
-    if(alg!=(uint16_t)cert.sig_alg)return false;
+    // 服务端必须使用客户端 signature_algorithms 中广告的方案
+    if(!scheme_in_list(effective_sig_algs(s), alg)) return false;
+    if(!tls_scheme_allowed_for_cert_verify(alg)) return false;
     uint16_t sig_len=(hs_msg[6]<<8)|hs_msg[7];
     if(4+2+2+sig_len!=hs_len)return false;
-    size_t hl=tls_hash_len(s.cipher_suite);
-    tls_transcript_finalize(s);
-    return cert.verify(s.transcript_hash,hl,hs_msg+8,sig_len);
+    std::vector<uint8_t> content = tls13_cert_verify_content(s, true);
+    return cert.verify_scheme(alg, content.data(), content.size(), hs_msg+8, sig_len);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -598,16 +950,16 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
             ext.push_back((uint8_t)(g>>8));ext.push_back((uint8_t)g);
         }
     }
-    // signature_algorithms: 包含 Ed448 (0x0808) 如果使用 Ed448 证书
+    // signature_algorithms + signature_algorithms_cert（RFC 8446 §4.2.3）
     {
-        // 默认提供 ed25519, ecdsa
-        ext.push_back(0x00);ext.push_back(0x0d);
-        // 总是提供 ed25519 和 ecdsa
-        ext.push_back(0x00);ext.push_back(0x08); // ext data length
-        ext.push_back(0x00);ext.push_back(0x06); // sig alg list length
-        ext.push_back(0x08);ext.push_back(0x07); // ed25519
-        ext.push_back(0x04);ext.push_back(0x03); // ecdsa
-        ext.push_back(0x08);ext.push_back(0x08); // ed448
+        const std::vector<uint16_t>& algs = effective_sig_algs(s);
+        std::vector<uint16_t> cert_algs =
+            s.sig_algs_cert.empty() ? tls_default_signature_algorithms() : s.sig_algs_cert;
+        // RFC 8446: signature_algorithms_cert 必须是 signature_algorithms 的子集
+        std::vector<uint16_t> cert_filtered;
+        for (uint16_t a : cert_algs) if (scheme_in_list(algs, a)) cert_filtered.push_back(a);
+        append_sig_alg_extension(ext, 0x000d, algs);
+        append_sig_alg_extension(ext, 0x0032, cert_filtered);
     }
     // key_share: 根据 ks_group 生成对应密钥对
     if (s.ks_group == NamedGroup::X448) {
@@ -752,13 +1104,38 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
             case (uint8_t)HandshakeType::ENCRYPTED_EXTENSIONS:
                 tls_transcript_update(s,hmsg,4+hlen);
                 break;
-            case (uint8_t)HandshakeType::CERTIFICATE:
+            case (uint8_t)HandshakeType::CERTIFICATE: {
                 tls_transcript_update(s,hmsg,4+hlen);
+                // signature_algorithms_cert: 校验对端证书链签名算法是否在客户端允许列表内
+                const std::vector<uint16_t>& cert_algs =
+                    s.sig_algs_cert.empty() ? tls_default_signature_algorithms() : s.sig_algs_cert;
+                size_t bo = 4; // 跳过握手头
+                if (bo + 1 + 3 <= 4 + hlen) {
+                    size_t ctx_len = hmsg[bo];
+                    size_t list_off = bo + 1 + ctx_len;
+                    if (list_off + 3 <= 4 + hlen) {
+                        size_t list_len = ((size_t)hmsg[list_off] << 16) |
+                                          ((size_t)hmsg[list_off + 1] << 8) | hmsg[list_off + 2];
+                        if (list_len >= 3 && list_off + 3 + 3 <= 4 + hlen) {
+                            size_t cert_len = ((size_t)hmsg[list_off + 3] << 16) |
+                                              ((size_t)hmsg[list_off + 4] << 8) | hmsg[list_off + 5];
+                            if (list_off + 3 + 3 + cert_len <= 4 + hlen) {
+                                const uint8_t* der = hmsg + list_off + 3 + 3;
+                                auto parsed = x509::x509_cert::from_der(der, cert_len);
+                                if (parsed) {
+                                    uint16_t chain_scheme = x509_key_type_chain_scheme(parsed->sign_key_type);
+                                    if (chain_scheme != 0 && !scheme_in_list(cert_algs, chain_scheme)) return false;
+                                }
+                            }
+                        }
+                    }
+                }
                 if(cert_manager){
                     server_cert=cert_manager->get_certificate(s.server_name);
                     if(!server_cert)server_cert=cert_manager->get_default_certificate();
                 }
                 break;
+            }
             case (uint8_t)HandshakeType::CERT_VERIFY:
                 if(server_cert){
                     if(!tls13_verify_cert_verify(*server_cert,s,hmsg,4+hlen))return false;
@@ -828,6 +1205,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     uint8_t client_pub_x25519[32]; bool found_x25519=false;
     uint8_t client_pub_x448[56]; bool found_x448=false;
     bool client_supports_x448=false;  // 客户端 supported_groups 列表中是否包含 X448
+    std::vector<uint16_t> client_sig_algs, client_sig_algs_cert;
     size_t eo=ext_offset+2;
     while(eo+4<=ext_offset+2+ext_len_total){
         uint16_t etype=(client_hello[eo]<<8)|client_hello[eo+1];
@@ -851,9 +1229,31 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
                 memcpy(client_pub_x448,client_hello+eo+8,56);found_x448=true;
             }
         }
+        else if(etype==0x000d){
+            std::vector<uint16_t> tmp;
+            if(parse_sig_alg_list(client_hello+eo+4, elen, tmp)) client_sig_algs=std::move(tmp);
+        }
+        else if(etype==0x0032){
+            std::vector<uint16_t> tmp;
+            if(parse_sig_alg_list(client_hello+eo+4, elen, tmp)) client_sig_algs_cert=std::move(tmp);
+        }
         eo+=4+elen;
     }
     if(!found_x25519 && !found_x448){memcpy(client_pub_x25519,client_hello+50,32);found_x25519=true;}
+
+    // signature_algorithms 协商（RFC 8446 §4.2.3）
+    if (client_sig_algs.empty()) return false;   // 客户端必须携带该扩展
+    // signature_algorithms_cert 必须是 signature_algorithms 的子集
+    for (uint16_t a : client_sig_algs_cert)
+        if (!scheme_in_list(client_sig_algs, a)) return false;
+    // 选择双方共同支持且与证书密钥类型匹配的方案（TLS 1.3 不允许 rsa_pkcs1_*）
+    s.selected_sig_alg = select_signature_scheme(client_sig_algs, *cert, s.sig_algs, true);
+    if (s.selected_sig_alg == 0) return false;
+    // signature_algorithms_cert：证书链签名方案必须被客户端接受
+    if (!client_sig_algs_cert.empty()) {
+        uint16_t chain_scheme = cert_chain_signature_scheme(*cert);
+        if (chain_scheme == 0 || !scheme_in_list(client_sig_algs_cert, chain_scheme)) return false;
+    }
 
     // 选择密钥交换组：优先 X448（如果客户端提供了 X448 key_share）
     bool use_x448 = found_x448 && client_supports_x448;
@@ -1150,14 +1550,15 @@ bool tls12_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         ext.push_back(0x00);ext.push_back((uint8_t)s.server_name.size());
         for(char c:s.server_name)ext.push_back((uint8_t)c);
     }
-    // signature_algorithms extension
+    // signature_algorithms + signature_algorithms_cert
     {
-        ext.push_back(0x00); ext.push_back(0x0d); // type
-        ext.push_back(0x00); ext.push_back(0x08); // length: 2+6=8
-        ext.push_back(0x00); ext.push_back(0x06); // list length: 3 algorithms
-        ext.push_back(0x04); ext.push_back(0x01); // RSA_PKCS1_SHA256
-        ext.push_back(0x04); ext.push_back(0x03); // ECDSA_SECP256R1_SHA256
-        ext.push_back(0x08); ext.push_back(0x07); // ED25519
+        const std::vector<uint16_t>& algs = effective_sig_algs(s);
+        std::vector<uint16_t> cert_algs =
+            s.sig_algs_cert.empty() ? tls_default_signature_algorithms() : s.sig_algs_cert;
+        std::vector<uint16_t> cert_filtered;
+        for (uint16_t a : cert_algs) if (scheme_in_list(algs, a)) cert_filtered.push_back(a);
+        append_sig_alg_extension(ext, 0x000d, algs);
+        append_sig_alg_extension(ext, 0x0032, cert_filtered);
     }
     uint16_t ext_total=ext.size();
     client_hello.push_back((uint8_t)(ext_total>>8));client_hello.push_back((uint8_t)ext_total);
@@ -1242,6 +1643,29 @@ bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     }
     const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
 
+    // 解析客户端 signature_algorithms / signature_algorithms_cert（RFC 8446，TLS 1.2 亦适用）
+    std::vector<uint16_t> client_sig_algs, client_sig_algs_cert;
+    const uint8_t* ext_data = nullptr; size_t ext_dlen = 0;
+    if (client_hello_find_extension(client_hello, ch_len, 0x000d, ext_data, ext_dlen))
+        parse_sig_alg_list(ext_data, ext_dlen, client_sig_algs);
+    if (client_hello_find_extension(client_hello, ch_len, 0x0032, ext_data, ext_dlen))
+        parse_sig_alg_list(ext_data, ext_dlen, client_sig_algs_cert);
+    for (uint16_t a : client_sig_algs_cert)
+        if (!scheme_in_list(client_sig_algs, a)) return false;  // 必须是 signature_algorithms 的子集
+    uint16_t skx_sig_alg = 0;
+    if (use_ecdhe && cert) {
+        if (!client_sig_algs.empty())
+            skx_sig_alg = select_signature_scheme(client_sig_algs, *cert, s.sig_algs, false);
+        else
+            skx_sig_alg = (uint16_t)cert->sig_alg;   // TLS 1.2 未携带扩展时的缺省行为
+        if (skx_sig_alg == 0) return false;
+        if (!client_sig_algs_cert.empty()) {
+            uint16_t chain_scheme = cert_chain_signature_scheme(*cert);
+            if (chain_scheme == 0 || !scheme_in_list(client_sig_algs_cert, chain_scheme)) return false;
+        }
+        s.selected_sig_alg = skx_sig_alg;
+    }
+
     // ECDHE: sign the server params
     std::vector<uint8_t> skx_msg;
     if(use_ecdhe && cert){
@@ -1257,9 +1681,9 @@ bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         signed_data.push_back(0x00); signed_data.push_back(0x1d); // X25519
         signed_data.push_back(32); // pubkey length
         signed_data.insert(signed_data.end(), ecdhe_pub, ecdhe_pub+32);
-        uint8_t sig_buf[128]; size_t sig_len=0;
-        if(cert->sign(signed_data.data(), signed_data.size(), sig_buf, sig_len)){
-            uint16_t sig_alg = (uint16_t)cert->sig_alg;
+        uint8_t sig_buf[512]; size_t sig_len=0;
+        if(cert->sign_scheme(skx_sig_alg, signed_data.data(), signed_data.size(), sig_buf, sig_len)){
+            uint16_t sig_alg = skx_sig_alg;
             size_t body_len = params_len + 2 + 2 + sig_len;
             skx_msg.push_back((uint8_t)(body_len>>16)); skx_msg.push_back((uint8_t)(body_len>>8)); skx_msg.push_back((uint8_t)body_len);
             skx_msg.push_back(0x03); // curve_type: named_curve
@@ -1352,13 +1776,20 @@ bool tls12_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,
         client_hello.push_back((uint8_t)(c>>8)); client_hello.push_back((uint8_t)c);
     }
     client_hello.push_back(0x01); client_hello.push_back(0x00);
-    // signature_algorithms + SNI extension
-    client_hello.push_back(0x00);client_hello.push_back(0x0d); // type
-    client_hello.push_back(0x00);client_hello.push_back(0x08); // len
-    client_hello.push_back(0x00);client_hello.push_back(0x06); // list len
-    client_hello.push_back(0x04);client_hello.push_back(0x01); // RSA_PKCS1_SHA256
-    client_hello.push_back(0x04);client_hello.push_back(0x03); // ECDSA_SECP256R1_SHA256
-    client_hello.push_back(0x08);client_hello.push_back(0x07); // ED25519
+    // signature_algorithms + signature_algorithms_cert
+    std::vector<uint8_t> ext;
+    {
+        const std::vector<uint16_t>& algs = effective_sig_algs(s);
+        std::vector<uint16_t> cert_algs =
+            s.sig_algs_cert.empty() ? tls_default_signature_algorithms() : s.sig_algs_cert;
+        std::vector<uint16_t> cert_filtered;
+        for (uint16_t a : cert_algs) if (scheme_in_list(algs, a)) cert_filtered.push_back(a);
+        append_sig_alg_extension(ext, 0x000d, algs);
+        append_sig_alg_extension(ext, 0x0032, cert_filtered);
+    }
+    uint16_t ext_total = (uint16_t)ext.size();
+    client_hello.push_back((uint8_t)(ext_total >> 8)); client_hello.push_back((uint8_t)ext_total);
+    client_hello.insert(client_hello.end(), ext.begin(), ext.end());
     size_t len=client_hello.size()-4;
     client_hello[1]=(uint8_t)(len>>16);client_hello[2]=(uint8_t)(len>>8);client_hello[3]=(uint8_t)len;
     (void)server_response;(void)resp_len;
@@ -1405,6 +1836,29 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
     }
     const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
 
+    // 解析客户端 signature_algorithms / signature_algorithms_cert
+    std::vector<uint16_t> client_sig_algs, client_sig_algs_cert;
+    const uint8_t* ext_data = nullptr; size_t ext_dlen = 0;
+    if (client_hello_find_extension(client_hello, ch_len, 0x000d, ext_data, ext_dlen))
+        parse_sig_alg_list(ext_data, ext_dlen, client_sig_algs);
+    if (client_hello_find_extension(client_hello, ch_len, 0x0032, ext_data, ext_dlen))
+        parse_sig_alg_list(ext_data, ext_dlen, client_sig_algs_cert);
+    for (uint16_t a : client_sig_algs_cert)
+        if (!scheme_in_list(client_sig_algs, a)) return false;
+    uint16_t skx_sig_alg = 0;
+    if (use_ecdhe && cert) {
+        if (!client_sig_algs.empty())
+            skx_sig_alg = select_signature_scheme(client_sig_algs, *cert, s.sig_algs, false);
+        else
+            skx_sig_alg = (uint16_t)cert->sig_alg;
+        if (skx_sig_alg == 0) return false;
+        if (!client_sig_algs_cert.empty()) {
+            uint16_t chain_scheme = cert_chain_signature_scheme(*cert);
+            if (chain_scheme == 0 || !scheme_in_list(client_sig_algs_cert, chain_scheme)) return false;
+        }
+        s.selected_sig_alg = skx_sig_alg;
+    }
+
     // ECDHE: sign the server params
     std::vector<uint8_t> skx_msg;
     if(use_ecdhe && cert){
@@ -1420,9 +1874,9 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
         signed_data.push_back(0x00); signed_data.push_back(0x1d); // X25519
         signed_data.push_back(32); // pubkey length
         signed_data.insert(signed_data.end(), ecdhe_pub, ecdhe_pub+32);
-        uint8_t sig_buf[128]; size_t sig_len=0;
-        if(cert->sign(signed_data.data(), signed_data.size(), sig_buf, sig_len)){
-            uint16_t sig_alg = (uint16_t)cert->sig_alg;
+        uint8_t sig_buf[512]; size_t sig_len=0;
+        if(cert->sign_scheme(skx_sig_alg, signed_data.data(), signed_data.size(), sig_buf, sig_len)){
+            uint16_t sig_alg = skx_sig_alg;
             size_t body_len = params_len + 2 + 2 + sig_len;
             skx_msg.push_back((uint8_t)(body_len>>16)); skx_msg.push_back((uint8_t)(body_len>>8)); skx_msg.push_back((uint8_t)body_len);
             skx_msg.push_back(0x03); // curve_type: named_curve
@@ -1946,11 +2400,16 @@ bool tls13_make_psk_client_hello(tls_session& s, std::vector<uint8_t>& client_he
     // supported_groups
     all_ext.push_back(0x00);all_ext.push_back(0x0a);all_ext.push_back(0x00);all_ext.push_back(0x04);
     all_ext.push_back(0x00);all_ext.push_back(0x02);all_ext.push_back(0x00);all_ext.push_back(0x1d);
-    // signature_algorithms
-    all_ext.push_back(0x00);all_ext.push_back(0x0d);all_ext.push_back(0x00);all_ext.push_back(0x08);
-    all_ext.push_back(0x00);all_ext.push_back(0x06);
-    all_ext.push_back(0x08);all_ext.push_back(0x07);all_ext.push_back(0x04);all_ext.push_back(0x03);
-    all_ext.push_back(0x08);all_ext.push_back(0x08);
+    // signature_algorithms + signature_algorithms_cert
+    {
+        const std::vector<uint16_t>& algs = effective_sig_algs(s);
+        std::vector<uint16_t> cert_algs =
+            s.sig_algs_cert.empty() ? tls_default_signature_algorithms() : s.sig_algs_cert;
+        std::vector<uint16_t> cert_filtered;
+        for (uint16_t a : cert_algs) if (scheme_in_list(algs, a)) cert_filtered.push_back(a);
+        append_sig_alg_extension(all_ext, 0x000d, algs);
+        append_sig_alg_extension(all_ext, 0x0032, cert_filtered);
+    }
     // key_share X25519
     {
         uint8_t cpriv[32],cpub[32];
@@ -2209,10 +2668,17 @@ using namespace jpssl::x509;
 
 x509::KeyType tls_sig_alg_to_key_type(SignatureAlgorithm sa) {
     switch (sa) {
-        case SignatureAlgorithm::RSA_PKCS1_SHA256: return KeyType::RSA_2048;
+        case SignatureAlgorithm::RSA_PKCS1_SHA256:
+        case SignatureAlgorithm::RSA_PKCS1_SHA384:
+        case SignatureAlgorithm::RSA_PKCS1_SHA512:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
+            return KeyType::RSA_2048;
         case SignatureAlgorithm::ED25519: return KeyType::Ed25519;
         case SignatureAlgorithm::ED448: return KeyType::Ed448;
         case SignatureAlgorithm::ECDSA_SECP256R1_SHA256: return KeyType::ECDSA_P256;
+        case SignatureAlgorithm::ECDSA_SECP384R1_SHA384: return KeyType::ECDSA_P384;
         case SignatureAlgorithm::SM2_SM3: return KeyType::SM2;
         default: return KeyType::Ed25519;
     }
@@ -2232,6 +2698,7 @@ std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint
         case KeyType::Ed25519:b.set_key(k,cert.pub.ed25519,32);break;
         case KeyType::Ed448:b.set_key(k,cert.pub.ed448,57);break;
         case KeyType::ECDSA_P256:b.set_key(k,cert.pub.ecdsa_p256,64);break;
+        case KeyType::ECDSA_P384:b.set_key(k,cert.pub.ecdsa_p384,96);break;
         case KeyType::SM2:b.set_key(k,cert.pub.sm2,64);break;
     }
     b.set_ca(false).set_key_usage(KU_DIGITAL_SIGNATURE).set_server_auth().add_san_dns(cert.subject_name);
@@ -2241,6 +2708,7 @@ std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint
         case KeyType::Ed25519:x=b.build_and_sign(k,cert.priv.ed25519,64);break;
         case KeyType::Ed448:x=b.build_and_sign(k,cert.priv.ed448,57);break;
         case KeyType::ECDSA_P256:x=b.build_and_sign(k,cert.priv.ecdsa_p256,32);break;
+        case KeyType::ECDSA_P384:x=b.build_and_sign(k,cert.priv.ecdsa_p384,48);break;
         case KeyType::SM2:x=b.build_and_sign(k,cert.priv.sm2,32);break;
     }
     return x.to_der();
