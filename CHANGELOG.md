@@ -22,11 +22,24 @@
 - **协程 double-free 修复**：`tls_co_task::await_resume` 销毁内层协程帧后置空句柄，
   防止临时任务对象析构对同一帧二次 destroy（flaky 堆损坏根因）；配合全量重建，
   `test_tls_socket` 连续 43 次通过。
+- **X.509 version 字段语义修正（RFC 5280）**：`to_der()` 此前将内部 `version`（0=v1, 1=v2, 2=v3）减 1 后编码（`INTEGER version-1`），导致 v3 证书被编码为 `[0] INTEGER 1`（实际为 v2），与 OpenSSL 互操作时版本降级；`from_der()` 解析时 +1 回填，round-trip 内部自洽但与标准不符。现改为直接编码 `INTEGER version`、解析直接取 `INTEGER` 值。
+- **v1 证书 round-trip 字节一致**：`from_der()` 解析无 version 字段的 v1 证书时残留 builder 默认 `version=2`，`to_der()` 重编码会凭空多出 `[0] INTEGER 1` 字段（+5 字节）且语义升为 v2。现解析 v1 证书显式置 `version=0`，round-trip 与 OpenSSL 原始 DER 逐字节一致（247→247 bytes 已验证）。
+
+### Added
+- **`jpssl-cert gen/tlsgen` 默认输出到 `~/.ssh`**：证书默认写 `~/.ssh/cert.der`、私钥写 `~/.ssh/key.bin`（自动创建目录；私钥权限 0600；`--out`/`--key-out` 仍可指定其他位置并支持 `~` 展开）。
+- **PEM 证书读取**（`x509_cert::from_pem` / `to_pem`）：解析 `-----BEGIN CERTIFICATE-----` 包裹的 base64 DER，与 `from_der` 完全兼容（base64 使用库内 `jpssl::base64_decode` / `base64_encode`，无外部依赖）。
+- **私钥读取**（`private_key::from_pem` / `from_der`）：自动识别 PKCS#8（`BEGIN PRIVATE KEY`）、PKCS#1 RSA（`BEGIN RSA PRIVATE KEY`）、SEC1 EC（`BEGIN EC PRIVATE KEY`）与 RFC 8410（`BEGIN ED25519/ED448 PRIVATE KEY`）；输出库内原始格式私钥字节（RSA=d、Ed25519=seed||pub、Ed448=seed、EC/SM2=scalar），并恢复对应公钥。
+- **CSR 读取**（`csr::from_pem` / `from_der`）：解析 PKCS#10 `-----BEGIN CERTIFICATE REQUEST-----`，输出 subject、公钥、签名与 `tbs_raw`（可验签）。
+- **`ed25519_derive_public_key` 公开 API**：从 32 字节 seed 派生 32 字节公钥（RFC 8032 §5.1.5），供 RFC 8410 私钥解析复用。
+- **加密私钥 PEM 读取**（`private_key::from_pem_encrypted`）：支持 PBES2（RFC 8018）`-----BEGIN ENCRYPTED PRIVATE KEY-----`，实现 PBKDF2-HMAC-SHA256 + AES-128/256-CBC 解密（复用库内 `hmac_sha256` 与 AES 块 API），与 OpenSSL 生成样本互操作验证通过；错误密码正确拒绝。
+- **CLI 增强**：`jpssl-cert info/verify/chain` 自动识别 DER 或 PEM 证书；新增 `jpssl-cert key --key <pem>`（查看私钥）与 `jpssl-cert csr --csr <pem>`（查看 CSR）子命令。
 
 ### Tests
 - `test_ecdsa` 19 项、`test_tls` 156 项、`test_tls_socket` 37 项全部通过；
 - P-256 求逆 20k 随机 + 边界对拍、4 线程 × 4 万并发 ECDH 压力无崩溃；
 - 与 OpenSSL 双向互操作（P-256/384/521 签名、ECDH、RSA-PSS、国密套件）回归全部通过。
+- `test_x509` 新增 54 条断言：PEM 证书往返（to_pem/from_pem）、Ed25519/Ed448/EC-P256/RSA 私钥 PEM 解析（含 PKCS#1 与 SEC1 传统格式，seed 与 OpenSSL 样本逐字节比对）、CSR 解析与签名验证（用 CSR 内公钥验签 `tbs_raw`）、加密 PEM（PBES2 AES-128/256-CBC，正确密码通过/错误密码拒绝）、X.509 version 语义回归（v3 编码为 `[0] INTEGER 2`、v1 无字段且 round-trip 字节一致）。
+- 回归：`test_x509`（118 断言）、`test_base64` 全部通过；全套 30 个 CTest 通过。
 
 ## [0.9.14] — 2026-08-06
 

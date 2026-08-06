@@ -4,6 +4,7 @@
  *
  * 支持算法: RSA-2048/4096, Ed25519, Ed448, ECDSA P-256, SM2
  * 支持扩展: BasicConstraints, KeyUsage, ExtendedKeyUsage, SubjectAlternativeName
+ * 支持格式: DER 与 PEM 证书、PKCS#8/PKCS#1/SEC1 私钥、PKCS#10 CSR
  * 完全自包含的 DER 编码器/解码器，无外部依赖。
  */
 #include "rsa.hpp"
@@ -194,8 +195,15 @@ struct x509_cert {
     static std::optional<x509_cert> from_der(const uint8_t* data, size_t len);
     static std::optional<x509_cert> from_der(const std::vector<uint8_t>& der);
 
+    /// 从 PEM 编码的证书解析 (-----BEGIN CERTIFICATE-----)
+    static std::optional<x509_cert> from_pem(const std::string& pem);
+    static std::optional<x509_cert> from_pem(const char* data, size_t len);
+
     /// 编码为 DER
     std::vector<uint8_t> to_der() const;
+
+    /// 编码为 PEM (-----BEGIN CERTIFICATE-----)
+    std::string to_pem() const;
 
     /// 获取 subject CN
     std::string common_name() const;
@@ -215,6 +223,58 @@ struct x509_cert {
 
     /// 获取 SAN DNS 名称
     std::vector<std::string> dns_names() const;
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  私钥 (PKCS#8 / PKCS#1 / SEC1 / RFC 8410)
+// ═══════════════════════════════════════════════════════════════════════
+struct private_key {
+    KeyType key_type = KeyType::Ed25519;
+    std::vector<uint8_t> priv;   // raw private key bytes（库内原始格式）
+    std::vector<uint8_t> pub;    // 公钥 raw bytes（解析时从密钥中恢复，可为空）
+
+    /// 从 DER 编码的私钥解析 (PKCS#8 / PKCS#1 RSA / SEC1 EC / RFC 8410)
+    static std::optional<private_key> from_der(const uint8_t* data, size_t len);
+    static std::optional<private_key> from_der(const std::vector<uint8_t>& der);
+
+    /// 从 PEM 编码的私钥解析:
+    ///   -----BEGIN PRIVATE KEY-----        (PKCS#8)
+    ///   -----BEGIN RSA PRIVATE KEY-----     (PKCS#1)
+    ///   -----BEGIN EC PRIVATE KEY-----      (SEC1)
+    ///   -----BEGIN ED25519 PRIVATE KEY----- (RFC 8410)
+    ///   -----BEGIN ED448 PRIVATE KEY-----   (RFC 8410)
+    static std::optional<private_key> from_pem(const std::string& pem);
+    static std::optional<private_key> from_pem(const char* data, size_t len);
+
+    /// 从加密 PEM 私钥解析 (-----BEGIN ENCRYPTED PRIVATE KEY-----)
+    /// 支持 PBES2 (RFC 8018): PBKDF2-HMAC-SHA256 + AES-128/256-CBC
+    static std::optional<private_key> from_pem_encrypted(const std::string& pem,
+                                                         const std::string& password);
+    static std::optional<private_key> from_pem_encrypted(const char* data, size_t len,
+                                                         const std::string& password);
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PKCS#10 证书签名请求 (CSR)
+// ═══════════════════════════════════════════════════════════════════════
+struct csr {
+    // CertificationRequestInfo
+    DistinguishedName subject;
+    KeyType key_type = KeyType::Ed25519;
+    std::vector<uint8_t> public_key;   // raw key bytes（与 x509_cert 相同格式）
+
+    // Signature
+    KeyType sign_key_type = KeyType::Ed25519;
+    std::vector<uint8_t> signature;    // raw signature bytes
+    std::vector<uint8_t> tbs_raw;      // raw CertificationRequestInfo bytes（供验签）
+
+    /// 从 DER 编码的 CSR 解析
+    static std::optional<csr> from_der(const uint8_t* data, size_t len);
+    static std::optional<csr> from_der(const std::vector<uint8_t>& der);
+
+    /// 从 PEM 编码的 CSR 解析 (-----BEGIN CERTIFICATE REQUEST-----)
+    static std::optional<csr> from_pem(const std::string& pem);
+    static std::optional<csr> from_pem(const char* data, size_t len);
 };
 
 // ═══════════════════════════════════════════════════════════════════════

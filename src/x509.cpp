@@ -3,9 +3,18 @@
  * 完全自包含，不依赖 OpenSSL。
  */
 #include "x509.hpp"
+#include "base64.hpp"
+#include "hmac.hpp"
+#include "aes.hpp"
+#include "ed25519.hpp"
+#include "ed448.hpp"
+#include "ecdsa.hpp"
+#include "sm2.hpp"
+#include "rsa.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <algorithm>
 
 namespace jpssl::x509 {
@@ -395,9 +404,9 @@ std::vector<uint8_t> x509_cert::to_der() const {
     using namespace der;
     std::vector<uint8_t> tbs;
 
-    // version
+    // version (RFC 5280: 0=v1, 1=v2, 2=v3; v1 省略该字段)
     if (version > 0) {
-        std::vector<uint8_t> v; v.push_back((uint8_t)(version - 1));
+        std::vector<uint8_t> v; v.push_back((uint8_t)version);
         auto ctx = encode_context(ASN1Tag::CONTEXT0, encode_integer(v));
         append(tbs, ctx);
     }
@@ -487,12 +496,13 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
     auto first = decode_tlv2(tbs_tlv->value.data(), tbs_tlv->value.size(), tbs_off);
     if (!first) return std::nullopt;
 
-    // version [0]?
+    // version [0]?  (RFC 5280: 0=v1, 1=v2, 2=v3; v1 无该字段)
+    cert.version = 0;  // 默认 v1，避免残留 builder 默认值 (v3) 导致重编码多出 version 字段
     if (first->tag == ASN1Tag::CONTEXT0) {
         size_t voff = 0;
         auto ver_tlv = decode_tlv2(first->value.data(), first->value.size(), voff);
         if (ver_tlv && ver_tlv->tag == ASN1Tag::INTEGER && !ver_tlv->value.empty())
-            cert.version = (int)ver_tlv->value[0] + 1;
+            cert.version = (int)ver_tlv->value[0];
         first = decode_tlv2(tbs_tlv->value.data(), tbs_tlv->value.size(), tbs_off);
         if (!first) return std::nullopt;
     }
@@ -852,6 +862,590 @@ verify_result x509_verify_chain(const std::vector<x509_cert>& chain, uint64_t no
     }
     r.success = true;
     return r;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PEM 编解码
+// ═══════════════════════════════════════════════════════════════════════
+namespace {
+
+/// 提取 PEM 块内的 base64 文本并解码为 DER
+std::optional<std::vector<uint8_t>> pem_decode_block(const std::string& pem,
+                                                     const char* label) {
+    std::string begin = std::string("-----BEGIN ") + label + "-----";
+    std::string end   = std::string("-----END ") + label + "-----";
+    auto b = pem.find(begin);
+    if (b == std::string::npos) return std::nullopt;
+    auto e = pem.find(end, b + begin.size());
+    if (e == std::string::npos) return std::nullopt;
+    std::string b64 = pem.substr(b + begin.size(), e - (b + begin.size()));
+    // 移除 PEM 中的空白字符
+    std::string clean;
+    clean.reserve(b64.size());
+    for (char c : b64)
+        if (!std::isspace((unsigned char)c)) clean.push_back(c);
+    return jpssl::base64_decode(clean);
+}
+
+/// 将 DER 编码为 PEM 文本（每 64 字符换行）
+std::string pem_encode_block(const std::vector<uint8_t>& der, const char* label) {
+    std::string b64 = jpssl::base64_encode(der.data(), der.size());
+    std::string out = std::string("-----BEGIN ") + label + "-----\n";
+    for (size_t i = 0; i < b64.size(); i += 64)
+        out += b64.substr(i, 64) + "\n";
+    out += std::string("-----END ") + label + "-----\n";
+    return out;
+}
+
+/// 从 PEM 文本中找出首个匹配 label 的块，返回其 DER
+std::optional<std::vector<uint8_t>> pem_extract_any(const std::string& pem,
+                                                     const char** labels,
+                                                     size_t n_labels) {
+    for (size_t i = 0; i < n_labels; ++i) {
+        auto der = pem_decode_block(pem, labels[i]);
+        if (der) return der;
+    }
+    return std::nullopt;
+}
+
+} // anonymous namespace
+
+// ═══════════════════════════════════════════════════════════════════════
+//  加密私钥 PEM 解析 (PBES2 / RFC 8018)
+// ═══════════════════════════════════════════════════════════════════════
+namespace {
+
+// OIDs (DER-encoded value bytes)
+// PBES2     1.2.840.113549.1.5.13
+// PBKDF2    1.2.840.113549.1.5.12
+// hmacSHA256 1.2.840.113549.2.9
+// aes128CBC 2.16.840.1.101.3.4.1.2
+// aes256CBC 2.16.840.1.101.3.4.1.42
+inline const uint8_t OID_PBES2[]     = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x05,0x0D};
+inline const uint8_t OID_PBKDF2[]    = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x05,0x0C};
+inline const uint8_t OID_HMAC_SHA256[] = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x02,0x09};
+inline const uint8_t OID_AES128_CBC[] = {0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x01,0x02};
+inline const uint8_t OID_AES256_CBC[] = {0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x01,0x2A};
+
+/// PBKDF2-HMAC-SHA256 (RFC 2898 §5.2)
+/// 输出 dk_len 字节派生密钥
+bool pbkdf2_hmac_sha256(const uint8_t* password, size_t pw_len,
+                        const uint8_t* salt, size_t salt_len,
+                        uint32_t iterations, uint8_t* dk, size_t dk_len) {
+    if (iterations == 0) return false;
+    const size_t hlen = 32;
+    // RFC 2898 §5.2:
+    //   U_1 = PRF(P, S || INT_32_BE(block))
+    //   U_n = PRF(P, U_{n-1})
+    //   T_i = U_1 ^ U_2 ^ ... ^ U_c
+    // 注意: U_n 的输入是 U_{n-1}（原始值），不是已累积的 T。
+    std::vector<uint8_t> u(hlen), t(hlen), tmp(salt_len + 4), out(hlen);
+    for (uint32_t block = 1; dk_len > 0; ++block) {
+        memcpy(tmp.data(), salt, salt_len);
+        for (int i = 3; i >= 0; --i) tmp[salt_len + 3 - i] = (uint8_t)(block >> (i * 8));
+        hmac_sha256(password, pw_len, tmp.data(), tmp.size(), u.data());
+        memcpy(t.data(), u.data(), hlen);
+        for (uint32_t it = 1; it < iterations; ++it) {
+            // U_n = PRF(P, U_{n-1})：输入必须是上一轮原始 U，而非 t
+            hmac_sha256(password, pw_len, u.data(), hlen, out.data());
+            memcpy(u.data(), out.data(), hlen);
+            for (size_t j = 0; j < hlen; ++j) t[j] ^= u[j];
+        }
+        size_t n = dk_len < hlen ? dk_len : hlen;
+        memcpy(dk, t.data(), n);
+        dk += n; dk_len -= n;
+    }
+    return true;
+}
+
+/// AES-CBC 解密（PKCS#7 padding 去除）
+/// cipher_len 必须为 16 的倍数
+std::optional<std::vector<uint8_t>> aes_cbc_decrypt(const uint8_t* key, size_t key_len,
+                                                    const uint8_t* iv,
+                                                    const uint8_t* cipher, size_t cipher_len) {
+    if (cipher_len == 0 || cipher_len % 16 != 0) return std::nullopt;
+    if (key_len != 16 && key_len != 32) return std::nullopt;
+    aes_context ctx;
+    if (key_len == 16) ctx.init(std::span<const uint8_t, 16>(key, 16));
+    else               ctx.init(std::span<const uint8_t, 32>(key, 32));
+
+    std::vector<uint8_t> out(cipher_len);
+    uint8_t prev[16];
+    memcpy(prev, iv, 16);
+    for (size_t off = 0; off < cipher_len; off += 16) {
+        uint8_t dec[16];
+        aes_decrypt_block(ctx, cipher + off, dec);
+        for (int i = 0; i < 16; ++i) out[off + i] = dec[i] ^ prev[i];
+        memcpy(prev, cipher + off, 16);
+    }
+    // PKCS#7 padding
+    if (out.empty()) return std::nullopt;
+    uint8_t pad = out.back();
+    if (pad == 0 || pad > 16 || pad > out.size()) return std::nullopt;
+    for (size_t i = out.size() - pad; i < out.size(); ++i)
+        if (out[i] != pad) return std::nullopt;
+    out.resize(out.size() - pad);
+    return out;
+}
+
+/// 解析 PBES2 EncryptedPrivateKeyInfo 并解密
+///   SEQUENCE {
+///     SEQUENCE {                    -- encryptionAlgorithm
+///       OID pbes2,
+///       SEQUENCE {
+///         SEQUENCE {                -- keyDerivationFunc
+///           OID pbkdf2,
+///           SEQUENCE { OCTET STRING salt, INTEGER iterations, [prf] }
+///         },
+///         SEQUENCE {                -- encryptionScheme
+///           OID aes-cbc, OCTET STRING iv
+///         }
+///       }
+///     },
+///     OCTET STRING encryptedData
+///   }
+std::optional<std::vector<uint8_t>> pbes2_decrypt(const std::vector<uint8_t>& der,
+                                                  const std::string& password) {
+    using namespace der;
+    size_t off = 0;
+    auto outer = decode_tlv2(der.data(), der.size(), off);
+    if (!outer || outer->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    size_t ooff = 0;
+    auto alg_seq = decode_tlv2(outer->value.data(), outer->value.size(), ooff);
+    if (!alg_seq || alg_seq->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    size_t aoff = 0;
+    auto pbes2_oid = decode_tlv2(alg_seq->value.data(), alg_seq->value.size(), aoff);
+    if (!pbes2_oid || pbes2_oid->tag != ASN1Tag::OID) return std::nullopt;
+    if (!oid_equal(pbes2_oid->value, OID_PBES2, sizeof(OID_PBES2))) return std::nullopt;
+    auto params = decode_tlv2(alg_seq->value.data(), alg_seq->value.size(), aoff);
+    if (!params || params->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+
+    // keyDerivationFunc
+    size_t poff = 0;
+    auto kdf = decode_tlv2(params->value.data(), params->value.size(), poff);
+    if (!kdf || kdf->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    size_t koff = 0;
+    auto kdf_oid = decode_tlv2(kdf->value.data(), kdf->value.size(), koff);
+    if (!kdf_oid || kdf_oid->tag != ASN1Tag::OID) return std::nullopt;
+    if (!oid_equal(kdf_oid->value, OID_PBKDF2, sizeof(OID_PBKDF2))) return std::nullopt;
+    auto kdf_params = decode_tlv2(kdf->value.data(), kdf->value.size(), koff);
+    if (!kdf_params || kdf_params->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    size_t kpoff = 0;
+    auto salt_tlv = decode_tlv2(kdf_params->value.data(), kdf_params->value.size(), kpoff);
+    if (!salt_tlv || salt_tlv->tag != ASN1Tag::OCTET_STRING) return std::nullopt;
+    auto iter_tlv = decode_tlv2(kdf_params->value.data(), kdf_params->value.size(), kpoff);
+    if (!iter_tlv || iter_tlv->tag != ASN1Tag::INTEGER || iter_tlv->value.empty()) return std::nullopt;
+    uint32_t iterations = 0;
+    for (uint8_t b : iter_tlv->value) iterations = (iterations << 8) | b;
+
+    // encryptionScheme
+    auto scheme = decode_tlv2(params->value.data(), params->value.size(), poff);
+    if (!scheme || scheme->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    size_t soff = 0;
+    auto scheme_oid = decode_tlv2(scheme->value.data(), scheme->value.size(), soff);
+    if (!scheme_oid || scheme_oid->tag != ASN1Tag::OID) return std::nullopt;
+    auto iv_tlv = decode_tlv2(scheme->value.data(), scheme->value.size(), soff);
+    if (!iv_tlv || iv_tlv->tag != ASN1Tag::OCTET_STRING || iv_tlv->value.size() != 16) return std::nullopt;
+
+    // encryptedData
+    auto data_tlv = decode_tlv2(outer->value.data(), outer->value.size(), ooff);
+    if (!data_tlv || data_tlv->tag != ASN1Tag::OCTET_STRING) return std::nullopt;
+
+    size_t key_len;
+    if (oid_equal(scheme_oid->value, OID_AES128_CBC, sizeof(OID_AES128_CBC))) key_len = 16;
+    else if (oid_equal(scheme_oid->value, OID_AES256_CBC, sizeof(OID_AES256_CBC))) key_len = 32;
+    else return std::nullopt;
+
+    std::vector<uint8_t> key(key_len);
+    if (!pbkdf2_hmac_sha256((const uint8_t*)password.data(), password.size(),
+                            salt_tlv->value.data(), salt_tlv->value.size(),
+                            iterations, key.data(), key.size()))
+        return std::nullopt;
+    return aes_cbc_decrypt(key.data(), key.size(), iv_tlv->value.data(),
+                           data_tlv->value.data(), data_tlv->value.size());
+}
+
+} // anonymous namespace
+
+// ── x509_cert: PEM 读取 ──────────────────────────────────────────────────
+std::optional<x509_cert> x509_cert::from_pem(const std::string& pem) {
+    auto der = pem_decode_block(pem, "CERTIFICATE");
+    if (!der) return std::nullopt;
+    return from_der(*der);
+}
+std::optional<x509_cert> x509_cert::from_pem(const char* data, size_t len) {
+    return from_pem(std::string(data, len));
+}
+
+std::string x509_cert::to_pem() const {
+    return pem_encode_block(to_der(), "CERTIFICATE");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  私钥解析 (PKCS#8 / PKCS#1 RSA / SEC1 EC / RFC 8410)
+// ═══════════════════════════════════════════════════════════════════════
+namespace {
+
+/// 解析 PKCS#1 RSAPrivateKey: 提取 d (第 4 个 INTEGER) 与 n||e 公钥
+std::optional<private_key> parse_pkcs1_rsa(const std::vector<uint8_t>& der) {
+    using namespace der;
+    size_t off = 0;
+    auto seq = decode_tlv2(der.data(), der.size(), off);
+    if (!seq || seq->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    size_t ioff = 0;
+    std::vector<uint8_t> n, e, d;
+    int idx = 0;
+    while (ioff < seq->value.size() && idx < 4) {
+        auto it = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
+        if (!it || it->tag != ASN1Tag::INTEGER) return std::nullopt;
+        auto bytes = it->value;
+        if (!bytes.empty() && bytes[0] == 0x00) bytes.erase(bytes.begin());
+        if (idx == 1) n = std::move(bytes);
+        else if (idx == 2) e = std::move(bytes);
+        else if (idx == 3) d = std::move(bytes);
+        ++idx;
+    }
+    if (idx < 4 || n.empty() || e.empty() || d.empty()) return std::nullopt;
+
+    private_key key;
+    key.key_type = (n.size() <= 256) ? KeyType::RSA_2048 : KeyType::RSA_4096;
+    // d 固定 256/512 字节
+    size_t dsz = (key.key_type == KeyType::RSA_2048) ? 256 : 512;
+    key.priv.assign(dsz, 0);
+    if (d.size() <= dsz) memcpy(key.priv.data() + dsz - d.size(), d.data(), d.size());
+    else return std::nullopt;
+    // 公钥: n(256) || e(3) 与 x509 格式一致
+    key.pub.assign(dsz, 0);
+    if (n.size() <= dsz) memcpy(key.pub.data() + dsz - n.size(), n.data(), n.size());
+    else return std::nullopt;
+    // e 通常 0x010001 (3 bytes)
+    std::vector<uint8_t> e3 = e;
+    while (e3.size() < 3) e3.insert(e3.begin(), 0x00);
+    if (e3.size() > 3) return std::nullopt;
+    key.pub.insert(key.pub.end(), e3.begin(), e3.end());
+    return key;
+}
+
+/// 解析 SEC1 ECPrivateKey（可能带 curve OID 上下文和 [1] 公钥）
+/// der: ECPrivateKey 整个 DER
+/// curve_oid_hint: 若外部 AlgorithmIdentifier 已提供曲线 OID，可为 nullptr
+std::optional<private_key> parse_sec1_ec(const std::vector<uint8_t>& der,
+                                         const std::vector<uint8_t>* curve_oid_hint) {
+    using namespace der;
+    size_t off = 0;
+    auto seq = decode_tlv2(der.data(), der.size(), off);
+    if (!seq || seq->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    size_t ioff = 0;
+    // version INTEGER (optional tolerate)
+    auto ver = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
+    if (!ver) return std::nullopt;
+    if (ver->tag == ASN1Tag::INTEGER) {
+        auto priv_tlv = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
+        if (!priv_tlv || priv_tlv->tag != ASN1Tag::OCTET_STRING) return std::nullopt;
+
+        private_key key;
+        key.priv = priv_tlv->value;
+        // 剩余字段: [0] curve, [1] pub
+        std::vector<uint8_t> curve_oid;
+        while (ioff < seq->value.size()) {
+            auto ctx = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
+            if (!ctx) break;
+            if (ctx->tag == ASN1Tag::CONTEXT0) {
+                size_t co = 0;
+                auto oid_tlv = decode_tlv2(ctx->value.data(), ctx->value.size(), co);
+                if (oid_tlv && oid_tlv->tag == ASN1Tag::OID)
+                    curve_oid = tlv_to_oid(*oid_tlv);
+            } else if (ctx->tag == ASN1Tag::CONTEXT1) {
+                size_t po = 0;
+                auto bit_tlv = decode_tlv2(ctx->value.data(), ctx->value.size(), po);
+                if (bit_tlv && bit_tlv->tag == ASN1Tag::BIT_STRING) {
+                    key.pub = tlv_to_bit_string(*bit_tlv);
+                    if (!key.pub.empty() && key.pub[0] == 0x04)
+                        key.pub.erase(key.pub.begin());
+                }
+            }
+        }
+        if (curve_oid.empty() && curve_oid_hint) curve_oid = *curve_oid_hint;
+
+        // 判定曲线类型
+        if (oid_equal(curve_oid, OID_SM2, sizeof(OID_SM2))) key.key_type = KeyType::SM2;
+        else if (oid_equal(curve_oid, OID_EC_SECP384R1, sizeof(OID_EC_SECP384R1))) key.key_type = KeyType::ECDSA_P384;
+        else if (oid_equal(curve_oid, OID_EC_SECP521R1, sizeof(OID_EC_SECP521R1))) key.key_type = KeyType::ECDSA_P521;
+        else key.key_type = KeyType::ECDSA_P256;  // 默认 P-256
+        return key;
+    }
+    return std::nullopt;
+}
+
+/// 解析 PKCS#8 PrivateKeyInfo
+/// der: 整个 PKCS#8 DER
+std::optional<private_key> parse_pkcs8(const std::vector<uint8_t>& der) {
+    using namespace der;
+    size_t off = 0;
+    auto seq = decode_tlv2(der.data(), der.size(), off);
+    if (!seq || seq->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    size_t ioff = 0;
+    auto ver = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
+    if (!ver || ver->tag != ASN1Tag::INTEGER) return std::nullopt;
+    auto alg_tlv = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
+    if (!alg_tlv || alg_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    size_t aoff = 0;
+    auto oid_tlv = decode_tlv2(alg_tlv->value.data(), alg_tlv->value.size(), aoff);
+    if (!oid_tlv || oid_tlv->tag != ASN1Tag::OID) return std::nullopt;
+    auto algo_oid = tlv_to_oid(*oid_tlv);
+    auto key_tlv = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
+    if (!key_tlv || key_tlv->tag != ASN1Tag::OCTET_STRING) return std::nullopt;
+
+    if (oid_equal(algo_oid, OID_RSA_ENCRYPTION, sizeof(OID_RSA_ENCRYPTION))) {
+        // OCTET STRING 内是 PKCS#1 RSAPrivateKey
+        return parse_pkcs1_rsa(key_tlv->value);
+    }
+    if (oid_equal(algo_oid, OID_EC_PUBLIC_KEY, sizeof(OID_EC_PUBLIC_KEY))) {
+        // 提取曲线 OID（AlgorithmIdentifier 第二个元素）
+        std::vector<uint8_t> curve_oid;
+        auto curve_tlv = decode_tlv2(alg_tlv->value.data(), alg_tlv->value.size(), aoff);
+        if (curve_tlv && curve_tlv->tag == ASN1Tag::OID)
+            curve_oid = tlv_to_oid(*curve_tlv);
+        // OCTET STRING 内是 SEC1 ECPrivateKey
+        return parse_sec1_ec(key_tlv->value, curve_oid.empty() ? nullptr : &curve_oid);
+    }
+    if (oid_equal(algo_oid, OID_ED25519, sizeof(OID_ED25519))) {
+        private_key key;
+        key.key_type = KeyType::Ed25519;
+        // RFC 8410: privateKey = OCTET STRING 内是 32 字节 seed（可能带 [0] 包裹）
+        const auto& inner = key_tlv->value;
+        size_t ko = 0;
+        std::vector<uint8_t> seed;
+        auto t = decode_tlv2(inner.data(), inner.size(), ko);
+        if (t && t->tag == ASN1Tag::CONTEXT0) {
+            size_t z = 0;
+            auto o = decode_tlv2(t->value.data(), t->value.size(), z);
+            if (o && o->tag == ASN1Tag::OCTET_STRING) seed = o->value;
+            else seed = t->value;
+        } else if (t && t->tag == ASN1Tag::OCTET_STRING) {
+            seed = t->value;
+        } else {
+            seed = inner;
+        }
+        if (seed.size() != 32) return std::nullopt;
+        key.priv.assign(64, 0);
+        memcpy(key.priv.data(), seed.data(), 32);
+        key.pub.resize(32);
+        jpssl::ed25519_derive_public_key(seed.data(), key.pub.data());
+        memcpy(key.priv.data() + 32, key.pub.data(), 32);  // seed || pub
+        return key;
+    }
+    if (oid_equal(algo_oid, OID_ED448, sizeof(OID_ED448))) {
+        private_key key;
+        key.key_type = KeyType::Ed448;
+        const auto& inner = key_tlv->value;
+        size_t ko = 0;
+        std::vector<uint8_t> seed;
+        auto t = decode_tlv2(inner.data(), inner.size(), ko);
+        if (t && t->tag == ASN1Tag::CONTEXT0) {
+            size_t z = 0;
+            auto o = decode_tlv2(t->value.data(), t->value.size(), z);
+            if (o && o->tag == ASN1Tag::OCTET_STRING) seed = o->value;
+            else seed = t->value;
+        } else if (t && t->tag == ASN1Tag::OCTET_STRING) {
+            seed = t->value;
+        } else {
+            seed = inner;
+        }
+        if (seed.size() != 57) return std::nullopt;
+        key.priv = seed;  // 库内 ed448 私钥格式 = 57 字节 seed
+        key.pub.resize(57);
+        jpssl::ed448_keygen(key.pub.data(), seed.data());
+        return key;
+    }
+    return std::nullopt;
+}
+
+} // anonymous namespace
+
+std::optional<private_key> private_key::from_der(const uint8_t* data, size_t len) {
+    return from_der(std::vector<uint8_t>(data, data + len));
+}
+std::optional<private_key> private_key::from_der(const std::vector<uint8_t>& der) {
+    using namespace der;
+    // 顶层 SEQUENCE
+    size_t off = 0;
+    auto seq = decode_tlv2(der.data(), der.size(), off);
+    if (!seq || seq->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+
+    size_t ioff = 0;
+    auto first = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
+    if (!first) return std::nullopt;
+
+    // 分发依据顶层结构:
+    //   PKCS#8:  SEQUENCE { INTEGER 0, SEQUENCE alg, OCTET STRING key }
+    //   PKCS#1:  SEQUENCE { INTEGER 0, INTEGER n, INTEGER e, ... }
+    //   SEC1:    SEQUENCE { INTEGER 1, OCTET STRING priv, ... }
+    if (first->tag == ASN1Tag::INTEGER) {
+        size_t tmp = ioff;
+        auto second = decode_tlv2(seq->value.data(), seq->value.size(), tmp);
+        if (!second) return std::nullopt;
+        if (second->tag == ASN1Tag::SEQUENCE) {
+            // PKCS#8: version + AlgorithmIdentifier
+            auto key = parse_pkcs8(der);
+            if (key) return key;
+            return std::nullopt;
+        }
+        if (second->tag == ASN1Tag::INTEGER) {
+            // PKCS#1 RSA: version + n + e + d ...
+            auto key = parse_pkcs1_rsa(der);
+            if (key) return key;
+            return std::nullopt;
+        }
+        if (second->tag == ASN1Tag::OCTET_STRING) {
+            // SEC1 EC: version(1) + privateKey OCTET STRING ...
+            auto key = parse_sec1_ec(der, nullptr);
+            if (key) return key;
+            return std::nullopt;
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+std::optional<private_key> private_key::from_pem(const std::string& pem) {
+    static const char* labels[] = {"PRIVATE KEY", "RSA PRIVATE KEY",
+                                   "EC PRIVATE KEY", "ED25519 PRIVATE KEY",
+                                   "ED448 PRIVATE KEY"};
+    auto der = pem_extract_any(pem, labels, sizeof(labels)/sizeof(labels[0]));
+    if (!der) return std::nullopt;
+    return from_der(*der);
+}
+std::optional<private_key> private_key::from_pem(const char* data, size_t len) {
+    return from_pem(std::string(data, len));
+}
+
+std::optional<private_key> private_key::from_pem_encrypted(const std::string& pem,
+                                                           const std::string& password) {
+    auto der = pem_decode_block(pem, "ENCRYPTED PRIVATE KEY");
+    if (!der) return std::nullopt;
+    auto plain = pbes2_decrypt(*der, password);
+    if (!plain) return std::nullopt;
+    return from_der(*plain);
+}
+std::optional<private_key> private_key::from_pem_encrypted(const char* data, size_t len,
+                                                           const std::string& password) {
+    return from_pem_encrypted(std::string(data, len), password);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PKCS#10 CSR 解析
+// ═══════════════════════════════════════════════════════════════════════
+std::optional<csr> csr::from_der(const uint8_t* data, size_t len) {
+    using namespace der;
+    size_t off = 0;
+    auto outer = decode_tlv2(data, len, off);
+    if (!outer || outer->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+
+    csr out;
+    size_t ooff = 0;
+    // CertificationRequestInfo
+    size_t info_start = ooff;
+    auto info_tlv = decode_tlv2(outer->value.data(), outer->value.size(), ooff);
+    if (!info_tlv || info_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    out.tbs_raw.assign(outer->value.data() + info_start,
+                       outer->value.data() + ooff);
+
+    size_t ioff = 0;
+    auto ver = decode_tlv2(info_tlv->value.data(), info_tlv->value.size(), ioff);
+    if (!ver || ver->tag != ASN1Tag::INTEGER) return std::nullopt;
+
+    auto subj_tlv = decode_tlv2(info_tlv->value.data(), info_tlv->value.size(), ioff);
+    if (!subj_tlv || subj_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    out.subject = parse_dn(subj_tlv->value);
+
+    auto spki_tlv = decode_tlv2(info_tlv->value.data(), info_tlv->value.size(), ioff);
+    if (!spki_tlv || spki_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+
+    // 解析 SPKI（与证书一致）
+    {   size_t soff = 0;
+        auto alg_tlv = decode_tlv2(spki_tlv->value.data(), spki_tlv->value.size(), soff);
+        if (!alg_tlv || alg_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+        size_t aoff = 0;
+        auto oid_tlv = decode_tlv2(alg_tlv->value.data(), alg_tlv->value.size(), aoff);
+        if (!oid_tlv || oid_tlv->tag != ASN1Tag::OID) return std::nullopt;
+        auto algo_oid = oid_tlv->value;
+        if (oid_equal(algo_oid, OID_RSA_ENCRYPTION, sizeof(OID_RSA_ENCRYPTION)))
+            out.key_type = KeyType::RSA_2048;
+        else if (oid_equal(algo_oid, OID_EC_PUBLIC_KEY, sizeof(OID_EC_PUBLIC_KEY))) {
+            auto curve_tlv = decode_tlv2(alg_tlv->value.data(), alg_tlv->value.size(), aoff);
+            out.key_type = KeyType::ECDSA_P256;
+            if (curve_tlv) {
+                auto co = tlv_to_oid(*curve_tlv);
+                if (oid_equal(co, OID_SM2, sizeof(OID_SM2))) out.key_type = KeyType::SM2;
+                else if (oid_equal(co, OID_EC_SECP384R1, sizeof(OID_EC_SECP384R1))) out.key_type = KeyType::ECDSA_P384;
+                else if (oid_equal(co, OID_EC_SECP521R1, sizeof(OID_EC_SECP521R1))) out.key_type = KeyType::ECDSA_P521;
+            }
+        } else if (oid_equal(algo_oid, OID_ED25519, sizeof(OID_ED25519)))
+            out.key_type = KeyType::Ed25519;
+        else if (oid_equal(algo_oid, OID_ED448, sizeof(OID_ED448)))
+            out.key_type = KeyType::Ed448;
+
+        auto pub_tlv = decode_tlv2(spki_tlv->value.data(), spki_tlv->value.size(), soff);
+        if (!pub_tlv || pub_tlv->tag != ASN1Tag::BIT_STRING) return std::nullopt;
+        out.public_key = tlv_to_bit_string(*pub_tlv);
+        if ((out.key_type == KeyType::ECDSA_P256 || out.key_type == KeyType::ECDSA_P384 ||
+             out.key_type == KeyType::ECDSA_P521 || out.key_type == KeyType::SM2)
+            && !out.public_key.empty() && out.public_key[0] == 0x04)
+            out.public_key.erase(out.public_key.begin());
+        // RSA: 还原为 [n||e]
+        if (out.key_type == KeyType::RSA_2048 || out.key_type == KeyType::RSA_4096) {
+            size_t rsaoff = 0;
+            auto rsa_seq = decode_tlv2(out.public_key.data(), out.public_key.size(), rsaoff);
+            if (rsa_seq && rsa_seq->tag == ASN1Tag::SEQUENCE) {
+                auto mod_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), rsaoff);
+                auto exp_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), rsaoff);
+                if (mod_tlv && exp_tlv && mod_tlv->tag == ASN1Tag::INTEGER && exp_tlv->tag == ASN1Tag::INTEGER) {
+                    std::vector<uint8_t> raw;
+                    const auto& m = mod_tlv->value;
+                    size_t ms = (!m.empty() && m[0] == 0x00) ? 1 : 0;
+                    raw.insert(raw.end(), m.begin() + ms, m.end());
+                    append(raw, exp_tlv->value);
+                    out.public_key = std::move(raw);
+                }
+            }
+        }
+    }
+
+    // signatureAlgorithm + signature
+    auto sig_alg_tlv = decode_tlv2(outer->value.data(), outer->value.size(), ooff);
+    if (!sig_alg_tlv || sig_alg_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    {   size_t saoff = 0;
+        auto sa_oid_tlv = decode_tlv2(sig_alg_tlv->value.data(), sig_alg_tlv->value.size(), saoff);
+        if (sa_oid_tlv) {
+            auto sa_oid = tlv_to_oid(*sa_oid_tlv);
+            if (oid_equal(sa_oid, OID_SHA256_WITH_RSA, sizeof(OID_SHA256_WITH_RSA))) out.sign_key_type = KeyType::RSA_2048;
+            else if (oid_equal(sa_oid, OID_SHA384_WITH_RSA, sizeof(OID_SHA384_WITH_RSA))) out.sign_key_type = KeyType::RSA_4096;
+            else if (oid_equal(sa_oid, OID_ECDSA_WITH_SHA256, sizeof(OID_ECDSA_WITH_SHA256))) out.sign_key_type = KeyType::ECDSA_P256;
+            else if (oid_equal(sa_oid, OID_ECDSA_WITH_SHA384, sizeof(OID_ECDSA_WITH_SHA384))) out.sign_key_type = KeyType::ECDSA_P384;
+            else if (oid_equal(sa_oid, OID_ECDSA_WITH_SHA512, sizeof(OID_ECDSA_WITH_SHA512))) out.sign_key_type = KeyType::ECDSA_P521;
+            else if (oid_equal(sa_oid, OID_ED25519, sizeof(OID_ED25519))) out.sign_key_type = KeyType::Ed25519;
+            else if (oid_equal(sa_oid, OID_ED448, sizeof(OID_ED448))) out.sign_key_type = KeyType::Ed448;
+            else if (oid_equal(sa_oid, OID_SM2_WITH_SM3, sizeof(OID_SM2_WITH_SM3))) out.sign_key_type = KeyType::SM2;
+        }
+    }
+    auto sig_tlv = decode_tlv2(outer->value.data(), outer->value.size(), ooff);
+    if (!sig_tlv || sig_tlv->tag != ASN1Tag::BIT_STRING) return std::nullopt;
+    out.signature = tlv_to_bit_string(*sig_tlv);
+
+    return out;
+}
+std::optional<csr> csr::from_der(const std::vector<uint8_t>& der) {
+    return from_der(der.data(), der.size());
+}
+std::optional<csr> csr::from_pem(const std::string& pem) {
+    auto der = pem_decode_block(pem, "CERTIFICATE REQUEST");
+    if (!der) return std::nullopt;
+    return from_der(*der);
+}
+std::optional<csr> csr::from_pem(const char* data, size_t len) {
+    return from_pem(std::string(data, len));
 }
 
 } // namespace jpssl::x509
