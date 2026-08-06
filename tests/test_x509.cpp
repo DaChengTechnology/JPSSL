@@ -826,6 +826,83 @@ void test_csr_read() {
 // ═══════════════════════════════════════════════════════════════════════
 //  Main
 // ═══════════════════════════════════════════════════════════════════════
+static const char* OSSL_SM2_CERT_PEM =
+R"PEM(
+-----BEGIN CERTIFICATE-----
+MIIBITCBxwIUHRUPYTcgDoLG3lcCnczWcIxBOhYwCgYIKoEcz1UBg3UwEzERMA8G
+A1UEAwwIc20yLnRlc3QwHhcNMjYwODA2MTIyNDQ3WhcNMzYwODAzMTIyNDQ3WjAT
+MREwDwYDVQQDDAhzbTIudGVzdDBZMBMGByqGSM49AgEGCCqBHM9VAYItA0IABJaN
+Exqzh/IHyPr+powitLnsX2/PIOERgRCgMYg6+rKhMal6RXoC/n2u96hjnIQyy4ak
+eNK8ZXWNgNzvCvscO88wCgYIKoEcz1UBg3UDSQAwRgIhANu54J+agEiFcRwm+Ode
+fi55qzWuD7YWIsaD+ZssgyUxAiEA1AfR/GxoZPDEcTk4+IKeOWZqcvhbFmKFRhYx
+N2e01lA=
+-----END CERTIFICATE-----
+)PEM";
+static const char* OSSL_EC256_CERT_PEM =
+R"PEM(
+-----BEGIN CERTIFICATE-----
+MIIBHjCBxQIUZsGQ3Yd/jgZgWQDLx3P8lUq7RmAwCgYIKoZIzj0EAwIwEjEQMA4G
+A1UEAwwHZWMudGVzdDAeFw0yNjA4MDYxMjI4NTdaFw0zNjA4MDMxMjI4NTdaMBIx
+EDAOBgNVBAMMB2VjLnRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARG9V4m
+V2MgUx+r1IxFMjfQ9L8w53oH4X+kd4HCPhUq9sJXC2tPr0ToHH8mOtvI41sfx1PI
+d6/oeZCVpzW2IArXMAoGCCqGSM49BAMCA0gAMEUCIQCJeaJWt5CZFqw6VdfsG6ws
+kV72xTo7xy2Lt1FSK9byWAIgbGB7nOU1h+gVmRgEm/6TddN+MZnsR4awTPxHNydk
+sZc=
+-----END CERTIFICATE-----
+)PEM";
+static const char* OSSL_EC384_CERT_PEM =
+R"PEM(
+-----BEGIN CERTIFICATE-----
+MIIBYTCB6AIUZPKExEW5UO5aCToGEsJJ3Vk0YzAwCgYIKoZIzj0EAwMwFTETMBEG
+A1UEAwwKZWMzODQudGVzdDAeFw0yNjA4MDYxMjI4NTdaFw0zNjA4MDMxMjI4NTda
+MBUxEzARBgNVBAMMCmVjMzg0LnRlc3QwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAARW
+VI9EmihFtqwzfE7flDkEYyq3hJVcxMT4d1ThRWG4Uo7DfiOmu1vmqT/FNkkDxy6u
+ywA4wTDGzvfzTdVAQoIr7/iIArUS1g95AEDa0HfuMjH8z6QmpCHOOfmBtPdH2hQw
+CgYIKoZIzj0EAwMDaAAwZQIwBa/KvnYg/P51/46G3BHMgAcXZwyxJeoMbOQaiuJY
+28IVPAYyl2SKOs8RJUsuWZVyAjEA5bpbIIvmoNVGj3BiWdKG3t8YwWHwxUZ+cYEf
+GoesNFtqfUb+4x7EzHhehjLbfH8u
+-----END CERTIFICATE-----
+)PEM";
+static const char* OSSL_EC521_CERT_PEM =
+R"PEM(
+-----BEGIN CERTIFICATE-----
+MIIBrTCCAQ4CFHI3KBeJCgzPvs74boPkCc3bCy/uMAoGCCqGSM49BAMEMBUxEzAR
+BgNVBAMMCmVjNTIxLnRlc3QwHhcNMjYwODA2MTIyODU3WhcNMzYwODAzMTIyODU3
+WjAVMRMwEQYDVQQDDAplYzUyMS50ZXN0MIGbMBAGByqGSM49AgEGBSuBBAAjA4GG
+AAQBSDDD5/1hHkMewoBkq3Qze1CkficAMl8PNWpM5t9b+v3v+JwiKZyA8QVXGQTt
+AUfp5XMKUdOZYYdBMm94mGdessAA3m6ZBPS1nPRgha27TnRyzJj28UdQk1RgrrrI
+ZUsFk/xjSMuh4HGTI/6evxp/jbxNvvNIHztruYUO8fW8WXS9LVgwCgYIKoZIzj0E
+AwQDgYwAMIGIAkIBGJbmNYGOiSaHERjQzJJZySFoOalq4pFdOaoBq9+NnGB8c01k
+85O9GXfG9YG6vzusmoCEiBu5WOzMaslFqLims1YCQgHV3AwARbakhbioLxREmubp
+E0DRpf2q2G2kZ5VSm/OS7h3sHiKdsqV5UZbaEWZlyj4YfMwhgH5Xp5h/qNBL/mny
+3g==
+-----END CERTIFICATE-----
+)PEM";
+
+// ═══════════════════════════════════════════════════════════════════════
+//  10. OpenSSL 签发证书互操作验证 (SM2 / ECDSA P-256/384/521)
+// ═══════════════════════════════════════════════════════════════════════
+// 证书由 OpenSSL 3.0 生成（openssl x509 -req 自签，SM2 用空用户 ID、
+// ECDSA 按曲线配 SHA-256/384/512 摘要）。验证本库能解析并验证其签名。
+void test_openssl_cert_interop() {
+    std::printf("\n=== OpenSSL 签发证书互操作验证 ===\n");
+
+    struct { const char* pem; const char* name; x509::KeyType expect_kt; } cases[] = {
+        {OSSL_SM2_CERT_PEM,   "SM2",        x509::KeyType::SM2},
+        {OSSL_EC256_CERT_PEM, "ECDSA P-256", x509::KeyType::ECDSA_P256},
+        {OSSL_EC384_CERT_PEM, "ECDSA P-384", x509::KeyType::ECDSA_P384},
+        {OSSL_EC521_CERT_PEM, "ECDSA P-521", x509::KeyType::ECDSA_P521},
+    };
+    for (auto& c : cases) {
+        auto cert = x509_cert::from_pem(c.pem);
+        TEST("解析 OpenSSL 证书", cert.has_value());
+        if (!cert) continue;
+        TEST("密钥类型识别", cert->key_type == c.expect_kt);
+        TEST("自签名验证", cert->verify_signature(*cert));
+        TEST("有效期有效", cert->is_valid_now());
+    }
+}
+
 int main() {
     test_der_primitives();
     test_cert_der_roundtrip_ed25519();
@@ -840,6 +917,7 @@ int main() {
     test_private_key_read();
     test_csr_read();
     test_version_semantics();
+    test_openssl_cert_interop();
 
     std::printf("\n================================================\n");
     std::printf("  Result: %d passed, %d failed", pass, fail);
