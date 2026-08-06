@@ -2,7 +2,26 @@
 
 ## [1.0.0] — 2026-08-06
 
+首个 1.0 正式版（CMake `project(jpssl VERSION 1.0.0)`）。
+
+### Performance
+- **ECDHE 批量加速（第二种方案）**：新增 `ecdsa_p256_ecdh_batch` / `ecdsa_p384_ecdh_batch`
+  批量 API，块内 2 次求逆摊薄模逆成本；实测 P-256 批量 1.20×、P-384 1.27× 吞吐提升，
+  P-384 批量反超 OpenSSL；新增 `bench_ecdh_batch` 基准。
+- **P-256 点运算汇编无分支化（常数时间）**：`jpssl_p256_dbl/madd` 特殊归约的
+  cmp/ja/jb 条件跳转改为 setc+neg+cmov 掩码，消除点运算对密钥数据的时序依赖；
+  真实随机密钥 ECDH 场景 −9%，标准基准吞吐持平。
+- **P-256 专用加法链求逆（255 sq + 12 mul）+ ADX 汇编**：新增 `jpssl_p256_inv_adx`
+  （与 crypto/internal/nistec/fiat/p256_invert.go 同源，addchain v0.4.0）；
+  `mod_inv p` 4.27 µs → 2.89 µs（1.47×），固定密钥 ECDH 48.7 → 46.7 µs；
+  整条链无数据相关分支，常数时间。
+
 ### Fixed
+- **TLS socket 的 Windows 编译修复**：`pollfd` 列表初始化在 winsock2.h 的
+  `SOCKET fd` 下触发 C2397 窄化，改为成员赋值。
+- **协程 double-free 修复**：`tls_co_task::await_resume` 销毁内层协程帧后置空句柄，
+  防止临时任务对象析构对同一帧二次 destroy（flaky 堆损坏根因）；配合全量重建，
+  `test_tls_socket` 连续 43 次通过。
 - **X.509 version 字段语义修正（RFC 5280）**：`to_der()` 此前将内部 `version`（0=v1, 1=v2, 2=v3）减 1 后编码（`INTEGER version-1`），导致 v3 证书被编码为 `[0] INTEGER 1`（实际为 v2），与 OpenSSL 互操作时版本降级；`from_der()` 解析时 +1 回填，round-trip 内部自洽但与标准不符。现改为直接编码 `INTEGER version`、解析直接取 `INTEGER` 值。
 - **v1 证书 round-trip 字节一致**：`from_der()` 解析无 version 字段的 v1 证书时残留 builder 默认 `version=2`，`to_der()` 重编码会凭空多出 `[0] INTEGER 1` 字段（+5 字节）且语义升为 v2。现解析 v1 证书显式置 `version=0`，round-trip 与 OpenSSL 原始 DER 逐字节一致（247→247 bytes 已验证）。
 
@@ -16,6 +35,9 @@
 - **CLI 增强**：`jpssl-cert info/verify/chain` 自动识别 DER 或 PEM 证书；新增 `jpssl-cert key --key <pem>`（查看私钥）与 `jpssl-cert csr --csr <pem>`（查看 CSR）子命令。
 
 ### Tests
+- `test_ecdsa` 19 项、`test_tls` 156 项、`test_tls_socket` 37 项全部通过；
+- P-256 求逆 20k 随机 + 边界对拍、4 线程 × 4 万并发 ECDH 压力无崩溃；
+- 与 OpenSSL 双向互操作（P-256/384/521 签名、ECDH、RSA-PSS、国密套件）回归全部通过。
 - `test_x509` 新增 54 条断言：PEM 证书往返（to_pem/from_pem）、Ed25519/Ed448/EC-P256/RSA 私钥 PEM 解析（含 PKCS#1 与 SEC1 传统格式，seed 与 OpenSSL 样本逐字节比对）、CSR 解析与签名验证（用 CSR 内公钥验签 `tbs_raw`）、加密 PEM（PBES2 AES-128/256-CBC，正确密码通过/错误密码拒绝）、X.509 version 语义回归（v3 编码为 `[0] INTEGER 2`、v1 无字段且 round-trip 字节一致）。
 - 回归：`test_x509`（118 断言）、`test_base64` 全部通过；全套 30 个 CTest 通过。
 

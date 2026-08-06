@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.20)
 
 project(jpssl VERSION 1.0.0 LANGUAGES CXX)
 
+# ARMv8 汇编源（src/ecp_nistz256_arm.S）需要 GNU/Apple 汇编器支持
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    enable_language(ASM)
+endif()
+
 # ── CTest ───────────────────────────────────────────────────────────────
 include(CTest)
 enable_testing()
@@ -199,6 +204,9 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     if(JP_ENABLE_NEON)
         list(APPEND CPU_SOURCES ${ARM_SOURCES})
     endif()
+    # NIST P-256 ARMv8 汇编（域乘/平方/点运算，移植自 OpenSSL nistz256，
+    # 仅用基础 ARMv8 标量指令，不依赖 NEON/crypto 扩展）
+    list(APPEND CPU_SOURCES src/ecp_nistz256_arm.S)
 endif()
 
 add_library(jpssl_cpu STATIC ${CPU_SOURCES})
