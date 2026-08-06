@@ -970,6 +970,20 @@ static void double_scalar_mult_mixed(ge_p3& R,
     }
 }
 #ifndef JPSSL_ED25519_NO_PUBLIC_API
+void ed25519_derive_public_key(const uint8_t seed[32], uint8_t pub[32]) {
+    uint8_t h[64];
+    sha512_ctx ctx;
+    sha512_init(&ctx);
+    sha512_update(&ctx, seed, 32);
+    sha512_final(&ctx, h);
+    h[0] &= 248;
+    h[31] &= 127;
+    h[31] |= 64;
+    ge_p3 A;
+    scalar_mult_comb3(A, h, basepoint_table_comb3());
+    ge_tobytes(pub, &A);
+}
+
 void ed25519_keygen(uint8_t pub[32], uint8_t priv[64]) {
     static std::random_device rd;
     static std::mt19937_64 gen(rd());

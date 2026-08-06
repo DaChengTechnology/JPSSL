@@ -56,6 +56,10 @@ void ed25519_keygen_r51(uint8_t pub[32], uint8_t priv[64]) {
     ed25519_r51_impl::ed25519_keygen(pub, priv);
 }
 
+void ed25519_derive_public_key_r51(const uint8_t seed[32], uint8_t pub[32]) {
+    ed25519_r51_impl::ed25519_derive_public_key(seed, pub);
+}
+
 void ed25519_sign_r51(const uint8_t priv[64], const uint8_t* msg, size_t msg_len, uint8_t sig[64]) {
     ed25519_r51_impl::ed25519_sign(priv, msg, msg_len, sig);
 }

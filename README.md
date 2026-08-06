@@ -109,7 +109,7 @@
 
 │  ├─ hkdf.cpp               HKDF-SHA256/SHA384/SM3   │
 
-│  ├─ x509.cpp               X.509 v3 证书 DER 编解码  │
+│  ├─ x509.cpp               X.509 v3 证书 DER/PEM、私钥、CSR │
 
 │  └─ tls.cpp                TLS 1.2/1.3 记录层+握手│
 
@@ -403,23 +403,45 @@ LD_LIBRARY_PATH=./build ./your_app
 
 # 生成自签名 X.509 v3 证书 + 私钥 (有效期默认 365 天)
 
-jpssl-cert gen --cn example.com --key-type ed25519 --out cert.der --key-out key.bin
+# 默认输出到 ~/.ssh/cert.der 与 ~/.ssh/key.bin (目录自动创建, 私钥权限 0600)
+
+jpssl-cert gen --cn example.com --key-type ed25519
 
 # 支持的密钥类型: ed25519 | ecdsa | sm2 | rsa2048 | ed448
 
 # 用 --days 指定有效期 (gen / tlsgen 均支持, 默认 365 天)
 
-jpssl-cert gen --cn example.com --key-type ed25519 --days 90 --out cert.der --key-out key.bin
+# 用 --out / --key-out 指定其他位置 (支持 ~ 展开)
+
+jpssl-cert gen --cn example.com --key-type ed25519 --days 90 --out ~/certs/cert.der --key-out ~/certs/key.bin
 
 
 
-# 查看证书信息
+# 查看证书信息 (支持 DER 或 PEM)
 
 jpssl-cert info --cert cert.der
 
+jpssl-cert info --cert cert.pem
 
 
-# 验证证书链 (leaf → root)
+
+# 查看私钥 (PKCS#8 / PKCS#1 / SEC1 / RFC 8410 PEM)
+
+jpssl-cert key --key key.pem
+
+# 查看加密私钥 (PBES2, 需 --pass 密码)
+
+jpssl-cert key --key encrypted.pem --pass your-password
+
+
+
+# 查看 CSR (PKCS#10 PEM)
+
+jpssl-cert csr --csr request.csr
+
+
+
+# 验证证书链 (leaf → root) (支持 DER 或 PEM)
 
 jpssl-cert verify --cert leaf.der --ca root.der
 
@@ -557,7 +579,7 @@ jpssl-crypt rand 32
 
 | **ECDSA P-256/P-384/P-521** | 数字签名 (secp256r1/secp384r1/secp521r1) 与 ECDHE | x86 ADX 汇编 + nistz256 特殊归约 + comb 定点表; AArch64 umulh/adc | — |
 
-| **X.509 v3** | 证书 DER 编解码 (RFC 5280), 自签名/证书链, SAN/KeyUsage/BasicConstraints | — | — |
+| **X.509 v3** | 证书 DER/PEM 编解码 (RFC 5280), 私钥读取 (PKCS#8/PKCS#1/SEC1/加密PBES2), CSR (PKCS#10), 自签名/证书链, SAN/KeyUsage/BasicConstraints | — | — |
 
 | **SM2** | 数字签名/密钥交换 (sm2p256v1, GM/T 0003) | 标量 Montgomery CIOS (AArch64 umulh/adc), SM3 杂凑走 NEON | — |
 
@@ -1945,7 +1967,7 @@ std::vector<uint8_t> der = cert.to_der();
 
 
 
-#### 2. 解析 DER 证书
+#### 2. 解析 DER / PEM 证书
 
 
 
@@ -1954,6 +1976,14 @@ std::vector<uint8_t> der = cert.to_der();
 // 从 DER 字节解析
 
 auto parsed = x509_cert::from_der(der);
+
+// 从 PEM 文本解析 (-----BEGIN CERTIFICATE-----)
+
+auto parsed = x509_cert::from_pem(pem_string);
+
+// 证书编码为 PEM
+
+std::string pem = parsed->to_pem();
 
 if (parsed) {
 
@@ -1968,6 +1998,60 @@ if (parsed) {
     auto dns = parsed->dns_names();                // SAN DNS 名称列表
 
     KeyType kt = parsed->key_type;                 // 密钥类型
+
+}
+
+```
+
+
+
+#### 3. 读取私钥 / CSR (PEM)
+
+
+
+```cpp
+
+// 私钥读取: 自动识别 PKCS#8 / PKCS#1 RSA / SEC1 EC / RFC 8410 (Ed25519/Ed448)
+
+//   -----BEGIN PRIVATE KEY----- / RSA PRIVATE KEY / EC PRIVATE KEY
+
+//   -----BEGIN ED25519 PRIVATE KEY----- / ED448 PRIVATE KEY-----
+
+auto key = private_key::from_pem(key_pem);
+
+if (key) {
+
+    KeyType kt = key->key_type;       // 密钥类型
+
+    auto& priv = key->priv;           // 私钥原始字节 (与 x509_builder::build_and_sign 兼容)
+
+    auto& pub  = key->pub;            // 公钥原始字节 (解析时从密钥中恢复)
+
+}
+
+// 支持 DER 输入: private_key::from_der(...)
+
+// 加密私钥读取 (PBES2, -----BEGIN ENCRYPTED PRIVATE KEY-----)
+
+//   PBKDF2-HMAC-SHA256 + AES-128/256-CBC (RFC 8018)
+
+auto enc_key = private_key::from_pem_encrypted(enc_pem, "password");
+
+// CSR 读取 (PKCS#10, -----BEGIN CERTIFICATE REQUEST-----)
+
+auto req = csr::from_pem(csr_pem);
+
+if (req) {
+
+    auto& subject = req->subject;     // DistinguishedName
+
+    KeyType kt = req->key_type;       // 公钥类型
+
+    auto& pub = req->public_key;      // 公钥原始字节
+
+    auto& sig = req->signature;       // 签名原始字节
+
+    auto& tbs = req->tbs_raw;         // CertificationRequestInfo 原始字节 (供验签)
 
 }
 
