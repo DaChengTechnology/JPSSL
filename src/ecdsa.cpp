@@ -38,6 +38,31 @@ namespace {
 // P-256 ADX 汇编快速路径是否可用（ensure256 时初始化）
 static bool g_p256_adx_ok = false;
 
+#if defined(__aarch64__)
+// NIST P-256 ARMv8 汇编（移植自 OpenSSL ecp_nistz256-armv8.pl，Apache-2.0）：
+//   ecp_nistz256_mul_mont        r = a*b*R^-1 mod p
+//   ecp_nistz256_sqr_mont        r = a*a*R^-1 mod p
+//   ecp_nistz256_ord_mul_mont    r = a*b*R^-1 mod n
+//   ecp_nistz256_point_double    Jacobian 倍点
+//   ecp_nistz256_point_add_affine Jacobian + 仿射混合加法
+//   ecp_nistz256_gather_w7 / neg / 生成元预计算表：固定点标量乘（7 位窗口）
+extern "C" void ecp_nistz256_mul_mont(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
+extern "C" void ecp_nistz256_sqr_mont(uint64_t r[4], const uint64_t a[4]);
+extern "C" void ecp_nistz256_ord_mul_mont(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
+extern "C" void ecp_nistz256_point_double(uint64_t r[12], const uint64_t p[12]);
+extern "C" void ecp_nistz256_point_add_affine(uint64_t r[12], const uint64_t p[12],
+                                               const uint64_t q[8]);
+extern "C" void ecp_nistz256_gather_w7(uint64_t r[8], const uint64_t* table, int index);
+extern "C" void ecp_nistz256_neg(uint64_t r[4], const uint64_t a[4]);
+// 生成元预计算表：37 行 × 64 仿射点（7 位窗口 Booth 编码），
+// 汇编 gather_w7 按字节平面组织：每点 64 字节、行大小 64*64 = 4096 字节
+extern "C" const unsigned char ecp_nistz256_precomputed[37 * 4096];
+static bool g_p256_arm_ok = false;
+// 表构建期间禁用 pt_madd 汇编（构建用 pt_madd(R,R,G) 迭代，首轮 H==0，
+// OpenSSL point_add_affine 不处理 H==0，需走 C++ 路径）
+static bool g_pt_madd_asm = true;
+#endif
+
 // ── 通用 N×64 位无符号整数（little-endian limbs, v[0] = 最低位）──
 
 template <int N>
@@ -301,6 +326,17 @@ static void mont_mul(bn<N>* r, const bn<N>* a, const bn<N>* b, const mod_ctx<N>&
         jpssl_p256_ord_mul_adx((uint64_t*)r->v, (const uint64_t*)a->v, (const uint64_t*)b->v);
         return;
     }
+#elif defined(__aarch64__)
+    if (N == 4 && M.special == 1 && g_p256_arm_ok) {
+        ecp_nistz256_mul_mont((uint64_t*)r->v, (const uint64_t*)a->v,
+                              (const uint64_t*)b->v);
+        return;
+    }
+    if (N == 4 && M.special == 2 && g_p256_arm_ok) {
+        ecp_nistz256_ord_mul_mont((uint64_t*)r->v, (const uint64_t*)a->v,
+                                  (const uint64_t*)b->v);
+        return;
+    }
 #endif
     uint64_t t[2 * N + 2];
     mul_full(t, a, b);
@@ -314,6 +350,12 @@ static void mont_mul(bn<N>* r, const bn<N>* a, const bn<N>* b, const mod_ctx<N>&
 
 template <int N>
 static void mont_sqr(bn<N>* r, const bn<N>* a, const mod_ctx<N>& M) {
+#if defined(__aarch64__)
+    if (N == 4 && M.special == 1 && g_p256_arm_ok) {
+        ecp_nistz256_sqr_mont((uint64_t*)r->v, (const uint64_t*)a->v);
+        return;
+    }
+#endif
     mont_mul(r, a, a, M);
 }
 
@@ -367,6 +409,48 @@ static void mont_pow(bn<N>* r, const bn<N>* base, const mod_ctx<N>& M,
 // r = a^{-1} mod m（Fermat：a^{m-2}，m 为奇素数）
 template <int N>
 static void mod_inv(bn<N>* r, const bn<N>* a, const mod_ctx<N>& M) {
+#if defined(__aarch64__)
+    // P-256 素数域 Fermat 求逆（加法链，OpenSSL ecp_nistz256_mod_inverse）
+    if (N == 4 && M.special == 1 && g_p256_arm_ok) {
+        uint64_t p2[4], p4[4], p8[4], p16[4], p32[4], res[4];
+        const uint64_t* in = (const uint64_t*)a->v;
+        ecp_nistz256_sqr_mont(res, in);
+        ecp_nistz256_mul_mont(p2, res, in);
+        ecp_nistz256_sqr_mont(res, p2);
+        ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_mul_mont(p4, res, p2);
+        ecp_nistz256_sqr_mont(res, p4);
+        for (int i = 0; i < 3; ++i) ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_mul_mont(p8, res, p4);
+        ecp_nistz256_sqr_mont(res, p8);
+        for (int i = 0; i < 7; ++i) ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_mul_mont(p16, res, p8);
+        ecp_nistz256_sqr_mont(res, p16);
+        for (int i = 0; i < 15; ++i) ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_mul_mont(p32, res, p16);
+        ecp_nistz256_sqr_mont(res, p32);
+        for (int i = 0; i < 31; ++i) ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_mul_mont(res, res, in);
+        for (int i = 0; i < 32 * 4; ++i) ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_mul_mont(res, res, p32);
+        for (int i = 0; i < 32; ++i) ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_mul_mont(res, res, p32);
+        for (int i = 0; i < 16; ++i) ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_mul_mont(res, res, p16);
+        for (int i = 0; i < 8; ++i) ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_mul_mont(res, res, p8);
+        for (int i = 0; i < 4; ++i) ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_mul_mont(res, res, p4);
+        ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_mul_mont(res, res, p2);
+        ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_sqr_mont(res, res);
+        ecp_nistz256_mul_mont(res, res, in);
+        for (int i = 0; i < 4; ++i) r->v[i] = res[i];
+        return;
+    }
+#endif
     bn<N> one{};
     one.v[0] = 1;
     bn<N> e;
@@ -427,6 +511,12 @@ static void jac_dbl(jac_point<N>* R, const jac_point<N>* P, const mod_ctx<N>& M)
         jpssl_p256_dbl((uint64_t*)R, (const uint64_t*)P);
         return;
     }
+#elif defined(__aarch64__)
+    // 哨兵（无穷远，Z=0）由 C++ 路径保持稳定；汇编 point_double 不处理 Z=0
+    if (N == 4 && M.special == 1 && g_p256_arm_ok && !bn_is_zero(&P->Z)) {
+        ecp_nistz256_point_double((uint64_t*)R, (const uint64_t*)P);
+        return;
+    }
 #endif
     bn<N> A, B, C, D, E, t, X3, Y3, Z3;
     mont_sqr(&A, &P->X, M);
@@ -470,6 +560,16 @@ static void pt_madd(jac_point<N>* R, const jac_point<N>* P,
 #if defined(_MSC_VER) && defined(_M_X64)
     if (N == 4 && M.special == 1 && g_p256_adx_ok) {
         jpssl_p256_madd((uint64_t*)R, (const uint64_t*)P, (const uint64_t*)Q);
+        return;
+    }
+#elif defined(__aarch64__)
+    // Q 为仿射（Z=1）或无穷远（Z=0）；P 非无穷远且 Q 非无穷远时用汇编
+    // （OpenSSL point_add_affine 内部处理 in1/in2 无穷远，但不处理 H==0，
+    // 后者概率 ~2^-256，与 x86 ADX 路径一致；表构建期间经 g_pt_madd_asm 关闭）
+    if (N == 4 && M.special == 1 && g_p256_arm_ok && g_pt_madd_asm &&
+        !bn_is_zero(&P->Z) && !bn_is_zero(&Q->Z)) {
+        ecp_nistz256_point_add_affine((uint64_t*)R, (const uint64_t*)P,
+                                      (const uint64_t*)Q->X.v);
         return;
     }
 #endif
@@ -619,6 +719,10 @@ static void build_odd_table(aff_point<N> out[8], const aff_point<N>* Q,
     R.X = Q->X; R.Y = Q->Y; R.Z = M.one;
     jac_point<N> Qj = R;
     jac_point<N> pts[8];
+#if defined(__aarch64__)
+    const bool saved_pt_madd_asm = g_pt_madd_asm;
+    g_pt_madd_asm = false;
+#endif
     for (int i = 0; i < 8; ++i) {
         pts[i] = R;
         if (i < 7) {
@@ -626,6 +730,9 @@ static void build_odd_table(aff_point<N> out[8], const aff_point<N>* Q,
             pt_madd(&R, &R, &Qj, M);
         }
     }
+#if defined(__aarch64__)
+    g_pt_madd_asm = saved_pt_madd_asm;
+#endif
     batch_affine(pts, out, 8, M);
 }
 
@@ -755,6 +862,69 @@ static void comb_fixed_window(jac_point<N>* R, const bn<N>* k,
     }
 }
 
+#if defined(__aarch64__)
+// ── NIST P-256 固定点标量乘（OpenSSL nistz256 结构）──
+static inline uint32_t booth_recode_w7(uint32_t in) {
+    uint32_t s = ~((in >> 7) - 1);
+    uint32_t d = (1 << 8) - in - 1;
+    d = (d & s) | (in & ~s);
+    d = (d >> 1) + (d & 1);
+    return (d << 1) + (s & 1);
+}
+static inline void copy_conditional(uint64_t dst[4], const uint64_t src[4],
+                                    uint64_t move) {
+    uint64_t mask1 = 0 - move;
+    uint64_t mask2 = ~mask1;
+    for (int i = 0; i < 4; ++i)
+        dst[i] = (dst[i] & mask2) | (src[i] & mask1);
+}
+/// R = k*G（k < n），使用 OpenSSL 静态预计算表（7 位窗口 Booth 编码）
+static void nistz256_scalar_mul_G(jac_point<4>* R, const bn<4>* k) {
+    const unsigned int window_size = 7;
+    const unsigned int mask = (1u << (window_size + 1)) - 1;
+    unsigned char p_str[33] = {0};
+    for (int i = 0; i < 4; ++i) {
+        uint64_t d = k->v[i];
+        for (int b = 0; b < 8; ++b)
+            p_str[i * 8 + b] = (unsigned char)(d >> (8 * b));
+    }
+    unsigned int idx = 0;
+    uint64_t p[12], t[12];
+    unsigned int wvalue = (p_str[0] << 1) & mask;
+    idx += window_size;
+    wvalue = booth_recode_w7(wvalue);
+    ecp_nistz256_gather_w7(p, (const uint64_t*)(ecp_nistz256_precomputed + 0 * 4096), wvalue >> 1);
+    {
+        uint64_t neg_y[4];
+        ecp_nistz256_neg(neg_y, p + 4);
+        copy_conditional(p + 4, neg_y, (uint64_t)(wvalue & 1));
+    }
+    {
+        uint64_t infty = 0;
+        for (int i = 0; i < 8; ++i) infty |= p[i];
+        uint64_t inf_mask = 0 - (uint64_t)(infty == 0);
+        uint64_t one[4] = {1, 0xffffffff00000000ull, 0xffffffffffffffffull, 0x00000000fffffffeull};
+        for (int i = 0; i < 4; ++i)
+            p[8 + i] = one[i] & ~inf_mask;
+    }
+    for (unsigned int i = 1; i < 37; ++i) {
+        unsigned int off = (idx - 1) / 8;
+        wvalue = p_str[off] | ((unsigned int)p_str[off + 1] << 8);
+        wvalue = (wvalue >> ((idx - 1) % 8)) & mask;
+        idx += window_size;
+        wvalue = booth_recode_w7(wvalue);
+        ecp_nistz256_gather_w7(t, (const uint64_t*)(ecp_nistz256_precomputed + i * 4096), wvalue >> 1);
+        {
+            uint64_t neg_y[4];
+            ecp_nistz256_neg(neg_y, t + 4);
+            copy_conditional(t + 4, neg_y, (uint64_t)(wvalue & 1));
+        }
+        ecp_nistz256_point_add_affine(p, p, t);
+    }
+    for (int i = 0; i < 12; ++i) ((uint64_t*)R)[i] = p[i];
+}
+#endif
+
 // ── 曲线上下文 ──
 
 template <int N>
@@ -775,10 +945,17 @@ static void build_g_tables(ecdsa_curve<N>* c) {
     R.X = G.X; R.Y = G.Y; R.Z = c->MP.one;
     jac_point<N> Gj = R;
     jac_point<N> pts[15];
+#if defined(__aarch64__)
+    const bool saved_pt_madd_asm = g_pt_madd_asm;
+    g_pt_madd_asm = false;
+#endif
     for (int i = 0; i < 15; ++i) {
         pts[i] = R;
         pt_madd(&R, &R, &Gj, c->MP);
     }
+#if defined(__aarch64__)
+    g_pt_madd_asm = saved_pt_madd_asm;
+#endif
     batch_affine(pts, c->g_full, 15, c->MP);
     for (int i = 0; i < 8; ++i) c->g_odd[i] = c->g_full[2 * i];
     c->ready = true;
@@ -848,6 +1025,8 @@ static void ensure256() {
         C256.MN.special = 2;  // P-256 群阶走 ord 特殊形式归约
 #if defined(_MSC_VER) && defined(_M_X64)
         g_p256_adx_ok = cpu_has_adx();
+#elif defined(__aarch64__)
+        g_p256_arm_ok = true;
 #endif
         c256_ready = true;
     }
@@ -1034,9 +1213,13 @@ void ecdsa_p256_keygen(uint8_t pub[64], uint8_t priv[32]) {
     bn<4> d;
     rand_scalar<4, 32>(&d, &C256.order, false);
     bn_to_be<4, 32>(&d, priv);
-    build_comb_table();
     jac_point<4> Q;
+#if defined(__aarch64__)
+    nistz256_scalar_mul_G(&Q, &d);
+#else
+    build_comb_table();
     comb_fixed_window(&Q, &d, g_comb, C256.MP, 64);
+#endif
     aff_point<4> A;
     batch_affine(&Q, &A, 1, C256.MP);
     bn<4> x, y;
@@ -1063,7 +1246,11 @@ void ecdsa_p256_sign(const uint8_t priv[32], const uint8_t* msg,
     bn<4> Rx, r, s, k, r_m, k_m, k_inv_m, rd_m, ed_m, s_m, r_plain;
     do {
         rand_scalar<4, 32>(&k, &C256.order, false);
+#if defined(__aarch64__)
+        nistz256_scalar_mul_G(&R, &k);
+#else
         comb_fixed_window(&R, &k, g_comb, C256.MP, 64);
+#endif
         batch_affine(&R, &A, 1, C256.MP);
         from_mont(&Rx, &A.X, C256.MP);
         mod_reduce(&r, &Rx, C256.MN);
