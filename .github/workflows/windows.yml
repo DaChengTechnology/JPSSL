@@ -9,9 +9,6 @@ jobs:
   build-test:
     name: Build & test (x64 MSVC)
     runs-on: windows-latest
-    env:
-      # choco 安装的 OpenSSL 默认位于此目录；未找到时 OpenSSL 对比测试自动跳过
-      OPENSSL_ROOT_DIR: C:\Program Files\OpenSSL-Win64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,6 +19,20 @@ jobs:
           choco install openssl -y --no-progress --accept-license
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::warning::OpenSSL install failed; OpenSSL comparison tests will be skipped"
+          }
+
+      # choco 的 OpenSSL 安装路径随版本变化（旧镜像 OpenSSL-Win64，新镜像 OpenSSL）；
+      # 动态探测实际安装目录，未找到时 OpenSSL 对比测试自动跳过。
+      - name: Locate OpenSSL
+        shell: pwsh
+        run: |
+          $dirs = @('C:\Program Files\OpenSSL', 'C:\Program Files\OpenSSL-Win64', 'C:\Program Files\OpenSSL-Win32')
+          $found = $dirs | Where-Object { Test-Path "$_\lib" } | Select-Object -First 1
+          if ($found) {
+            Write-Host "OpenSSL found at $found"
+            echo "OPENSSL_ROOT_DIR=$found" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            Write-Host "::warning::OpenSSL not found; OpenSSL comparison tests will be skipped"
           }
 
       # 不用 "Visual Studio 17 2022" 生成器（windows-latest 镜像的 VS 实例发现
@@ -43,8 +54,6 @@ jobs:
   bench:
     name: Build benchmarks (x64 MSVC)
     runs-on: windows-latest
-    env:
-      OPENSSL_ROOT_DIR: C:\Program Files\OpenSSL-Win64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,6 +62,19 @@ jobs:
       - name: Install OpenSSL
         shell: pwsh
         run: choco install openssl -y --no-progress --accept-license
+
+      - name: Locate OpenSSL
+        shell: pwsh
+        run: |
+          $dirs = @('C:\Program Files\OpenSSL', 'C:\Program Files\OpenSSL-Win64', 'C:\Program Files\OpenSSL-Win32')
+          $found = $dirs | Where-Object { Test-Path "$_\lib" } | Select-Object -First 1
+          if ($found) {
+            Write-Host "OpenSSL found at $found"
+            echo "OPENSSL_ROOT_DIR=$found" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            Write-Host "::error::OpenSSL not found (benchmarks require OpenSSL)"
+            exit 1
+          }
 
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1

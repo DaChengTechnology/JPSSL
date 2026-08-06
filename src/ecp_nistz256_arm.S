@@ -36,8 +36,8 @@ _ecp_nistz256_mul_mont:
 	ldr	x3,[x2]
 	ldp	x4,x5,[x1]
 	ldp	x6,x7,[x1,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	bl	___ecp_nistz256_mul_mont
@@ -56,8 +56,8 @@ _ecp_nistz256_sqr_mont:
 	stp	x19,x20,[sp,#16]
 	ldp	x4,x5,[x1]
 	ldp	x6,x7,[x1,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	bl	___ecp_nistz256_sqr_mont
@@ -75,8 +75,8 @@ ecp_nistz256_add:
 	ldp	x8,x9,[x2]
 	ldp	x16,x17,[x1,#16]
 	ldp	x10,x11,[x2,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	bl	___ecp_nistz256_add
@@ -90,8 +90,8 @@ ecp_nistz256_div_by_2:
 	add	x29,sp,#0
 	ldp	x14,x15,[x1]
 	ldp	x16,x17,[x1,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	bl	___ecp_nistz256_div_by_2
@@ -105,8 +105,8 @@ ecp_nistz256_mul_by_2:
 	add	x29,sp,#0
 	ldp	x14,x15,[x1]
 	ldp	x16,x17,[x1,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	mov	x8,x14
@@ -124,8 +124,8 @@ ecp_nistz256_mul_by_3:
 	add	x29,sp,#0
 	ldp	x14,x15,[x1]
 	ldp	x16,x17,[x1,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	mov	x8,x14
@@ -153,8 +153,8 @@ ecp_nistz256_sub:
 	add	x29,sp,#0
 	ldp	x14,x15,[x1]
 	ldp	x16,x17,[x1,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	bl	___ecp_nistz256_sub_from
@@ -171,8 +171,8 @@ _ecp_nistz256_neg:
 	mov	x15,xzr
 	mov	x16,xzr
 	mov	x17,xzr
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	bl	___ecp_nistz256_sub_from
@@ -512,8 +512,8 @@ _ecp_nistz256_point_double:
 	mov	x21,x0
 	ldp	x16,x17,[x1,#48]
 	mov	x22,x1
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	mov	x8,x14
 	ldr	x13,[x13,#24]
@@ -639,8 +639,8 @@ _ecp_nistz256_point_add:
 	mov	x21,x0
 	mov	x22,x1
 	mov	x23,x2
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	orr	x8,x4,x5
@@ -862,8 +862,8 @@ _ecp_nistz256_point_add_affine:
 	mov	x21,x0
 	mov	x22,x1
 	mov	x23,x2
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	ldp	x4,x5,[x1,#64]
@@ -990,8 +990,8 @@ add x13, x13, Lpoly@PAGEOFF
 	ldp	x10,x11,[x23,#0+48]
 	stp	x14,x15,[x21,#0]
 	stp	x16,x17,[x21,#0+16]
-adrp x23, Lone_mont@PAGE
-add x23, x23, Lone_mont@PAGEOFF
+adrp x23, Lone_mont
+add x23, x23, :lo12:Lone_mont
 	sub x23, x23, #64
 	ldp	x14,x15,[x22,#32]
 	cmp	x24,#0
@@ -1046,8 +1046,8 @@ _ecp_nistz256_ord_mul_mont:
 	stp	x19,x20,[sp,#16]
 	stp	x21,x22,[sp,#32]
 	stp	x23,x24,[sp,#48]
-adrp x23, Lord@PAGE
-add x23, x23, Lord@PAGEOFF
+adrp x23, Lord
+add x23, x23, :lo12:Lord
 	ldr	x3,[x2]
 	ldp	x4,x5,[x1]
 	ldp	x6,x7,[x1,#16]
@@ -1226,8 +1226,8 @@ _ecp_nistz256_ord_sqr_mont:
 	stp	x19,x20,[sp,#16]
 	stp	x21,x22,[sp,#32]
 	stp	x23,x24,[sp,#48]
-adrp x23, Lord@PAGE
-add x23, x23, Lord@PAGEOFF
+adrp x23, Lord
+add x23, x23, :lo12:Lord
 	ldp	x4,x5,[x1]
 	ldp	x6,x7,[x1,#16]
 	ldp	x12,x13,[x23,#0]
