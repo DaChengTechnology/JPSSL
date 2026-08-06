@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.0.0] — 2026-08-06
+
+首个 1.0 正式版（CMake `project(jpssl VERSION 1.0.0)`）。
+
+### Performance
+- **ECDHE 批量加速（第二种方案）**：新增 `ecdsa_p256_ecdh_batch` / `ecdsa_p384_ecdh_batch`
+  批量 API，块内 2 次求逆摊薄模逆成本；实测 P-256 批量 1.20×、P-384 1.27× 吞吐提升，
+  P-384 批量反超 OpenSSL；新增 `bench_ecdh_batch` 基准。
+- **P-256 点运算汇编无分支化（常数时间）**：`jpssl_p256_dbl/madd` 特殊归约的
+  cmp/ja/jb 条件跳转改为 setc+neg+cmov 掩码，消除点运算对密钥数据的时序依赖；
+  真实随机密钥 ECDH 场景 −9%，标准基准吞吐持平。
+- **P-256 专用加法链求逆（255 sq + 12 mul）+ ADX 汇编**：新增 `jpssl_p256_inv_adx`
+  （与 crypto/internal/nistec/fiat/p256_invert.go 同源，addchain v0.4.0）；
+  `mod_inv p` 4.27 µs → 2.89 µs（1.47×），固定密钥 ECDH 48.7 → 46.7 µs；
+  整条链无数据相关分支，常数时间。
+
+### Fixed
+- **TLS socket 的 Windows 编译修复**：`pollfd` 列表初始化在 winsock2.h 的
+  `SOCKET fd` 下触发 C2397 窄化，改为成员赋值。
+- **协程 double-free 修复**：`tls_co_task::await_resume` 销毁内层协程帧后置空句柄，
+  防止临时任务对象析构对同一帧二次 destroy（flaky 堆损坏根因）；配合全量重建，
+  `test_tls_socket` 连续 43 次通过。
+
+### Tests
+- `test_ecdsa` 19 项、`test_tls` 156 项、`test_tls_socket` 37 项全部通过；
+- P-256 求逆 20k 随机 + 边界对拍、4 线程 × 4 万并发 ECDH 压力无崩溃；
+- 与 OpenSSL 双向互操作（P-256/384/521 签名、ECDH、RSA-PSS、国密套件）回归全部通过。
+
 ## [0.9.14] — 2026-08-06
 
 ### Added
