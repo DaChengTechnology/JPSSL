@@ -1537,6 +1537,375 @@ madd_done:
     ret
 jpssl_p256_madd ENDP
 
+; ============================================================================
+; jpssl_p256_inv_adx(rcx=r[4], rdx=a[4]): r = a^{-1} mod p (Montgomery domain)
+;
+; Exponentiation with exponent p-2, using the addchain v0.4.0 sequence from
+; crypto/internal/nistec/fiat/p256_invert.go (12 mul + 255 sq):
+;   _10=x^2 _11=x^3 _110=x^6 _111=x^7 _111000=x^56 _111111=x^63
+;   x12=x^4095 x15=x^32767 x16=x^65535 x32=x^(2^32-1) i53=x^(2^47-2^15)
+;   x47=x^(2^47-1) i263=(x47+i263) ... return (x47+i263)^4*x = x^(p-2)
+; Every step calls jpssl_p256_mul_adx, whose output is fully reduced (< p).
+; Input a may alias output r (a is copied to the stack first).
+; ============================================================================
+jpssl_p256_inv_adx PROC
+X      EQU 0
+T0     EQU 32
+T1     EQU 64
+T2     EQU 96
+T3     EQU 128
+T4     EQU 160
+T5     EQU 192
+T6     EQU 224
+T7     EQU 256
+T8     EQU 288
+T9     EQU 320
+T10    EQU 352
+T11    EQU 384
+T12    EQU 416
+FRSZ   EQU 448
+
+MODMUL MACRO dst:REQ, s1:REQ, s2:REQ
+    lea     rcx, dst
+    lea     rdx, s1
+    lea     r8, s2
+    call    jpssl_p256_mul_adx
+ENDM
+
+    push    rbp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    push    rsi
+    push    rdi
+    sub     rsp, FRSZ
+
+    mov     rdi, rcx                ; rdi = output pointer
+    ; copy a -> [rsp+X] (input may alias output)
+    mov     rax, [rdx]
+    mov     rcx, [rdx+8]
+    mov     r9, [rdx+16]
+    mov     r10, [rdx+24]
+    mov     [rsp+X], rax
+    mov     [rsp+X+8], rcx
+    mov     [rsp+X+16], r9
+    mov     [rsp+X+24], r10
+
+    ; T0 = x^2
+    MODMUL [rsp+T0], [rsp+X], [rsp+X]
+    ; T1 = x^3
+    MODMUL [rsp+T1], [rsp+T0], [rsp+X]
+    ; T2 = x^6
+    MODMUL [rsp+T2], [rsp+T1], [rsp+T1]
+    ; T3 = x^7
+    MODMUL [rsp+T3], [rsp+T2], [rsp+X]
+    ; T4 = x^56
+    MODMUL [rsp+T4], [rsp+T3], [rsp+T3]
+    MODMUL [rsp+T4], [rsp+T4], [rsp+T4]
+    MODMUL [rsp+T4], [rsp+T4], [rsp+T4]
+    ; T5 = x^63
+    MODMUL [rsp+T5], [rsp+T3], [rsp+T4]
+    ; T6 = x^4095
+    MODMUL [rsp+T6], [rsp+T5], [rsp+T5]
+    MODMUL [rsp+T6], [rsp+T6], [rsp+T6]
+    MODMUL [rsp+T6], [rsp+T6], [rsp+T6]
+    MODMUL [rsp+T6], [rsp+T6], [rsp+T6]
+    MODMUL [rsp+T6], [rsp+T6], [rsp+T6]
+    MODMUL [rsp+T6], [rsp+T6], [rsp+T6]
+    MODMUL [rsp+T6], [rsp+T6], [rsp+T5]
+    ; T7 = x^32767
+    MODMUL [rsp+T7], [rsp+T6], [rsp+T6]
+    MODMUL [rsp+T7], [rsp+T7], [rsp+T7]
+    MODMUL [rsp+T7], [rsp+T7], [rsp+T7]
+    MODMUL [rsp+T7], [rsp+T7], [rsp+T3]
+    ; T8 = x^65535
+    MODMUL [rsp+T8], [rsp+T7], [rsp+T7]
+    MODMUL [rsp+T8], [rsp+T8], [rsp+X]
+
+    ; T9 = x^(2^32-1) : 16 squarings then mul by T8
+    MODMUL [rsp+T9], [rsp+T8], [rsp+T8]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T9], [rsp+T9], [rsp+T8]
+
+    ; T10 = x^(2^47-2^15) : 15 squarings from T9
+    MODMUL [rsp+T10], [rsp+T9], [rsp+T9]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T10], [rsp+T10], [rsp+T10]
+
+    ; T11 = x^(2^47-1)
+    MODMUL [rsp+T11], [rsp+T7], [rsp+T10]
+
+    ; T12 = x^(2^64-2^32+1) : 17 squarings of T10 then mul by X
+    MODMUL [rsp+T12], [rsp+T10], [rsp+T10]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+X]
+
+    ; T12 = T12^(2^143) : 143 squarings
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T11]
+
+    ; T12 = T12^(2^47) : 47 squarings
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+
+    ; result = T11*T12, then ^4, then * x
+    MODMUL [rsp+T12], [rsp+T11], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+T12]
+    MODMUL [rsp+T12], [rsp+T12], [rsp+X]
+
+    ; store result to [rdi]
+    mov     rax, [rsp+T12]
+    mov     rcx, [rsp+T12+8]
+    mov     rdx, [rsp+T12+16]
+    mov     r8, [rsp+T12+24]
+    mov     [rdi], rax
+    mov     [rdi+8], rcx
+    mov     [rdi+16], rdx
+    mov     [rdi+24], r8
+
+    add     rsp, FRSZ
+    pop     rdi
+    pop     rsi
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+jpssl_p256_inv_adx ENDP
+
 END
 
 
