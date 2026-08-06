@@ -32,6 +32,7 @@ extern "C" void jpssl_p256_mul_adx(uint64_t r[4], const uint64_t a[4], const uin
 extern "C" void jpssl_p256_ord_mul_adx(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
 extern "C" void jpssl_p256_dbl(uint64_t r[12], const uint64_t p[12]);
 extern "C" void jpssl_p256_madd(uint64_t r[12], const uint64_t p[12], const uint64_t q[12]);
+extern "C" void jpssl_p256_inv_adx(uint64_t r[4], const uint64_t a[4]);
 #endif
 
 namespace {
@@ -368,6 +369,14 @@ static void mont_pow(bn<N>* r, const bn<N>* base, const mod_ctx<N>& M,
 // r = a^{-1} mod m（Fermat：a^{m-2}，m 为奇素数）
 template <int N>
 static void mod_inv(bn<N>* r, const bn<N>* a, const mod_ctx<N>& M) {
+#if defined(_MSC_VER) && defined(_M_X64)
+    if (N == 4 && M.special == 1 && g_p256_adx_ok) {
+        // P-256 素数域专用加法链求逆：255 sq + 12 mul（addchain v0.4.0，
+        // 与 crypto/internal/nistec/fiat/p256_invert.go 同源），比 Fermat 链快 ~1.5 倍
+        jpssl_p256_inv_adx((uint64_t*)r->v, (const uint64_t*)a->v);
+        return;
+    }
+#endif
     bn<N> one{};
     one.v[0] = 1;
     bn<N> e;

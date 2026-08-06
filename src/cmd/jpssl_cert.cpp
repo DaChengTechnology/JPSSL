@@ -3,8 +3,10 @@
  *
  * 用法:
  *   jpssl-cert gen    --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048] [--days 365]
- *                     [--out cert.der] [--key-out key.bin]
- *   jpssl-cert info   --cert <file.der>
+ *                     [--out ~/.ssh/cert.der] [--key-out ~/.ssh/key.bin]
+ *   jpssl-cert info   --cert <file>           (DER 或 PEM)
+ *   jpssl-cert key    --key <file>            (私钥 PEM)
+ *   jpssl-cert csr    --csr <file>            (CSR PEM)
  *   jpssl-cert verify --cert <leaf.der> --ca <root.der>
  *   jpssl-cert chain  --cert <leaf.der> --ca <root.der> [--ca <inter.der> ...]
  *   jpssl-cert tlsgen --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048] [--days 365]
@@ -39,19 +41,24 @@ static void usage() {
 
 用法:
   jpssl-cert gen    --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048] [--days 365]
-                    [--out cert.der] [--key-out key.bin]
-  jpssl-cert info   --cert <file.der>
+                    [--out ~/.ssh/cert.der] [--key-out ~/.ssh/key.bin]
+  jpssl-cert info   --cert <file>           (DER 或 PEM 证书)
+  jpssl-cert key    --key <file>            (私钥 PEM)
+  jpssl-cert csr    --csr <file>            (CSR PEM)
   jpssl-cert verify --cert <leaf.der> --ca <root.der> [--ca <inter.der> ...]
   jpssl-cert chain  --cert <leaf.der> --ca <root.der> [--ca <inter.der> ...]
   jpssl-cert tlsgen --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048]
-                    [--days 365] [--out cert.der] [--key-out key.bin]
+                    [--days 365] [--out ~/.ssh/cert.der] [--key-out ~/.ssh/key.bin]
 
 选项:
   --cn, --common-name <name>    Subject Common Name
   --key-type <type>             密钥类型 (默认 ed25519)
   --days <n>                    有效期天数 (默认 365, gen/tlsgen 均支持)
-  --out, --cert <file>          输出/输入 证书文件 (DER)
-  --key-out <file>              私钥输出文件
+  --out, --cert <file>          输出/输入 证书文件 (DER 或 PEM; 默认 ~/.ssh/cert.der)
+  --key-out <file>              私钥输出文件 (默认 ~/.ssh/key.bin)
+  --key <file>                  私钥输入文件 (PEM, 支持加密)
+  --pass <password>             加密私钥密码 (PBES2)
+  --csr <file>                  CSR 输入文件 (PEM)
   --ca <file>                   CA 证书文件 (可多次指定)
 )");
 }
@@ -73,6 +80,91 @@ static void write_file(const char* path, const std::vector<uint8_t>& data) {
     if (!f) die("无法创建文件");
     if (!data.empty()) std::fwrite(data.data(), 1, data.size(), f);
     std::fclose(f);
+}
+
+#ifdef _WIN32
+#include <direct.h>
+static int mkdir_one(const char* p) { return _mkdir(p); }
+#else
+#include <sys/stat.h>
+static int mkdir_one(const char* p) { return mkdir(p, 0700); }
+#endif
+
+/// 展开开头的 ~/ 或 ~ 为 $HOME（未设置 HOME 时回退到原始路径）
+static std::string expand_tilde(const char* path) {
+    std::string p(path ? path : "");
+    if (p.empty() || p[0] != '~') return p;
+    const char* home = std::getenv("HOME");
+#ifdef _WIN32
+    if (!home) home = std::getenv("USERPROFILE");
+#endif
+    if (!home) return p;
+    std::string out = home;
+    if (p.size() == 1) return out;
+    if (p[1] == '/' || p[1] == '\\') out += p.substr(1);
+    else out += "/" + p.substr(1);
+    return out;
+}
+
+/// 确保路径的父目录存在（逐级创建，如 ~/.ssh）
+static void ensure_parent_dir(const std::string& path) {
+    std::string dir = path;
+    auto slash = dir.find_last_of("/\\");
+    if (slash == std::string::npos) return;
+    dir = dir.substr(0, slash);
+    if (dir.empty() || dir == ".") return;
+    std::string cur;
+    size_t start = 0;
+    if (dir[0] == '/') { cur = "/"; start = 1; }
+    while (start <= dir.size()) {
+        auto sep = dir.find('/', start);
+        if (sep == std::string::npos) sep = dir.size();
+        std::string seg = dir.substr(start, sep - start);
+        if (!seg.empty()) {
+            if (!cur.empty() && cur.back() != '/') cur += '/';
+            cur += seg;
+            mkdir_one(cur.c_str());  // 已存在则忽略 EEXIST
+        }
+        if (sep == dir.size()) break;
+        start = sep + 1;
+    }
+}
+
+/// 统一处理输出路径: 展开 ~ 并确保父目录存在
+static std::string prepare_output_path(const char* path) {
+    std::string p = expand_tilde(path);
+    ensure_parent_dir(p);
+    return p;
+}
+
+/// 私钥文件权限收紧为 0600（POSIX）
+static void set_private_key_mode(const char* path) {
+#ifndef _WIN32
+    chmod(path, 0600);
+#else
+    (void)path;
+#endif
+}
+
+// 读取证书文件: 支持 DER 或 PEM (-----BEGIN CERTIFICATE-----)
+static std::optional<x509_cert> load_cert_file(const char* path) {
+    auto data = read_file(path);
+    if (auto c = x509_cert::from_der(data)) return c;
+    return x509_cert::from_pem(std::string((const char*)data.data(), data.size()));
+}
+
+static const char* key_type_name(KeyType kt) {
+    switch (kt) {
+        case KeyType::RSA_2048: return "RSA-2048";
+        case KeyType::RSA_4096: return "RSA-4096";
+        case KeyType::Ed25519:  return "Ed25519";
+        case KeyType::Ed448:    return "Ed448";
+        case KeyType::ECDSA_P256: return "ECDSA-P256";
+        case KeyType::ECDSA_P384: return "ECDSA-P384";
+        case KeyType::ECDSA_P521: return "ECDSA-P521";
+        case KeyType::SM2:      return "SM2";
+    }
+    return "?";
 }
 
 static void hex_dump(const uint8_t* d, size_t n) {
@@ -125,8 +217,8 @@ static KeyPair gen_keypair(const std::string& type) {
 static void cmd_gen(int argc, char** argv) {
     std::string cn = "localhost", key_type = "ed25519";
     int days = 365;
-    const char* out_file = "cert.der";
-    const char* key_file = "key.bin";
+    std::string out_file = "~/.ssh/cert.der";   // 默认输出到 ~/.ssh
+    std::string key_file = "~/.ssh/key.bin";
 
     for (int i = 0; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--cn") || !std::strcmp(argv[i], "--common-name"))
@@ -165,10 +257,13 @@ static void cmd_gen(int argc, char** argv) {
     auto cert = b.build_and_sign(kp.kt, kp.priv.data(), kp.priv.size());
     auto der = cert.to_der();
 
-    write_file(out_file, der);
-    write_file(key_file, kp.priv);
+    std::string out_path = prepare_output_path(out_file.c_str());
+    std::string key_path = prepare_output_path(key_file.c_str());
+    write_file(out_path.c_str(), der);
+    write_file(key_path.c_str(), kp.priv);
+    set_private_key_mode(key_path.c_str());
     std::printf("证书: %s (%zu bytes)\n私钥: %s (%zu bytes)\nCN: %s\n有效期: %d 天\n",
-                out_file, der.size(), key_file, kp.priv.size(), cn.c_str(), days);
+                out_path.c_str(), der.size(), key_path.c_str(), kp.priv.size(), cn.c_str(), days);
 }
 
 static void cmd_info(int argc, char** argv) {
@@ -179,14 +274,12 @@ static void cmd_info(int argc, char** argv) {
     }
     if (!cert_file) die("需要 --cert <file>");
 
-    auto der = read_file(cert_file);
-    auto cert = x509_cert::from_der(der);
-    if (!cert) die("无法解析证书 (无效 DER)");
+    auto cert = load_cert_file(cert_file);
+    if (!cert) die("无法解析证书 (无效 DER/PEM)");
 
-    const char* kt_names[] = {"RSA-2048","RSA-4096","Ed25519","Ed448","ECDSA-P256","SM2"};
     std::printf("Subject CN : %s\n", cert->common_name().c_str());
     std::printf("Issuer  CN : %s\n", cert->issuer_name().c_str());
-    std::printf("Key type   : %s\n", kt_names[(int)cert->key_type]);
+    std::printf("Key type   : %s\n", key_type_name(cert->key_type));
     std::printf("Is CA      : %s\n", cert->is_ca() ? "yes" : "no");
     std::printf("Valid now  : %s\n", cert->is_valid_now() ? "yes" : "no");
     std::printf("Serial     : "); hex_dump(cert->serial_number.data(), cert->serial_number.size());
@@ -197,7 +290,7 @@ static void cmd_info(int argc, char** argv) {
         std::printf("\n");
     }
     std::printf("Sig size   : %zu bytes\n", cert->signature.size());
-    std::printf("DER size   : %zu bytes\n", der.size());
+    std::printf("DER size   : %zu bytes\n", cert->to_der().size());
 }
 
 static void cmd_verify(int argc, char** argv) {
@@ -212,15 +305,13 @@ static void cmd_verify(int argc, char** argv) {
     if (!cert_file) die("需要 --cert <file>");
     if (ca_files.empty()) die("需要至少一个 --ca <file>");
 
-    auto leaf_der = read_file(cert_file);
-    auto leaf = x509_cert::from_der(leaf_der);
+    auto leaf = load_cert_file(cert_file);
     if (!leaf) die("无法解析叶子证书");
 
     std::vector<x509_cert> chain;
     chain.push_back(*leaf);
     for (auto f : ca_files) {
-        auto ca_der = read_file(f);
-        auto ca = x509_cert::from_der(ca_der);
+        auto ca = load_cert_file(f);
         if (!ca) die("无法解析 CA 证书");
         chain.push_back(*ca);
     }
@@ -234,11 +325,64 @@ static void cmd_verify(int argc, char** argv) {
     }
 }
 
+// 查看私钥 (PKCS#8 / PKCS#1 / SEC1 / RFC 8410 PEM)
+static void cmd_key(int argc, char** argv) {
+    const char* key_file = nullptr;
+    const char* password = nullptr;
+    for (int i = 0; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--key"))
+            { if (++i < argc) key_file = argv[i]; }
+        else if (!std::strcmp(argv[i], "--pass"))
+            { if (++i < argc) password = argv[i]; }
+    }
+    if (!key_file) die("需要 --key <file>");
+
+    auto data = read_file(key_file);
+    std::string pem((const char*)data.data(), data.size());
+    std::optional<private_key> key;
+    if (pem.find("-----BEGIN ENCRYPTED PRIVATE KEY-----") != std::string::npos) {
+        if (!password) die("加密私钥需要 --pass <password>");
+        key = private_key::from_pem_encrypted(pem, password);
+        if (!key) die("无法解密私钥 (密码错误或格式不支持)");
+    } else {
+        key = private_key::from_pem(pem);
+        if (!key) die("无法解析私钥 (无效 PEM)");
+    }
+
+    std::printf("Key type   : %s\n", key_type_name(key->key_type));
+    std::printf("Private key: %zu bytes\n", key->priv.size());
+    std::printf("Public key : %zu bytes", key->pub.size());
+    if (!key->pub.empty()) {
+        std::printf(": ");
+        hex_dump(key->pub.data(), key->pub.size() < 32 ? key->pub.size() : 32);
+    } else {
+        std::printf("\n");
+    }
+}
+
+// 查看 CSR (PKCS#10 PEM)
+static void cmd_csr(int argc, char** argv) {
+    const char* csr_file = nullptr;
+    for (int i = 0; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--csr"))
+            { if (++i < argc) csr_file = argv[i]; }
+    }
+    if (!csr_file) die("需要 --csr <file>");
+
+    auto data = read_file(csr_file);
+    auto req = csr::from_pem(std::string((const char*)data.data(), data.size()));
+    if (!req) die("无法解析 CSR (无效 PEM)");
+
+    std::printf("Subject CN : %s\n", req->subject.empty() ? "" : req->subject[0].value.c_str());
+    std::printf("Key type   : %s\n", key_type_name(req->key_type));
+    std::printf("Signature  : %zu bytes\n", req->signature.size());
+}
+
 static void cmd_tlsgen(int argc, char** argv) {
     std::string cn = "localhost", key_type = "ed25519";
     int days = 365;
-    const char* out_file = "cert.der";
-    const char* key_file = "key.bin";
+    std::string out_file = "~/.ssh/cert.der";   // 默认输出到 ~/.ssh
+    std::string key_file = "~/.ssh/key.bin";
 
     for (int i = 0; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--cn") || !std::strcmp(argv[i], "--common-name"))
@@ -277,7 +421,8 @@ static void cmd_tlsgen(int argc, char** argv) {
     }
 
     auto der = tls_make_x509_self_signed(*tls_cert, days);
-    write_file(out_file, der);
+    std::string out_path = prepare_output_path(out_file.c_str());
+    write_file(out_path.c_str(), der);
 
     // Write private key
     std::vector<uint8_t> priv_data;
@@ -293,10 +438,12 @@ static void cmd_tlsgen(int argc, char** argv) {
         priv_data.resize(256);
         tls_cert->priv.rsa.d.to_bytes(priv_data.data());
     }
-    write_file(key_file, priv_data);
+    std::string key_path = prepare_output_path(key_file.c_str());
+    write_file(key_path.c_str(), priv_data);
+    set_private_key_mode(key_path.c_str());
 
     std::printf("TLS 证书 (X.509 v3): %s (%zu bytes)\n私钥: %s (%zu bytes)\nCN: %s\n有效期: %d 天\n",
-                out_file, der.size(), key_file, priv_data.size(), cn.c_str(), days);
+                out_path.c_str(), der.size(), key_path.c_str(), priv_data.size(), cn.c_str(), days);
 }
 
 // ── main ───────────────────────────────────────────────────────────────────
@@ -306,6 +453,8 @@ int main(int argc, char** argv) {
 
     if (!std::strcmp(cmd, "gen"))       cmd_gen(argc - 2, argv + 2);
     else if (!std::strcmp(cmd, "info")) cmd_info(argc - 2, argv + 2);
+    else if (!std::strcmp(cmd, "key"))  cmd_key(argc - 2, argv + 2);
+    else if (!std::strcmp(cmd, "csr"))  cmd_csr(argc - 2, argv + 2);
     else if (!std::strcmp(cmd, "verify")) cmd_verify(argc - 2, argv + 2);
     else if (!std::strcmp(cmd, "chain")) cmd_verify(argc - 2, argv + 2);
     else if (!std::strcmp(cmd, "tlsgen")) cmd_tlsgen(argc - 2, argv + 2);

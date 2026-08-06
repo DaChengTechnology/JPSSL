@@ -232,11 +232,18 @@ void tls_co_executor::add_waiter(int fd, bool for_write,
 bool tls_co_executor::run_once(int timeout_ms) {
     std::vector<pollfd> pfds;
     {
+        // 线程池并发安全：协程恢复线程（pool）与驱动线程都可能写 waiters_
         std::lock_guard<std::mutex> lk(mtx_);
         if (waiters_.empty()) return false;
         pfds.reserve(waiters_.size());
-        for (const auto& w : waiters_)
-            pfds.push_back({w.fd, (short)(w.for_write ? POLLOUT : POLLIN), 0});
+        for (const auto& w : waiters_) {
+            // 成员赋值而非列表初始化：winsock2.h 的 pollfd.fd 是 SOCKET，直接窄化会触发 C2397
+            pollfd pfd{};
+            pfd.fd = w.fd;
+            pfd.events = (short)(w.for_write ? POLLOUT : POLLIN);
+            pfd.revents = 0;
+            pfds.push_back(pfd);
+        }
     }
 
     int rc = poll_multi(pfds, timeout_ms);
