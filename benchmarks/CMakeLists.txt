@@ -77,6 +77,10 @@ if(OpenSSL_FOUND)
     target_include_directories(bench_ecdsa_ossl PRIVATE ${BENCH_INCLUDE_DIR})
     target_link_libraries(bench_ecdsa_ossl PRIVATE jpssl_cpu OpenSSL::Crypto)
 
+    add_executable(bench_ecdh_batch bench_ecdh_batch.cpp)
+    target_include_directories(bench_ecdh_batch PRIVATE ${BENCH_INCLUDE_DIR})
+    target_link_libraries(bench_ecdh_batch PRIVATE jpssl_cpu OpenSSL::Crypto)
+
     add_executable(bench_sm_ossl bench_sm_ossl.cpp)
     target_include_directories(bench_sm_ossl PRIVATE ${BENCH_INCLUDE_DIR} ${BENCH_SRC_DIR})
     target_link_libraries(bench_sm_ossl PRIVATE jpssl_cpu OpenSSL::Crypto)

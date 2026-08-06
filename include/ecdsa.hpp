@@ -32,4 +32,10 @@ bool ecdsa_p256_ecdh(uint8_t shared[32], const uint8_t priv[32], const uint8_t p
 /// P-384：shared 48 字节，priv 48 字节，pub 96 字节（x||y）
 bool ecdsa_p384_ecdh(uint8_t shared[48], const uint8_t priv[48], const uint8_t pub[96]);
 
+// ── 批量 ECDHE（多条共享密钥一次计算，批量求逆摊薄模逆成本）──
+// 布局：shared/priv/pub 均为连续数组（每项 32/64 字节，P-384 为 48/96）。
+// count ≥ 1；批量内部按 16 条一块处理，块内仅 2 次 Fermat 求逆。
+bool ecdsa_p256_ecdh_batch(uint8_t* shared, const uint8_t* priv, const uint8_t* pub, int count);
+bool ecdsa_p384_ecdh_batch(uint8_t* shared, const uint8_t* priv, const uint8_t* pub, int count);
+
 }
