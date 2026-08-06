@@ -142,7 +142,13 @@ bool rsassa_pss_sign(const rsa_crt_key& key, const uint8_t* msg, size_t msgLen,
     // 12-13. s = RSASP1(key, OS2IP(EM))
     rsa_bignum embn = rsa_bignum::from_bytes(EM, 256);
     rsa_bignum sbn;
-    RSASP1(key, embn, sbn);
+    if (key.p.is_zero() || key.q.is_zero()) {
+        // CRT 参数缺失（PEM 导入的私钥仅含 n/d/e）：回退全模幂 s = EM^d mod n
+        // （与 rsa_decrypt 的 CRT 缺失回退逻辑一致）
+        bn_modpow(sbn, embn, key.d, key.n);
+    } else {
+        RSASP1(key, embn, sbn);
+    }
     sbn.to_bytes(sig);
     return true;
 }

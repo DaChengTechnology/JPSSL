@@ -228,7 +228,10 @@ target_include_directories(jpssl_cpu_shared PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 # threadpool submodule（协程线程池，header-only）：tls_co_executor 可选绑定
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/threadpool/CMakeLists.txt)
+# threadpool submodule（协程线程池，header-only）：tls_co_executor 可选绑定
+# 子项目模式（JPSSL_USE_EXTERNAL_THREADPOOL=ON）下由父项目提供 threadpool 头文件路径，
+# 不重复 add_subdirectory，避免与父项目的 threadpool/logger target 冲突。
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/threadpool/CMakeLists.txt AND NOT JPSSL_USE_EXTERNAL_THREADPOOL)
     add_subdirectory(threadpool)
     target_link_libraries(jpssl_cpu PRIVATE threadpool)
     target_link_libraries(jpssl_cpu_shared PRIVATE threadpool)
@@ -490,7 +493,7 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════
 #  jpssl-test — 测试 & Benchmark 可执行文件
 # ═══════════════════════════════════════════════════════════════════════
-if(JP_ENABLE_MUSA AND NOT WIN32)
+if(NOT JPSSL_AS_SUBPROJECT AND JP_ENABLE_MUSA AND NOT WIN32)
     musa_add_executable(jpssl-test src/main.cpp)
     target_include_directories(jpssl-test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -499,7 +502,7 @@ if(JP_ENABLE_MUSA AND NOT WIN32)
     # GPU 测试函数由 #ifdef JP_MUSA 守卫，须对 main.cpp 可见
     target_compile_definitions(jpssl-test PRIVATE JP_MUSA)
     target_link_libraries(jpssl-test jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
-else()
+elseif(NOT JPSSL_AS_SUBPROJECT)
     add_executable(jpssl-test src/main.cpp)
     target_include_directories(jpssl-test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -511,37 +514,43 @@ endif()
 #  命令行工具
 # ═══════════════════════════════════════════════════════════════════════
 
-add_executable(jpssl-cert src/cmd/jpssl_cert.cpp)
-add_executable(jpssl-crypt src/cmd/jpssl_crypt.cpp)
-target_include_directories(jpssl-cert PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${MUSA_INCLUDE_DIRS}
-)
-target_include_directories(jpssl-crypt PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${MUSA_INCLUDE_DIRS}
-)
-if(JP_ENABLE_MUSA)
-    target_link_libraries(jpssl-cert PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
-    target_link_libraries(jpssl-crypt PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
-else()
-    target_link_libraries(jpssl-cert PRIVATE jpssl_cpu)
-    target_link_libraries(jpssl-crypt PRIVATE jpssl_cpu)
+if(NOT JPSSL_AS_SUBPROJECT)
+    add_executable(jpssl-cert src/cmd/jpssl_cert.cpp)
+    add_executable(jpssl-crypt src/cmd/jpssl_crypt.cpp)
+endif()
+if(NOT JPSSL_AS_SUBPROJECT)
+    target_include_directories(jpssl-cert PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${MUSA_INCLUDE_DIRS}
+    )
+    target_include_directories(jpssl-crypt PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${MUSA_INCLUDE_DIRS}
+    )
+endif()
+if(NOT JPSSL_AS_SUBPROJECT)
+    if(JP_ENABLE_MUSA)
+        target_link_libraries(jpssl-cert PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
+        target_link_libraries(jpssl-crypt PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
+    else()
+        target_link_libraries(jpssl-cert PRIVATE jpssl_cpu)
+        target_link_libraries(jpssl-crypt PRIVATE jpssl_cpu)
+    endif()
+
+    # ── 安装 ────────────────────────────────────────────────────────────
+    include(GNUInstallDirs)
+    install(TARGETS jpssl-cert jpssl-crypt
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
 endif()
 
-# ── 安装 ────────────────────────────────────────────────────────────────
-include(GNUInstallDirs)
-install(TARGETS jpssl-cert jpssl-crypt
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
-
 # ═══════════════════════════════════════════════════════════════════════
-#  单元测试 (CTest)
-add_subdirectory(tests)
+#  单元测试 (CTest) / 示例 —— 子项目模式（JPSSL_AS_SUBPROJECT=ON）下跳过
+if(NOT JPSSL_AS_SUBPROJECT)
+    add_subdirectory(tests)
+    add_subdirectory(examples)
+endif()
 
-# HTTPS + 国际 CT 示例
-add_subdirectory(examples)
-
-if(JP_ENABLE_BENCH)
+if(JP_ENABLE_BENCH AND NOT JPSSL_AS_SUBPROJECT)
     add_subdirectory(benchmarks)
 endif()
