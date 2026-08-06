@@ -1109,6 +1109,14 @@ cmake -B build -DJP_ENABLE_MUSA=ON
 # ARM (macOS Apple Silicon / Linux aarch64)：启用 NEON 加速并指定架构等级
 cmake -B build -DJP_ENABLE_NEON=ON -DJP_ARM_MARCH=armv9-a
 
+# ARM Linux 交叉编译（在 x86 宿主机上构建 ARM64 目标）
+#   Ubuntu/Debian 宿主机先安装交叉工具链：
+#     sudo apt-get install g++-aarch64-linux-gnu
+cmake -B build-arm64 -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/aarch64-linux-gnu.cmake
+
+# 在 ARM Linux 机器上原生构建（aarch64 自动启用 NEON，无需 toolchain）
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+
 # 禁用所有 SIMD 加速（纯标量回退）
 cmake -B build -DJP_ENABLE_AVX2=OFF -DJP_ENABLE_AVX512=OFF -DJP_ENABLE_NEON=OFF
 ```

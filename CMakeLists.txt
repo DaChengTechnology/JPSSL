@@ -395,9 +395,13 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
                 # armv9-a 会开启 SVE/SVE2，而 Apple Silicon（M 系列，ARMv8.4-8.6）
                 # 不支持 SVE；NEON 源只用 AES/PMULL/SHA2 扩展，禁用 SVE 代码生成
                 # 以保证 armv9-a 构建在 Apple 芯片与 ARMv9 机器上都能运行。
-                list(APPEND JP_NEON_ARCH_FLAGS
-                    -Xclang -target-feature -Xclang -sve
-                    -Xclang -target-feature -Xclang -sve2)
+                if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+                    list(APPEND JP_NEON_ARCH_FLAGS
+                        -Xclang -target-feature -Xclang -sve
+                        -Xclang -target-feature -Xclang -sve2)
+                elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+                    list(APPEND JP_NEON_ARCH_FLAGS -mno-sve -mno-sve2)
+                endif()
             endif()
             set_source_files_properties(${ARM_SOURCES} PROPERTIES
                 COMPILE_OPTIONS "${JP_NEON_ARCH_FLAGS}")

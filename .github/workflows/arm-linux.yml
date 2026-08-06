@@ -1,0 +1,52 @@
+name: ARM Linux CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  native-arm64:
+    name: Build & test (native ARM64 Linux)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libssl-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+  cross-aarch64:
+    name: Cross-compile (aarch64-linux-gnu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-aarch64-linux-gnu cmake
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-cross
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/aarch64-linux-gnu.cmake
+
+      - name: Build
+        run: cmake --build build-cross -j"$(nproc)"
+
+      - name: Verify binaries are AArch64
+        run: file build-cross/jpssl-test build-cross/libjpssl_cpu.a
