@@ -3956,11 +3956,22 @@ _ecp_nistz256_precomputed:
 .text
 
 // ELF (Linux/FreeBSD) 不自动为 C 符号加下划线（Apple Mach-O 会），
-// 因此为 C++ 使用的 ecp_nistz256_mul_mont / ecp_nistz256_sqr_mont
-// 提供指向 _ 前缀实现的别名，保证链接成功。
+// 因此为 C++ 使用的 ecp_nistz256_* 提供指向 _ 前缀实现的别名，保证链接成功。
 #if !defined(__APPLE__)
 .globl	ecp_nistz256_mul_mont
 .globl	ecp_nistz256_sqr_mont
+.globl	ecp_nistz256_ord_mul_mont
+.globl	ecp_nistz256_point_double
+.globl	ecp_nistz256_point_add_affine
+.globl	ecp_nistz256_gather_w7
+.globl	ecp_nistz256_neg
+.globl	ecp_nistz256_precomputed
 .set	ecp_nistz256_mul_mont, _ecp_nistz256_mul_mont
 .set	ecp_nistz256_sqr_mont, _ecp_nistz256_sqr_mont
+.set	ecp_nistz256_ord_mul_mont, _ecp_nistz256_ord_mul_mont
+.set	ecp_nistz256_point_double, _ecp_nistz256_point_double
+.set	ecp_nistz256_point_add_affine, _ecp_nistz256_point_add_affine
+.set	ecp_nistz256_gather_w7, _ecp_nistz256_gather_w7
+.set	ecp_nistz256_neg, _ecp_nistz256_neg
+.set	ecp_nistz256_precomputed, _ecp_nistz256_precomputed
 #endif
