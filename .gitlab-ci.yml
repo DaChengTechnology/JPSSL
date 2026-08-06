@@ -11,6 +11,8 @@ stages:
 
 build_test:
   stage: build_test
+  tags:
+    - linux
   script:
     - cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
     - cmake --build build -j"$(nproc)"
@@ -19,6 +21,8 @@ build_test:
 # 仅验证 benchmarks/ 目标可正常编译（JP_ENABLE_BENCH=ON，GPU 段由 JP_MUSA 守卫）
 bench:
   stage: bench
+  tags:
+    - linux
   script:
     - cmake -S . -B build-bench -DCMAKE_BUILD_TYPE=Release -DJP_ENABLE_BENCH=ON
     - cmake --build build-bench -j"$(nproc)"
