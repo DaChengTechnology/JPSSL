@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **DHE（ffdhe2048）性能优化**：`ffdhe2048_keypair` / `ffdhe2048_shared` 改用
+  全局缓存的 Montgomery 上下文（R/R2/m' 按固定模数 p 只算一次）+ 4-bit 窗口
+  模幂（`rsa_mont_modpow_win`），替代每次调用重算 R/R2 的朴素平方-乘
+  `bn_modpow`；实测单次 keypair 约 393→224 µs、shared 约 389→224 µs
+  （≈1.75×，x86-64 Release / MSVC）。
+
 - **TLS 1.2 新增 DHE 与 PSK 密钥交换**：支持 DHE-RSA（ffdhe2048，RFC 7919）、
   纯 PSK（RFC 4279）与 DHE-PSK（RFC 5487）共 15 个新密码套件
   （GCM×6 / ChaCha20-Poly1305×3 / AES-CBC×6），含服务端/客户端双向握手、
