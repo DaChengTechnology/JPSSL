@@ -243,19 +243,33 @@ std::vector<uint8_t> encode_extensions(const x509_cert& cert) {
     // KeyUsage
     if (cert.key_usage) {
         uint16_t bits = cert.key_usage->bits;
-        uint8_t ku_bytes[2]; int ku_len = 0;
-        if (bits > 0xFF) { ku_bytes[0] = (uint8_t)(bits >> 8); ku_bytes[1] = (uint8_t)(bits & 0xFF); ku_len = 2; }
-        else { ku_bytes[0] = (uint8_t)bits; ku_len = 1; }
-        uint8_t last = ku_bytes[ku_len - 1];
+        // RFC 5280 §4.2.1.3：KeyUsage 的 BIT STRING 从最高位开始编号
+        // （bit 0 = digitalSignature）。KeyUsageBits 用 16 位字表示位位置
+        // （0x8000 = bit 0 … 0x0001 = bit 15），因此按大端写出两个字节，
+        // 再按最低有效位清零后的有效位数计算 unused bits。
+        uint8_t ku_bytes[2];
+        ku_bytes[0] = (uint8_t)(bits >> 8);
+        ku_bytes[1] = (uint8_t)(bits & 0xFF);
+        int ku_len = 2;
         uint8_t unused = 0;
-        if (last == 0) { unused = 8; ku_len--; }
-        else { uint8_t m = 0x01; while ((last & m) == 0) { ++unused; m <<= 1; } }
-        auto enc = encode_bit_string(ku_bytes, ku_len, unused);
-        std::vector<uint8_t> ext;
-        append(ext, encode_oid(OID_KEY_USAGE, sizeof(OID_KEY_USAGE)));
-        ext.push_back(0x01); ext.push_back(0x01); ext.push_back(0xFF);
-        append(ext, encode_octet_string(enc.data(), enc.size()));
-        append(exts, encode_sequence(ext));
+        if (bits != 0) {
+            uint16_t v = bits;
+            int tz = 0;
+            while ((v & 1) == 0) { ++tz; v >>= 1; }
+            int meaningful = 16 - tz;
+            ku_len = (meaningful + 7) / 8;
+            unused = (uint8_t)(ku_len * 8 - meaningful);
+        } else {
+            ku_len = 0;
+        }
+        if (ku_len > 0) {  // 无有效位时跳过 KeyUsage 扩展
+            auto enc = encode_bit_string(ku_bytes, (size_t)ku_len, unused);
+            std::vector<uint8_t> ext;
+            append(ext, encode_oid(OID_KEY_USAGE, sizeof(OID_KEY_USAGE)));
+            ext.push_back(0x01); ext.push_back(0x01); ext.push_back(0xFF);
+            append(ext, encode_octet_string(enc.data(), enc.size()));
+            append(exts, encode_sequence(ext));
+        }
     }
 
     // ExtendedKeyUsage

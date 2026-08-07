@@ -82,6 +82,12 @@ static void sm4_ccm_format_aad_len(uint8_t* buf, size_t& off, size_t aad_len) {
 }
 
 // ── 流式 CBC-MAC（跨段连续处理，避免拼装 mac_input 大缓冲）──
+// 计数器块：大端递增最后 (15 - nonce_len) 字节（CCM 计数器字段）
+static void sm4_ccm_ctr_inc(uint8_t ctr[16], size_t nonce_len) {
+    for (int i = 15; i > (int)nonce_len; --i) {
+        if (++ctr[i] != 0) break;
+    }
+}
 
 struct sm4_mac_stream {
     uint8_t mac[16] = {};
@@ -143,7 +149,7 @@ static void sm4_ccm_encrypt_impl(const sm4_ctx* ctx,
         tag[i] = ms.mac[i] ^ enc_mac[i];
 
     // CTR 就地加密（先 MAC 后 XOR，安全）
-    ctr0[0] |= 0x01;
+    sm4_ccm_ctr_inc(ctr0, nonce_len);
     sm4_ctr_crypt(ctx, ctr0, pt, out, pt_len);
 }
 
@@ -162,7 +168,7 @@ static bool sm4_ccm_decrypt_impl(const sm4_ctx* ctx,
     std::memcpy(ctr0_mac, ctr0, 16);
 
     // CTR 就地解密
-    ctr0[0] |= 0x01;
+    sm4_ccm_ctr_inc(ctr0, nonce_len);
     sm4_ctr_crypt(ctx, ctr0, ct, out, ct_len);
 
     // CBC-MAC（解密后的明文）
@@ -263,7 +269,7 @@ void sm4_ccm_encrypt(const sm4_ctx* ctx,
         tag[i] = mac[i] ^ enc_mac[i];
 
     // CTR encrypt plaintext
-    ctr0[0] |= 0x01; // counter = 1 (increment LSB via bit 0)
+    sm4_ccm_ctr_inc(ctr0, nonce_len);
     ciphertext.resize(plaintext.size());
     sm4_ctr_crypt(ctx, ctr0, plaintext.data(), ciphertext.data(), plaintext.size());
 }
@@ -280,7 +286,7 @@ bool sm4_ccm_decrypt(const sm4_ctx* ctx,
     uint8_t ctr0[16];
     sm4_ccm_format_b0(ctr0, false, 0, 15 - nonce_len, nonce, nonce_len);
     ctr0[0] &= 0x07;
-    ctr0[0] |= 0x01; // counter = 1
+    sm4_ccm_ctr_inc(ctr0, nonce_len); // counter = 1
 
     plaintext.resize(ciphertext.size());
     sm4_ctr_crypt(ctx, ctr0, ciphertext.data(), plaintext.data(), ciphertext.size());
