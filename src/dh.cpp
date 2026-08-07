@@ -33,23 +33,32 @@ rsa_bignum ffdhe2048_bignum(const uint8_t bytes[FFDHE2048_BYTES]) {
     return rsa_bignum::from_bytes(bytes, FFDHE2048_BYTES);
 }
 
+// ffdhe2048 素数 p 固定：Montgomery 上下文（R/R2/m'）按模数全局缓存
+// （rsa_mont_init 内部 8 槽缓存），只在首次使用时计算一次；窗口化模幂
+// 比通用 bn_modpow（每次重算 R/R2 + 朴素平方-乘）快约 1.4 倍。
+static const rsa_bignum& ffdhe2048_modulus() {
+    static const rsa_bignum p = rsa_bignum::from_bytes(ffdhe2048_p, FFDHE2048_BYTES);
+    return p;
+}
+
 void ffdhe2048_keypair(uint8_t pub[FFDHE2048_BYTES], uint8_t priv[32]) {
     // 256-bit 随机私钥指数（RFC 7919 §5.2：ffdhe2048 至少 225 bit）
     jpssl::secure_rand_bytes(priv, 32);
     priv[0] |= 0x80; // 保证指数为 256-bit（避免 0/1 退化）
 
-    rsa_bignum p = ffdhe2048_bignum(ffdhe2048_p);
+    const rsa_bignum& p = ffdhe2048_modulus();
+    mont_ctx mc = rsa_mont_init(p);
     rsa_bignum g = rsa_bignum::from_uint64(FFDHE2048_G);
     rsa_bignum x = rsa_bignum::from_bytes(priv, 32);
     rsa_bignum y;
-    bn_modpow(y, g, x, p);
+    rsa_mont_modpow_win(y, g, x, mc, p);
     y.to_bytes(pub);
 }
 
 bool ffdhe2048_shared(uint8_t shared[FFDHE2048_BYTES],
                       const uint8_t priv[32],
                       const uint8_t peer_pub[FFDHE2048_BYTES]) {
-    rsa_bignum p = ffdhe2048_bignum(ffdhe2048_p);
+    const rsa_bignum& p = ffdhe2048_modulus();
     rsa_bignum one = rsa_bignum::from_uint64(1);
     rsa_bignum p_minus_1;
     bn_sub(p_minus_1, p, one);
@@ -57,8 +66,9 @@ bool ffdhe2048_shared(uint8_t shared[FFDHE2048_BYTES],
     // RFC 7919 §5.1：1 < Y < p-1
     if (!(one < y) || !(y < p_minus_1)) return false;
     rsa_bignum x = rsa_bignum::from_bytes(priv, 32);
+    mont_ctx mc = rsa_mont_init(p);
     rsa_bignum z;
-    bn_modpow(z, y, x, p);
+    rsa_mont_modpow_win(z, y, x, mc, p);
     z.to_bytes(shared);
     return true;
 }
