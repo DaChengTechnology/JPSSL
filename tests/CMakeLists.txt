@@ -73,6 +73,23 @@ add_executable(test_tls test_tls.cpp)
 target_include_directories(test_tls PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_tls PRIVATE jpssl_cpu ${MUSA_LIBS})
 
+# ── QUIC v1/v2 SSL 支持单元测试 ──────────────────────────────────────────
+add_executable(test_quic test_quic.cpp)
+target_include_directories(test_quic PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_quic PRIVATE jpssl_cpu ${MUSA_LIBS})
+
+# ── DTLS 1.2/1.3 单元测试 ────────────────────────────────────────────────
+add_executable(test_dtls test_dtls.cpp)
+target_include_directories(test_dtls PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_dtls PRIVATE jpssl_cpu ${MUSA_LIBS})
+
+# ── jpssl ↔ OpenSSL DTLS 1.2 互操作测试 ──────────────────────────────────
+if(OpenSSL_FOUND)
+add_executable(test_dtls_openssl_interop test_dtls_openssl_interop.cpp)
+target_include_directories(test_dtls_openssl_interop PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_dtls_openssl_interop PRIVATE jpssl_cpu OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
 # ── TLS 1.3 X448/Ed448 握手测试 (OpenSSL 对比) ───────────────────────────
 if(OpenSSL_FOUND)
 add_executable(test_tls448 test_tls448.cpp)
@@ -101,7 +118,7 @@ target_link_libraries(test_base64 PRIVATE jpssl_cpu ${MUSA_LIBS})
 
 add_executable(test_tls_socket test_tls_socket.cpp)
 target_include_directories(test_tls_socket PRIVATE ${INCLUDE_DIR})
-target_link_libraries(test_tls_socket PRIVATE jpssl_cpu threadpool ${MUSA_LIBS})
+target_link_libraries(test_tls_socket PRIVATE jpssl_cpu ${MUSA_LIBS})
 
 # ---- TLS stability / soak test (repeated handshakes + data transfer) ----
 add_executable(test_tls_stability test_tls_stability.cpp)
@@ -271,6 +288,11 @@ add_test(NAME test_sha512        COMMAND test_sha512)
 endif()
 add_test(NAME test_sha1          COMMAND test_sha1)
 add_test(NAME test_tls           COMMAND test_tls)
+add_test(NAME test_quic          COMMAND test_quic)
+add_test(NAME test_dtls          COMMAND test_dtls)
+if(OpenSSL_FOUND)
+add_test(NAME test_dtls_openssl_interop COMMAND test_dtls_openssl_interop)
+endif()
 if(OpenSSL_FOUND)
 add_test(NAME test_tls448        COMMAND test_tls448)
 endif()
