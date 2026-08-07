@@ -245,6 +245,7 @@ static const char* ossl_cs_name(CipherSuite cs) {
         case CipherSuite::TLS_AES_256_GCM_SHA384:       return "TLS_AES_256_GCM_SHA384";
         case CipherSuite::TLS_CHACHA20_POLY1305_SHA256: return "TLS_CHACHA20_POLY1305_SHA256";
         case CipherSuite::TLS_AES_128_CCM_SHA256:       return "TLS_AES_128_CCM_SHA256";
+        case CipherSuite::TLS_AES_128_CCM_8_SHA256:     return "TLS_AES_128_CCM_8_SHA256";
         case CipherSuite::TLS_SM4_GCM_SM3:              return "TLS_SM4_GCM_SM3";
         case CipherSuite::TLS_SM4_CCM_SM3:              return "TLS_SM4_CCM_SM3";
         default: return nullptr;
@@ -256,26 +257,86 @@ struct tls12_suite_entry {
     CipherSuite cs;
     const char* ossl_name;
     bool need_ecdsa_cert;
+    bool use_psk;
 };
 
 static const tls12_suite_entry kTLS12Suites[] = {
     { CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-      "ECDHE-ECDSA-AES128-GCM-SHA256", true },
+      "ECDHE-ECDSA-AES128-GCM-SHA256", true, false },
     { CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-      "ECDHE-ECDSA-AES256-GCM-SHA384", true },
+      "ECDHE-ECDSA-AES256-GCM-SHA384", true, false },
     { CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-      "ECDHE-ECDSA-CHACHA20-POLY1305", true },
+      "ECDHE-ECDSA-CHACHA20-POLY1305", true, false },
     { CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-      "ECDHE-RSA-AES128-GCM-SHA256", false },
+      "ECDHE-RSA-AES128-GCM-SHA256", false, false },
     { CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-      "ECDHE-RSA-AES256-GCM-SHA384", false },
+      "ECDHE-RSA-AES256-GCM-SHA384", false, false },
     { CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-      "ECDHE-RSA-CHACHA20-POLY1305", false },
+      "ECDHE-RSA-CHACHA20-POLY1305", false, false },
     { CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256,
-      "AES128-GCM-SHA256", false },
+      "AES128-GCM-SHA256", false, false },
     { CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384,
-      "AES256-GCM-SHA384", false },
+      "AES256-GCM-SHA384", false, false },
+    { CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA256,
+      "AES128-SHA256", false, false },
+    { CipherSuite::TLS_RSA_WITH_AES_256_CBC_SHA256,
+      "AES256-SHA256", false, false },
+    // DHE-RSA (RFC 5246 / RFC 7919 ffdhe2048)
+    { CipherSuite::TLS_DHE_RSA_WITH_AES_128_GCM_SHA256,
+      "DHE-RSA-AES128-GCM-SHA256", false, false },
+    { CipherSuite::TLS_DHE_RSA_WITH_AES_256_GCM_SHA384,
+      "DHE-RSA-AES256-GCM-SHA384", false, false },
+    { CipherSuite::TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+      "DHE-RSA-CHACHA20-POLY1305", false, false },
+    { CipherSuite::TLS_DHE_RSA_WITH_AES_128_CBC_SHA256,
+      "DHE-RSA-AES128-SHA256", false, false },
+    { CipherSuite::TLS_DHE_RSA_WITH_AES_256_CBC_SHA256,
+      "DHE-RSA-AES256-SHA256", false, false },
+    // PSK (RFC 4279 / RFC 5487)
+    { CipherSuite::TLS_PSK_WITH_AES_128_GCM_SHA256,
+      "PSK-AES128-GCM-SHA256", false, true },
+    { CipherSuite::TLS_PSK_WITH_AES_256_GCM_SHA384,
+      "PSK-AES256-GCM-SHA384", false, true },
+    { CipherSuite::TLS_PSK_WITH_CHACHA20_POLY1305_SHA256,
+      "PSK-CHACHA20-POLY1305", false, true },
+    { CipherSuite::TLS_PSK_WITH_AES_128_CBC_SHA256,
+      "PSK-AES128-CBC-SHA256", false, true },
+    { CipherSuite::TLS_PSK_WITH_AES_256_CBC_SHA384,
+      "PSK-AES256-CBC-SHA384", false, true },
+    // DHE-PSK
+    { CipherSuite::TLS_DHE_PSK_WITH_AES_128_GCM_SHA256,
+      "DHE-PSK-AES128-GCM-SHA256", false, true },
+    { CipherSuite::TLS_DHE_PSK_WITH_AES_256_GCM_SHA384,
+      "DHE-PSK-AES256-GCM-SHA384", false, true },
+    { CipherSuite::TLS_DHE_PSK_WITH_CHACHA20_POLY1305_SHA256,
+      "DHE-PSK-CHACHA20-POLY1305", false, true },
+    { CipherSuite::TLS_DHE_PSK_WITH_AES_128_CBC_SHA256,
+      "DHE-PSK-AES128-CBC-SHA256", false, true },
+    { CipherSuite::TLS_DHE_PSK_WITH_AES_256_CBC_SHA384,
+      "DHE-PSK-AES256-CBC-SHA384", false, true },
 };
+
+// PSK 测试常量：identity + 16 字节 PSK
+static const char kPskIdentity[] = "jpssl-client";
+static const unsigned char kPskValue[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+
+static bool suite_uses_dhe(CipherSuite cs) {
+    switch (cs) {
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256:
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_128_CBC_SHA256:
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_256_CBC_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_DHE_PSK_WITH_CHACHA20_POLY1305_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_128_CBC_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_256_CBC_SHA384:
+            return true;
+        default:
+            return false;
+    }
+}
 
 static const char* cs_short_name(CipherSuite cs) {
     switch (cs) {
@@ -283,6 +344,7 @@ static const char* cs_short_name(CipherSuite cs) {
         case CipherSuite::TLS_AES_256_GCM_SHA384:       return "AES256-GCM-SHA384";
         case CipherSuite::TLS_CHACHA20_POLY1305_SHA256: return "CHACHA20-POLY1305-SHA256";
         case CipherSuite::TLS_AES_128_CCM_SHA256:       return "AES128-CCM-SHA256";
+        case CipherSuite::TLS_AES_128_CCM_8_SHA256:     return "AES128-CCM8-SHA256";
         case CipherSuite::TLS_SM4_GCM_SM3:              return "SM4-GCM-SM3";
         case CipherSuite::TLS_SM4_CCM_SM3:              return "SM4-CCM-SM3";
         case CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: return "ECDHE-ECDSA-AES128-GCM-SHA256";
@@ -293,6 +355,8 @@ static const char* cs_short_name(CipherSuite cs) {
         case CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: return "ECDHE-RSA-CHACHA20-POLY1305";
         case CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256:           return "AES128-GCM-SHA256";
         case CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384:           return "AES256-GCM-SHA384";
+        case CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA256:           return "AES128-SHA256";
+        case CipherSuite::TLS_RSA_WITH_AES_256_CBC_SHA256:           return "AES256-SHA256";
         default: return "?";
     }
 }
@@ -319,18 +383,41 @@ static bool ossl_ctx_set_tls12_only(SSL_CTX* ctx, const char* cipher_name) {
 static bool interop_tls12_jpssl_server_ossl_client(const tls12_suite_entry& e, std::string& why) {
     SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) { why = "SSL_CTX_new failed"; return false; }
+    if (e.use_psk) {
+        SSL_CTX_set_psk_client_callback(ctx, [](SSL* ssl, const char* hint,
+                                                char* identity,
+                                                unsigned int max_identity_len,
+                                                unsigned char* psk,
+                                                unsigned int max_psk_len) -> unsigned int {
+            (void)ssl; (void)hint;
+            unsigned int id_len = (unsigned int)sizeof(kPskIdentity);
+            if (max_identity_len < id_len || max_psk_len < sizeof(kPskValue)) return 0;
+            memcpy(identity, kPskIdentity, id_len);
+            memcpy(psk, kPskValue, sizeof(kPskValue));
+            return (unsigned int)sizeof(kPskValue);
+        });
+    }
     if (!ossl_ctx_set_tls12_only(ctx, e.ossl_name)) {
         SSL_CTX_free(ctx);
         why = std::string("SKIP: OpenSSL 不支持该 cipher: ") + e.ossl_name;
         return true;
     }
+    if (suite_uses_dhe(e.cs))
+        SSL_CTX_set1_groups_list(ctx, "ffdhe2048");
     SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
 
     // jpssl 服务端证书（按套件选择 ECDSA 或 RSA）
     tls_certificate_manager cert_mgr;
-    auto cert = e.need_ecdsa_cert ? make_jpssl_ecdsa_cert() : make_jpssl_rsa_cert();
-    if (!cert) { why = "jpssl cert generation failed"; SSL_CTX_free(ctx); return false; }
-    cert_mgr.add_certificate("localhost", std::move(cert));
+    if (!e.use_psk) {
+        auto cert = e.need_ecdsa_cert ? make_jpssl_ecdsa_cert() : make_jpssl_rsa_cert();
+        if (!cert) { why = "jpssl cert generation failed"; SSL_CTX_free(ctx); return false; }
+        cert_mgr.add_certificate("localhost", std::move(cert));
+    }
+
+    // PSK identity table
+    tls_psk_store psk_store;
+    if (e.use_psk)
+        psk_store.add(kPskIdentity, std::vector<uint8_t>(kPskValue, kPskValue + sizeof(kPskValue)));
 
     tls_listener listener;
     std::string err;
@@ -349,7 +436,13 @@ static bool interop_tls12_jpssl_server_ossl_client(const tls12_suite_entry& e, s
         }
         if (stop.load()) return;
         tls_connection conn;
-        if (!listener.accept(conn, cert_mgr, &err)) { srv_err = "accept: " + err; return; }
+        if (e.use_psk) {
+            if (!listener.accept(conn, cert_mgr, psk_store, &err)) {
+                srv_err = "accept: " + err; return;
+            }
+        } else {
+            if (!listener.accept(conn, cert_mgr, &err)) { srv_err = "accept: " + err; return; }
+        }
         std::vector<uint8_t> buf;
         if (!conn.recv(buf, &err)) { srv_err = "recv: " + err; return; }
         static const char expect[] = "ping-from-ossl-client";
@@ -370,13 +463,14 @@ static bool interop_tls12_jpssl_server_ossl_client(const tls12_suite_entry& e, s
     jp_sock_t fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd == (jp_sock_t)-1) { why = "socket failed"; SSL_CTX_free(ctx); stop = true; srv_th.join(); return false; }
     set_socket_timeouts(fd);
+
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
     if (::connect(fd, (sockaddr*)&addr, sizeof(addr)) != 0) {
-        why = "connect failed"; sock_close(fd); SSL_CTX_free(ctx);
-        stop = true; srv_th.join(); return false;
+        why = "connect failed"; sock_close(fd);
+        SSL_CTX_free(ctx); stop = true; srv_th.join(); return false;
     }
 
     SSL* ssl = SSL_new(ctx);
@@ -412,6 +506,185 @@ static bool interop_tls12_jpssl_server_ossl_client(const tls12_suite_entry& e, s
 
     if (!ok && why.empty()) why = srv_err.empty() ? "unknown" : srv_err;
     if (ok && !srv_ok) { ok = false; why = srv_err.empty() ? "jpssl server failed" : srv_err; }
+    return ok;
+}
+
+// ============================================================
+//  方向 B：OpenSSL 服务端（TLS 1.2）↔ jpssl 客户端（socket 层）
+// ============================================================
+
+static bool interop_tls12_ossl_server_jpssl_client(const tls12_suite_entry& e,
+                                                   std::string& why) {
+    const char* cs_name = e.ossl_name;
+    const bool need_cert = !e.use_psk;
+
+    // OpenSSL 服务端密钥对 + 自签证书；公钥同时放入 jpssl 端预期证书。
+    // ECDHE-ECDSA 用 ECDSA P-256；其余证书套件用 RSA-2048；PSK 套件无证书。
+    uint8_t xy[64] = {0};
+    uint8_t n_buf[256] = {0}, e_buf[3] = {0};
+    EVP_PKEY* pkey = nullptr;
+    X509* x509 = nullptr;
+    if (need_cert) {
+        if (e.need_ecdsa_cert)
+            pkey = ossl_gen_ecdsa_p256(xy);
+        else
+            pkey = ossl_gen_rsa_2048(n_buf, e_buf);
+        if (!pkey) { why = "ossl keygen failed"; return false; }
+        x509 = ossl_self_signed(pkey);
+        if (!x509) { EVP_PKEY_free(pkey); why = "ossl cert failed"; return false; }
+    }
+
+    SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
+    if (!ctx) {
+        why = "SSL_CTX_new failed";
+        if (x509) X509_free(x509);
+        if (pkey) EVP_PKEY_free(pkey);
+        return false;
+    }
+    if (!ossl_ctx_set_tls12_only(ctx, cs_name)) {
+        SSL_CTX_free(ctx);
+        if (x509) X509_free(x509);
+        if (pkey) EVP_PKEY_free(pkey);
+        why = "SKIP: OpenSSL 不支持该套件";
+        return true;
+    }
+    if (need_cert) {
+        SSL_CTX_use_certificate(ctx, x509);
+        SSL_CTX_use_PrivateKey(ctx, pkey);
+    }
+    if (e.use_psk) {
+        SSL_CTX_set_psk_server_callback(ctx, [](SSL* ssl, const char* identity,
+                                                unsigned char* psk,
+                                                unsigned int max_psk_len) -> unsigned int {
+            (void)ssl; (void)identity;
+            if (max_psk_len < sizeof(kPskValue)) return 0;
+            memcpy(psk, kPskValue, sizeof(kPskValue));
+            return (unsigned int)sizeof(kPskValue);
+        });
+    }
+
+    jp_sock_t lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (lfd == (jp_sock_t)-1) {
+        why = "socket failed"; SSL_CTX_free(ctx);
+        if (x509) X509_free(x509);
+        if (pkey) EVP_PKEY_free(pkey);
+        return false;
+    }
+    int one = 1;
+    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&one, sizeof(one));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(0);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (::bind(lfd, (sockaddr*)&addr, sizeof(addr)) != 0 || ::listen(lfd, 4) != 0) {
+        why = "bind/listen failed"; sock_close(lfd); SSL_CTX_free(ctx);
+        if (x509) X509_free(x509);
+        if (pkey) EVP_PKEY_free(pkey);
+        return false;
+    }
+    socklen_t alen = sizeof(addr);
+    getsockname(lfd, (sockaddr*)&addr, &alen);
+    uint16_t port = ntohs(addr.sin_port);
+
+    std::string srv_err;
+    std::atomic<bool> srv_ok{false};
+    std::thread srv_th([&] {
+        pollfd pfd{ lfd, POLLIN, 0 };
+        if (do_poll(&pfd, 1, 8000) <= 0) { srv_err = "accept timeout"; return; }
+        jp_sock_t cfd = ::accept(lfd, nullptr, nullptr);
+        if (cfd == (jp_sock_t)-1) { srv_err = "accept failed"; return; }
+        set_socket_timeouts(cfd);
+        SSL* ssl = SSL_new(ctx);
+        SSL_set_fd(ssl, (int)cfd);
+        if (SSL_accept(ssl) == 1) {
+            const SSL_CIPHER* c = SSL_get_current_cipher(ssl);
+            const char* got = c ? SSL_CIPHER_get_name(c) : nullptr;
+            if (got && std::strcmp(got, cs_name) == 0) {
+                static const char expect[] = "ping-from-jpssl-client";
+                static const char resp[] = "pong-from-ossl-server";
+                uint8_t rbuf[64] = {0};
+                if (ssl_read_full(ssl, rbuf, sizeof(expect) - 1) &&
+                    std::memcmp(rbuf, expect, sizeof(expect) - 1) == 0 &&
+                    ssl_write_all(ssl, (const uint8_t*)resp, sizeof(resp) - 1)) {
+                    srv_ok = true;
+                } else {
+                    srv_err = "ossl server data exchange failed: " + ossl_errors();
+                }
+            } else {
+                srv_err = std::string("ossl server negotiated wrong suite: ") +
+                          (got ? got : "(null)");
+            }
+        } else {
+            srv_err = std::string("SSL_accept failed: ") + ossl_errors();
+        }
+        // 不做 SSL_shutdown：close_notify 是明文 alert，客户端 recv 可能把它
+        // 当致命错误吞掉已收到的数据；直接关闭 socket，由客户端自然读到 EOF。
+        SSL_free(ssl);
+        sock_close(cfd);
+    });
+
+    // jpssl 客户端：预期证书（公钥与 OpenSSL 服务端配对）
+    tls_certificate_manager cli_mgr;
+    if (need_cert) {
+        auto expect_cert = std::make_unique<tls_certificate>();
+        expect_cert->subject_name = "localhost";
+        if (e.need_ecdsa_cert) {
+            expect_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
+            std::memcpy(expect_cert->pub.ecdsa_p256, xy, 64);
+        } else {
+            expect_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
+            expect_cert->pub.rsa.n = jpssl::rsa_bignum::from_bytes(n_buf, 256);
+            expect_cert->pub.rsa.e = jpssl::rsa_bignum::from_bytes(e_buf, 3);
+        }
+        cli_mgr.add_certificate("localhost", std::move(expect_cert));
+    }
+
+    bool ok = false;
+    tls_connection conn;
+    conn.set_tls_version(TLSVersion::V12);
+    conn.session().cipher_suite = e.cs;
+    if (e.use_psk) {
+        tls_session& s = conn.session();
+        s.tls12_psk_valid = true;
+        s.tls12_psk_identity_len = sizeof(kPskIdentity) - 1;
+        std::memcpy(s.tls12_psk_identity, kPskIdentity, s.tls12_psk_identity_len);
+        s.tls12_psk_value_len = sizeof(kPskValue);
+        std::memcpy(s.tls12_psk_value, kPskValue, sizeof(kPskValue));
+    }
+    std::string err;
+    if (conn.connect("localhost", port, &cli_mgr, &err)) {
+        if (conn.session().cipher_suite == e.cs) {
+            static const char ping[] = "ping-from-jpssl-client";
+            static const char expect_resp[] = "pong-from-ossl-server";
+            if (conn.send((const uint8_t*)ping, sizeof(ping) - 1, &err)) {
+                std::vector<uint8_t> buf;
+                if (conn.recv(buf, &err) &&
+                    buf.size() == sizeof(expect_resp) - 1 &&
+                    std::memcmp(buf.data(), expect_resp, sizeof(expect_resp) - 1) == 0) {
+                    ok = true;
+                } else {
+                    why = "jpssl client recv failed: " + err;
+                }
+            } else {
+                why = "jpssl client send failed: " + err;
+            }
+        } else {
+            why = "jpssl client negotiated wrong suite";
+        }
+    } else {
+        why = "jpssl client connect failed: " + err;
+    }
+
+    srv_th.join();
+    sock_close(lfd);
+    SSL_CTX_free(ctx);
+    if (x509) X509_free(x509);
+    if (pkey) EVP_PKEY_free(pkey);
+
+    if (!ok && why.empty()) why = srv_err.empty() ? "unknown" : srv_err;
+    if (!ok && !why.empty() && !srv_err.empty() && why.find("server:") == std::string::npos)
+        why += " | server: " + srv_err;
+    if (ok && !srv_ok) { ok = false; why = srv_err.empty() ? "ossl server failed" : srv_err; }
     return ok;
 }
 
@@ -652,27 +925,47 @@ static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why) {
 // ============================================================
 
 void test_tls12_openssl_interop() {
-    std::printf("\n=== TLS 1.2 套件 × OpenSSL 互操作（jpssl 服务端 ↔ OpenSSL 客户端）===\n");
+    std::printf("\n=== TLS 1.2 套件 × OpenSSL 互操作 ===\n");
     const int kTotal = (int)(sizeof(kTLS12Suites) / sizeof(kTLS12Suites[0]));
     int pass = 0, skip = 0, fail = 0;
 
     for (const auto& e : kTLS12Suites) {
-        std::string why;
-        bool r = interop_tls12_jpssl_server_ossl_client(e, why);
-        std::string tag = std::string("A jpssl-server <-> ossl-client ") + e.ossl_name;
-        if (r && why.rfind("SKIP", 0) == 0) {
-            ++skip;
-            std::cout << "  - " << tag << " : " << why << std::endl;
-        } else if (r) {
-            ++pass;
-            std::cout << "  \xE2\x9C\x93 " << tag << std::endl;
-        } else {
-            ++fail;
-            std::cout << "  \xE2\x9C\x97 " << tag << " - " << why << std::endl;
+        // 方向 A：jpssl 服务端 ↔ OpenSSL 客户端
+        {
+            std::string why;
+            bool r = interop_tls12_jpssl_server_ossl_client(e, why);
+            std::string tag = std::string("A jpssl-server <-> ossl-client ") + e.ossl_name;
+            if (r && why.rfind("SKIP", 0) == 0) {
+                ++skip;
+                std::cout << "  - " << tag << " : " << why << std::endl;
+            } else if (r) {
+                ++pass;
+                std::cout << "  \xE2\x9C\x93 " << tag << std::endl;
+            } else {
+                ++fail;
+                std::cout << "  \xE2\x9C\x97 " << tag << " - " << why << std::endl;
+            }
+        }
+
+        // 方向 B：OpenSSL 服务端 ↔ jpssl 客户端（socket 层 TLS 1.2 握手）
+        {
+            std::string why;
+            bool r = interop_tls12_ossl_server_jpssl_client(e, why);
+            std::string tag = std::string("B ossl-server <-> jpssl-client ") + e.ossl_name;
+            if (r && why.rfind("SKIP", 0) == 0) {
+                ++skip;
+                std::cout << "  - " << tag << " : " << why << std::endl;
+            } else if (r) {
+                ++pass;
+                std::cout << "  \xE2\x9C\x93 " << tag << std::endl;
+            } else {
+                ++fail;
+                std::cout << "  \xE2\x9C\x97 " << tag << " - " << why << std::endl;
+            }
         }
     }
 
-    std::printf("  TLS 1.2 OpenSSL interop: %d pass, %d skip, %d fail (共 %d 套件)\n",
+    std::printf("  TLS 1.2 OpenSSL interop: %d pass, %d skip, %d fail (共 %d 套件 × 2 方向)\n",
                 pass, skip, fail, kTotal);
     TEST("TLS 1.2 OpenSSL 互操作可用套件全部通过", fail == 0);
 }
@@ -685,6 +978,7 @@ void test_tls13_openssl_interop() {
         CipherSuite::TLS_AES_256_GCM_SHA384,
         CipherSuite::TLS_CHACHA20_POLY1305_SHA256,
         CipherSuite::TLS_AES_128_CCM_SHA256,
+        CipherSuite::TLS_AES_128_CCM_8_SHA256,
         CipherSuite::TLS_SM4_GCM_SM3,
         CipherSuite::TLS_SM4_CCM_SM3,
     };
