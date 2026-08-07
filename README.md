@@ -111,7 +111,11 @@
 
 │  ├─ x509.cpp               X.509 v3 证书 DER/PEM、私钥、CSR │
 
-│  └─ tls.cpp                TLS 1.2/1.3 记录层+握手│
+│  ├─ tls_router.cpp         TLS 公共基座 + 版本选择│
+│  ├─ tls13_server.cpp       TLS 1.3 服务端握手│
+│  ├─ tls13_client.cpp       TLS 1.3 客户端握手│
+│  ├─ tls12_server.cpp       TLS 1.2 服务端握手│
+│  └─ tls12_client.cpp       TLS 1.2 客户端握手│
 
 └──────────────────────────────────────────────────┘
 
@@ -2663,7 +2667,9 @@ jpssl/
 
 │   ├── x509.cpp                 X.509 v3 DER 编解码/自签名/证书链验证
 
-│   ├── tls.cpp (TLS 1.2 RFC 5246 + TLS 1.3 RFC 8446 + RFC 8998)
+│   ├── tls_router.cpp (公共基座 + 版本选择)
+│   ├── tls13_server.cpp / tls13_client.cpp (TLS 1.3 RFC 8446 + RFC 8998)
+│   ├── tls12_server.cpp / tls12_client.cpp (TLS 1.2 RFC 5246)
 
 │   ├── cmd/
 

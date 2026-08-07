@@ -129,7 +129,11 @@ set(CPU_SOURCES
     src/ed448.cpp
     src/ed448_batch_cpu.cpp
     src/ed448_batch_dispatch.cpp
-    src/tls.cpp
+    src/tls_router.cpp
+    src/tls12_server.cpp
+    src/tls13_server.cpp
+    src/tls12_client.cpp
+    src/tls13_client.cpp
     src/dtls.cpp
     src/x509.cpp
     src/ed25519.cpp

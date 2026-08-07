@@ -36,6 +36,12 @@ struct pollfd {
 
 namespace jpssl::tls {
 
+// 版本选择（定义于 tls_router.cpp）：
+//   客户端按配置选择 TLS 1.2 / TLS 1.3 握手路径；
+//   服务端解析 ClientHello 的 supported_versions 扩展判断是否支持 TLS 1.3。
+bool tls_router_client_use_tls12(TLSVersion configured);
+bool tls_router_server_supports_tls13(const uint8_t* client_hello, size_t ch_len);
+
 namespace {
 
 // 判断最后一次系统调用是否因资源暂不可用而失败：
@@ -659,7 +665,7 @@ bool tls_connection::client_handshake(const std::string& host,
 bool tls_connection::do_client_handshake(const tls_certificate_manager* trust_store,
                                          const tls_trust_store* trust,
                                          std::string* error) {
-    if (tls_version_ == TLSVersion::V12)
+    if (tls_router_client_use_tls12(tls_version_))
         return do_client_handshake_tls12(trust_store, trust, error);
 
     handshake_guard hg(handshake_pending_);
@@ -895,47 +901,12 @@ bool tls_connection::do_server_handshake(const tls_certificate_manager& cert_man
         }
     }
 
-    // 1.5 版本协商：TLS 1.3 客户端发送 legacy_version=0x0303 + supported_versions 扩展(0x002b)
-    //     仅支持 TLS 1.2 的客户端 legacy_version=0x0303 且无 supported_versions 或只有 0x0303
+    // 1.5 版本协商（tls_router.cpp）：TLS 1.3 客户端发送 legacy_version=0x0303
+    //     + supported_versions 扩展(0x002b)；仅支持 TLS 1.2 的客户端
+    //     legacy_version=0x0303 且无 supported_versions 或只有 0x0303。
     size_t ch_msg_len = ((size_t)ch[1] << 16) | ((size_t)ch[2] << 8) | ch[3];
     size_t ch_total = 4 + ch_msg_len;
-    bool client_supports_13 = false;
-    // ClientHello 布局（RFC 5246/8446）：
-    //   legacy_version(2) + random(32) + session_id_len(1)+session_id
-    //   + cipher_suites_len(2)+cipher_suites + compression_len(1)+compression
-    //   + extensions_len(2)+extensions
-    if (ch_total >= 4 + 2 + 32) {
-        size_t o = 4 + 2 + 32;  // 跳过 version + random
-        if (o + 1 <= ch_total) {
-            uint8_t sid_len = ch[o]; o += 1 + sid_len;
-            if (o + 2 <= ch_total) {
-                uint16_t cs_len = (ch[o] << 8) | ch[o + 1]; o += 2 + cs_len;
-                if (o + 1 <= ch_total) {
-                    uint8_t comp_len = ch[o]; o += 1 + comp_len;
-                    if (o + 2 <= ch_total) {
-                        uint16_t ext_total = (ch[o] << 8) | ch[o + 1]; o += 2;
-                        if (o + ext_total <= ch_total) {
-                            size_t eo = o;
-                            size_t ext_end = o + ext_total;
-                            while (eo + 4 <= ext_end) {
-                                uint16_t etype = (ch[eo] << 8) | ch[eo + 1];
-                                uint16_t elen = (ch[eo + 2] << 8) | ch[eo + 3];
-                                if (etype == 0x002b && elen >= 2 && eo + 4 + elen <= ext_end) {
-                                    uint8_t vlen = ch[eo + 4];  // 版本列表字节数
-                                    // 版本从 eo+5 开始，每个 2 字节；vlen 首字节后还有 elen-1 字节
-                                    for (uint8_t i = 0; i + 2 <= vlen && i + 3 <= elen; i += 2) {
-                                        uint16_t v = (ch[eo + 5 + i] << 8) | ch[eo + 5 + i + 1];
-                                        if (v == 0x0304) client_supports_13 = true;
-                                    }
-                                }
-                                eo += 4 + elen;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    bool client_supports_13 = tls_router_server_supports_tls13(ch.data(), ch_total);
     if (!client_supports_13) {
         // ── TLS 1.2 服务端握手 ──
         std::vector<uint8_t> hello_flight;
