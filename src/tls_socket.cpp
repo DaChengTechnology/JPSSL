@@ -94,17 +94,21 @@ struct handshake_guard {
 };
 
 // 重置会话状态，但保留调用方在 connect/accept 之前预先配置的
-// ALPN 协议列表、签名方案列表与密钥交换组（避免被 tls_session{} 清空）。
+// ALPN 协议列表、签名方案列表、密钥交换组与目标加密套件
+// （避免被 tls_session{} 清空；cipher_suite 用于互操作/组合测试
+// 指定期望协商的 TLS 1.3 套件）。
 void reset_session_preserving_config(tls_session& s) {
     auto alpn = s.alpn_protos;
     auto salgs = s.sig_algs;
     auto salgs_cert = s.sig_algs_cert;
     auto ks = s.ks_group;
+    auto cs = s.cipher_suite;
     s = tls_session{};
     s.alpn_protos = std::move(alpn);
     s.sig_algs = std::move(salgs);
     s.sig_algs_cert = std::move(salgs_cert);
     s.ks_group = ks;
+    s.cipher_suite = cs;
 }
 
 // poll 多个 fd（POSIX poll / Windows select）。就绪 fd 的 revents 被设置。
@@ -657,18 +661,53 @@ bool tls_connection::do_client_handshake(const tls_certificate_manager* trust_st
     // 2. 读取服务端 flight：
     //    明文握手 record（type 22）→ 提取裸消息；
     //    加密 record（type 23）→ 原样保留（含 record 头）。
+    //    OpenSSL 等服务端可能把 EE/Cert/CV/SF 拆成多条加密 record 发送，
+    //    仅读第一条会导致 transcript 缺失后续消息（握手假成功、应用数据
+    //    解密失败）。因此：收集到"暂无可读数据"后，用会话副本尝试解析，
+    //    只有解析到 Server Finished 才算完整；否则继续阻塞读取对端剩余
+    //    record（socket 有超时兜底）。
     std::vector<uint8_t> flight;
-    bool got_encrypted = false;
-    while (!got_encrypted) {
+    bool got_sh = false;
+    bool done = false;
+    std::vector<uint8_t> client_finished;
+    while (!done) {
+        if (got_sh && !more_data_pending()) {
+            // 当前无更多可读数据：副本试错解析（失败不改动 session_）
+            tls_session trial = session_;
+            std::vector<uint8_t> cf;
+            if (tls13_process_server_flight(trial, flight.data(), flight.size(), cf,
+                                            trust_store, trust) &&
+                trial.server_finished_received) {
+                session_ = std::move(trial);
+                client_finished = std::move(cf);
+                done = true;
+                break;
+            }
+            // 未解析到 Server Finished：可能还有 record 未到达，继续阻塞读取
+        }
         uint8_t rtype = 0;
         std::vector<uint8_t> payload;
-        if (!read_record(rtype, payload, error)) return false;
+        if (!read_record(rtype, payload, error)) {
+            // 对端关闭或超时：以当前 flight 做最后一次解析尝试
+            if (got_sh && !flight.empty()) {
+                tls_session trial = session_;
+                std::vector<uint8_t> cf;
+                if (tls13_process_server_flight(trial, flight.data(), flight.size(), cf,
+                                                trust_store, trust) &&
+                    trial.server_finished_received) {
+                    session_ = std::move(trial);
+                    client_finished = std::move(cf);
+                    done = true;
+                }
+            }
+            break;
+        }
         if (rtype == (uint8_t)ContentType::HANDSHAKE) {
             flight.insert(flight.end(), payload.begin(), payload.end());
+            got_sh = true;
         } else if (rtype == (uint8_t)ContentType::APPLICATION_DATA) {
             auto rec = make_record(rtype, payload.data(), payload.size());
             flight.insert(flight.end(), rec.begin(), rec.end());
-            got_encrypted = true;
         } else if (rtype == (uint8_t)ContentType::ALERT) {
             set_err(error, "TLS alert during handshake");
             return false;
@@ -676,11 +715,9 @@ bool tls_connection::do_client_handshake(const tls_certificate_manager* trust_st
         // CCS（type 20）等兼容性记录直接忽略
     }
 
-    // 3. 处理服务端 flight，得到加密的 Client Finished record 并发送
-    std::vector<uint8_t> client_finished;
-    if (!tls13_process_server_flight(session_, flight.data(), flight.size(),
-                                     client_finished, trust_store, trust)) {
-        set_err(error, "tls13_process_server_flight failed");
+    // 3. 发送加密的 Client Finished record
+    if (client_finished.empty()) {
+        set_err(error, "TLS 1.3 服务端 flight 不完整或解析失败");
         return false;
     }
     if (!write_all(client_finished.data(), client_finished.size(), error)) return false;
@@ -955,6 +992,11 @@ bool tls_connection::recv(std::vector<uint8_t>& out, std::string* error) {
             return false;
         }
         if (ct == ContentType::HANDSHAKE) continue; // 握手后消息（如 NewSessionTicket）
+        if (ct == ContentType::ALERT) {
+            // close_notify 等告警：对端优雅关闭，返回已收到的数据
+            close();
+            break;
+        }
         if (ct != ContentType::APPLICATION_DATA) {
             set_err(error, "unexpected content type in application record");
             return false;

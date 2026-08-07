@@ -63,6 +63,12 @@ static size_t aes_key_len(CipherSuite cs){
         case CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:
         case CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384:
             return 32;
+        // ChaCha20-Poly1305 密钥恒为 32 字节（RFC 8439 §2.3 / RFC 7905 §2）：
+        // 若按 16 字节派生，后 16 字节为未初始化内存，early data 与记录层会间歇性解密失败
+        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
+        case CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:
+        case CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:
+            return 32;
         default: return 16;
     }
 }
@@ -397,6 +403,63 @@ static bool rsa_pss_verify(const rsa_public_key& pub, uint16_t scheme,
 // ═══════════════════════════════════════════════════════════════════════
 //  证书签名/验证
 // ═══════════════════════════════════════════════════════════════════════
+// ECDSA 签名 DER 编解码（RFC 8446 §4.4.3 / RFC 8422 §5.5）
+static bool ecdsa_sign_to_der(const uint8_t* raw, size_t raw_len,
+                              uint8_t* out, size_t out_cap, size_t& out_len) {
+    size_t half = raw_len / 2;
+    if (half == 0 || half * 2 != raw_len) return false;
+    const uint8_t* r = raw;
+    const uint8_t* s = raw + half;
+    auto int_der_len = [](const uint8_t* p, size_t n) -> size_t {
+        size_t i = 0;
+        while (i < n - 1 && p[i] == 0) ++i;
+        return (p[i] & 0x80) ? (n - i + 1) : (n - i);
+    };
+    size_t rl = int_der_len(r, half), sl = int_der_len(s, half);
+    size_t content = 2 + rl + 2 + sl;
+    size_t total = 2 + content;
+    if (total > out_cap || content > 127) return false;
+    size_t off = 0;
+    out[off++] = 0x30; out[off++] = (uint8_t)content;
+    auto put_int = [&](const uint8_t* p, size_t n, size_t ilen) {
+        size_t i = 0;
+        while (i < n - 1 && p[i] == 0) ++i;
+        out[off++] = 0x02; out[off++] = (uint8_t)ilen;
+        if (p[i] & 0x80) out[off++] = 0x00;
+        for (size_t k = i; k < n; ++k) out[off++] = p[k];
+    };
+    put_int(r, half, rl);
+    put_int(s, half, sl);
+    out_len = off;
+    return true;
+}
+
+static bool ecdsa_sig_from_der(const uint8_t* der, size_t der_len,
+                               uint8_t* raw, size_t raw_len) {
+    size_t half = raw_len / 2;
+    size_t off = 0;
+    if (der_len < 8 || der[off++] != 0x30) return false;
+    size_t seq_len = der[off++];
+    if (seq_len > 127 || off + seq_len != der_len) return false;
+    size_t end = off + seq_len;
+    auto parse_int = [&](uint8_t* out, size_t cap) -> bool {
+        if (off + 2 > end || der[off++] != 0x02) return false;
+        size_t ilen = der[off++];
+        if (ilen == 0 || off + ilen > end) return false;
+        if (der[off] & 0x80) return false;
+        size_t skip = (der[off] == 0) ? 1 : 0;
+        size_t n = ilen - skip;
+        if (n > cap) return false;
+        std::memset(out, 0, cap - n);
+        std::memcpy(out + cap - n, der + off + skip, n);
+        off += ilen;
+        return true;
+    };
+    if (!parse_int(raw, half)) return false;
+    if (!parse_int(raw + half, half)) return false;
+    return off == end;
+}
+
 bool tls_certificate::sign_scheme(uint16_t scheme, const uint8_t* data, size_t data_len,
                                    uint8_t* sig, size_t& sig_len,
                                    const uint8_t za[32]) const {
@@ -405,12 +468,27 @@ bool tls_certificate::sign_scheme(uint16_t scheme, const uint8_t* data, size_t d
             sig_len = 64; ed25519_sign(priv.ed25519, data, data_len, sig); return true;
         case SignatureAlgorithm::ED448:
             sig_len = 114; ed448_sign(priv.ed448, data, data_len, sig); return true;
-        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256:
-            sig_len = 64; ecdsa_p256_sign(priv.ecdsa_p256, data, data_len, sig); return true;
-        case SignatureAlgorithm::ECDSA_SECP384R1_SHA384:
-            sig_len = 96; ecdsa_p384_sign(priv.ecdsa_p384, data, data_len, sig); return true;
-        case SignatureAlgorithm::ECDSA_SECP521R1_SHA512:
-            sig_len = 132; ecdsa_p521_sign(priv.ecdsa_p521, data, data_len, sig); return true;
+        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256: {
+            uint8_t raw[64], der[160];
+            ecdsa_p256_sign(priv.ecdsa_p256, data, data_len, raw);
+            size_t dl = sizeof(der);
+            if (!ecdsa_sign_to_der(raw, sizeof(raw), der, sizeof(der), dl)) return false;
+            std::memcpy(sig, der, dl); sig_len = dl; return true;
+        }
+        case SignatureAlgorithm::ECDSA_SECP384R1_SHA384: {
+            uint8_t raw[96], der[200];
+            ecdsa_p384_sign(priv.ecdsa_p384, data, data_len, raw);
+            size_t dl = sizeof(der);
+            if (!ecdsa_sign_to_der(raw, sizeof(raw), der, sizeof(der), dl)) return false;
+            std::memcpy(sig, der, dl); sig_len = dl; return true;
+        }
+        case SignatureAlgorithm::ECDSA_SECP521R1_SHA512: {
+            uint8_t raw[132], der[256];
+            ecdsa_p521_sign(priv.ecdsa_p521, data, data_len, raw);
+            size_t dl = sizeof(der);
+            if (!ecdsa_sign_to_der(raw, sizeof(raw), der, sizeof(der), dl)) return false;
+            std::memcpy(sig, der, dl); sig_len = dl; return true;
+        }
         case SignatureAlgorithm::SM2_SM3:
             sig_len = 64; sm2_sign(priv.sm2, data, data_len, sig, za); return true;
         case SignatureAlgorithm::RSA_PKCS1_SHA256:
@@ -441,15 +519,24 @@ bool tls_certificate::verify_scheme(uint16_t scheme, const uint8_t* data, size_t
         case SignatureAlgorithm::ED448:
             if (sig_len != 114) return false;
             return ed448_verify(pub.ed448, data, data_len, sig);
-        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256:
-            if (sig_len != 64) return false;
-            return ecdsa_p256_verify(pub.ecdsa_p256, data, data_len, sig);
-        case SignatureAlgorithm::ECDSA_SECP384R1_SHA384:
-            if (sig_len != 96) return false;
-            return ecdsa_p384_verify(pub.ecdsa_p384, data, data_len, sig);
-        case SignatureAlgorithm::ECDSA_SECP521R1_SHA512:
-            if (sig_len != 132) return false;
-            return ecdsa_p521_verify(pub.ecdsa_p521, data, data_len, sig);
+        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256: {
+            uint8_t raw[64];
+            if (sig_len == 64) std::memcpy(raw, sig, 64);
+            else if (!ecdsa_sig_from_der(sig, sig_len, raw, sizeof(raw))) return false;
+            return ecdsa_p256_verify(pub.ecdsa_p256, data, data_len, raw);
+        }
+        case SignatureAlgorithm::ECDSA_SECP384R1_SHA384: {
+            uint8_t raw[96];
+            if (sig_len == 96) std::memcpy(raw, sig, 96);
+            else if (!ecdsa_sig_from_der(sig, sig_len, raw, sizeof(raw))) return false;
+            return ecdsa_p384_verify(pub.ecdsa_p384, data, data_len, raw);
+        }
+        case SignatureAlgorithm::ECDSA_SECP521R1_SHA512: {
+            uint8_t raw[132];
+            if (sig_len == 132) std::memcpy(raw, sig, 132);
+            else if (!ecdsa_sig_from_der(sig, sig_len, raw, sizeof(raw))) return false;
+            return ecdsa_p521_verify(pub.ecdsa_p521, data, data_len, raw);
+        }
         case SignatureAlgorithm::SM2_SM3:
             if (sig_len != 64) return false;
             return sm2_verify(pub.sm2, data, data_len, sig, za);
@@ -1353,9 +1440,15 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
     client_hello.push_back(0x03);client_hello.push_back(0x03);
     client_hello.insert(client_hello.end(),s.client_random,s.client_random+32);
     std::vector<uint16_t> cs_list;
-    if(tls_use_sm3(s.cipher_suite)) cs_list.push_back(0x00C6);
-    cs_list.push_back(0x1301);
-    cs_list.push_back(0x1302);
+    auto cs_push = [&](uint16_t id){ for (uint16_t c : cs_list) if (c==id) return; cs_list.push_back(id); };
+    if (tls_use_sm3(s.cipher_suite)) {
+        cs_push((uint16_t)s.cipher_suite);
+        cs_push(0x00C6);
+    } else if (s.cipher_suite != CipherSuite::TLS_AES_128_GCM_SHA256) {
+        cs_push((uint16_t)s.cipher_suite);
+    }
+    cs_push(0x1301);
+    cs_push(0x1302);
     uint16_t cs_len = (uint16_t)(cs_list.size() * 2);
     client_hello.push_back(0);
     client_hello.push_back((uint8_t)(cs_len>>8));client_hello.push_back((uint8_t)cs_len);
@@ -1776,6 +1869,7 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
             case (uint8_t)HandshakeType::FINISHED:
                 if(!tls13_verify_finished(s,hmsg,4+hlen,true))return false;
                 tls_transcript_update(s,hmsg,4+hlen);
+                s.server_finished_received = true;
                 break;
             default:break;
         }
@@ -1828,10 +1922,19 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
 
     { size_t cs_off = 4+2+32; uint8_t sid_len = client_hello[cs_off]; cs_off += 1+sid_len;
       uint16_t cs_list_len = (client_hello[cs_off]<<8)|client_hello[cs_off+1]; cs_off += 2;
-      for(size_t i=0; i+2<=cs_list_len; i+=2){
-        uint16_t cs_id = (client_hello[cs_off+i]<<8)|client_hello[cs_off+i+1];
-        if(cs_id == 0x00C6){ s.cipher_suite = CipherSuite::TLS_SM4_GCM_SM3; break; }
-      }
+      std::vector<uint16_t> client_cs;
+      for(size_t i=0; i+2<=cs_list_len; i+=2)
+        client_cs.push_back((client_hello[cs_off+i]<<8)|client_hello[cs_off+i+1]);
+      auto cs_has = [&](uint16_t id){ for (uint16_t c : client_cs) if (c==id) return true; return false; };
+      if (s.cipher_suite != CipherSuite::TLS_AES_128_GCM_SHA256 && cs_has((uint16_t)s.cipher_suite)) {
+          s.cipher_suite = s.cipher_suite;
+      } else if (cs_has(0x00C6)) s.cipher_suite = CipherSuite::TLS_SM4_GCM_SM3;
+      else if (cs_has(0x00C7)) s.cipher_suite = CipherSuite::TLS_SM4_CCM_SM3;
+      else if (cs_has(0x1301)) s.cipher_suite = CipherSuite::TLS_AES_128_GCM_SHA256;
+      else if (cs_has(0x1302)) s.cipher_suite = CipherSuite::TLS_AES_256_GCM_SHA384;
+      else if (cs_has(0x1303)) s.cipher_suite = CipherSuite::TLS_CHACHA20_POLY1305_SHA256;
+      else if (cs_has(0x1304)) s.cipher_suite = CipherSuite::TLS_AES_128_CCM_SHA256;
+      else s.cipher_suite = CipherSuite::TLS_AES_128_GCM_SHA256;
     }
 
     // 记录 ClientHello (须在 cipher_suite 确定后, 保证 transcript 哈希算法与客户端一致)
@@ -3472,12 +3575,17 @@ bool tls13_make_psk_client_hello(tls_session& s, std::vector<uint8_t>& client_he
     client_hello.push_back(0);client_hello.push_back(0);client_hello.push_back(0);
     client_hello.push_back(0x03);client_hello.push_back(0x03);
     client_hello.insert(client_hello.end(),s.client_random,s.client_random+32);
+    std::vector<uint16_t> psk_cs;
+    auto psk_push = [&](uint16_t id){ for (uint16_t c : psk_cs) if (c==id) return; psk_cs.push_back(id); };
+    psk_push((uint16_t)s.cipher_suite);
+    psk_push(0x1301); psk_push(0x1302); psk_push(0x1303); psk_push(0x1304);
+    psk_push(0x00C6); psk_push(0x00C7);
+    uint16_t psk_cs_len = (uint16_t)(psk_cs.size() * 2);
     client_hello.push_back(0);
-    client_hello.push_back(0x00);client_hello.push_back(0x08);
-    client_hello.push_back(0x13);client_hello.push_back(0x01);
-    client_hello.push_back(0x13);client_hello.push_back(0x02);
-    client_hello.push_back(0x13);client_hello.push_back(0x03);
-    client_hello.push_back(0x13);client_hello.push_back(0x04);
+    client_hello.push_back((uint8_t)(psk_cs_len>>8));client_hello.push_back((uint8_t)psk_cs_len);
+    for (uint16_t psk_cs_id : psk_cs) {
+        client_hello.push_back((uint8_t)(psk_cs_id>>8));client_hello.push_back((uint8_t)psk_cs_id);
+    }
     client_hello.push_back(0x01);client_hello.push_back(0x00);
 
     uint16_t ext_total = (uint16_t)all_ext.size();
@@ -3492,10 +3600,10 @@ bool tls13_make_psk_client_hello(tls_session& s, std::vector<uint8_t>& client_he
     client_hello[3] = (uint8_t)(ch_len);
 
     // Compute and write binder
-    size_t ch_trunc_len = 4 + 47 + 2 + binder_pos;
+    size_t ch_trunc_len = client_hello_ext_offset(client_hello.data(), client_hello.size()) + 2 + binder_pos;
     uint8_t binder[48];
     tls13_compute_binder(s, s.psk_value, client_hello.data(), ch_trunc_len, binder);
-    size_t binder_off = 4 + 47 + 2 + binder_pos;
+    size_t binder_off = ch_trunc_len;
     for(size_t i=0;i<hl;i++) client_hello[binder_off + i] = binder[i];
 
     tls_transcript_update(s, client_hello.data(), client_hello.size());
@@ -3602,12 +3710,22 @@ std::vector<uint8_t> tls13_encrypt_early_data(tls_session& s,
             break;
         }
         case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
-            chacha20_poly1305_encrypt(s.client_early_write_key, nonce, inner, std::span<const uint8_t>(), ciphertext, tag);
+            chacha20_poly1305_encrypt(s.client_early_write_key, nonce, inner, aad_span, ciphertext, tag);
             break;
         case CipherSuite::TLS_AES_128_CCM_SHA256: {
             aes_context ctx;
             aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
-            aes_ccm_encrypt(ctx, nonce, 12, inner, std::span<const uint8_t>(), ciphertext, tag, 16);
+            aes_ccm_encrypt(ctx, nonce, 12, inner, aad_span, ciphertext, tag, 16);
+            break;
+        }
+        case CipherSuite::TLS_SM4_GCM_SM3: {
+            sm4_ctx_init_from_key(s.sm4, s.client_early_write_key);
+            sm4_gcm_encrypt(&s.sm4, nonce, 12, inner, aad_span, ciphertext, tag, 16);
+            break;
+        }
+        case CipherSuite::TLS_SM4_CCM_SM3: {
+            sm4_ctx_init_from_key(s.sm4, s.client_early_write_key);
+            sm4_ccm_encrypt(&s.sm4, nonce, 12, inner, aad_span, ciphertext, tag, 16);
             break;
         }
     }
@@ -3639,25 +3757,40 @@ bool tls13_decrypt_early_data(tls_session& s, const uint8_t* record, size_t reco
 
     std::vector<uint8_t> inner;
     bool ok = false;
+    std::span<const uint8_t> aad_span(record, 5);
     switch(s.cipher_suite){
         case CipherSuite::TLS_AES_128_GCM_SHA256:
         case CipherSuite::TLS_AES_256_GCM_SHA384: {
             aes_context ctx;
             aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
             ok = aes_gcm_decrypt_auto(ctx, nonce, 12, std::span<const uint8_t>(ciphertext,ct_len),
-                                 std::span<const uint8_t>(), tag, 16, inner);
+                                 aad_span, tag, 16, inner);
             break;
         }
         case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
             ok = chacha20_poly1305_decrypt(s.client_early_write_key, nonce,
                                            std::span<const uint8_t>(ciphertext,ct_len),
-                                           std::span<const uint8_t>(), tag, inner);
+                                           aad_span, tag, inner);
             break;
         case CipherSuite::TLS_AES_128_CCM_SHA256: {
             aes_context ctx;
             aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
             ok = aes_ccm_decrypt(ctx, nonce, 12, std::span<const uint8_t>(ciphertext,ct_len),
-                                 std::span<const uint8_t>(), tag, 16, inner);
+                                 aad_span, tag, 16, inner);
+            break;
+        }
+        case CipherSuite::TLS_SM4_GCM_SM3: {
+            sm4_ctx_init_from_key(s.sm4, s.client_early_write_key);
+            ok = sm4_gcm_decrypt(&s.sm4, nonce, 12,
+                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 aad_span, tag, 16, inner);
+            break;
+        }
+        case CipherSuite::TLS_SM4_CCM_SM3: {
+            sm4_ctx_init_from_key(s.sm4, s.client_early_write_key);
+            ok = sm4_ccm_decrypt(&s.sm4, nonce, 12,
+                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 aad_span, tag, 16, inner);
             break;
         }
     }

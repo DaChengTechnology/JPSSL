@@ -204,6 +204,7 @@ struct tls_session {
     uint8_t client_early_write_iv[12];
     uint64_t client_early_seq = 0;
     bool early_data_accepted = false;      // 服务端: 是否接受了 early_data
+    bool server_finished_received = false; // 客户端: 服务端 flight 中已解析到 Server Finished
 
     // 可配置的 signature_algorithms / signature_algorithms_cert 列表
     // 为空时使用 tls_default_signature_algorithms() 全量默认值

@@ -22,6 +22,13 @@ else()
     set(MUSA_LIBS)
 endif()
 
+# ── jpssl ↔ OpenSSL TLS 1.3 互操作测试 ──────────────────────────────────
+if(OpenSSL_FOUND)
+add_executable(test_tls_openssl_interop test_tls_openssl_interop.cpp)
+target_include_directories(test_tls_openssl_interop PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_tls_openssl_interop PRIVATE jpssl_cpu OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
 # ── AES 全覆盖单元测试 (OpenSSL 对比) ────────────────────────────────────
 if(OpenSSL_FOUND)
 add_executable(test_aes test_aes.cpp)
@@ -284,6 +291,9 @@ add_test(NAME test_x509          COMMAND test_x509)
 add_test(NAME test_ct            COMMAND test_ct)
 add_test(NAME test_base64        COMMAND test_base64)
 add_test(NAME test_tls_socket    COMMAND test_tls_socket)
+if(OpenSSL_FOUND)
+add_test(NAME test_tls_openssl_interop COMMAND test_tls_openssl_interop)
+endif()
 add_test(NAME test_tls_stability COMMAND test_tls_stability)
 add_test(NAME test_tls_large_msg COMMAND test_tls_large_msg)
 if(OpenSSL_FOUND)

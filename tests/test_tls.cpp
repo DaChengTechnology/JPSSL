@@ -6,6 +6,7 @@
 #include "test_utils.hpp"
 #include "tls.hpp"
 #include "ed25519.hpp"
+#include "ed448.hpp"
 #include "ecdsa.hpp"
 #include "rsa.hpp"
 #include "x25519.hpp"
@@ -55,12 +56,13 @@ void test_ecdsa_certificate() {
     ecdsa_p256_keygen(cert->pub.ecdsa_p256, cert->priv.ecdsa_p256);
 
     const uint8_t test_data[] = "Test message for ECDSA P-256 signature";
-    uint8_t sig[64];
+    // TLS 1.3 ECDSA 签名为 DER 编码（RFC 8446 §4.4.3），长度约 70-72 字节
+    uint8_t sig[96];
     size_t sig_len;
 
     bool sign_ok = cert->sign(test_data, sizeof(test_data) - 1, sig, sig_len);
     TEST("ECDSA P-256 sign success", sign_ok);
-    TEST("ECDSA P-256 sig length 64", sig_len == 64);
+    TEST("ECDSA P-256 sig is DER encoded", sign_ok && sig_len >= 8 && sig[0] == 0x30);
 
     bool verify_ok = cert->verify(test_data, sizeof(test_data) - 1, sig, sig_len);
     TEST("ECDSA P-256 verify valid signature", verify_ok);
@@ -524,6 +526,184 @@ void test_tls13_0rtt() {
     // For this test, just verify the message format
     bool eoed_ok = tls13_process_end_of_early_data(client2, eoed.data(), eoed.size());
     TEST("0-RTT: EoED parsed", eoed_ok);
+}
+
+// ========================================================================
+//  测试 11: TLS 1.3 0-RTT — 全部加密套件 × 认证套件组合矩阵
+// ========================================================================
+
+static const char* cs_name(CipherSuite cs) {
+    switch (cs) {
+        case CipherSuite::TLS_AES_128_GCM_SHA256:       return "AES128-GCM-SHA256";
+        case CipherSuite::TLS_AES_256_GCM_SHA384:       return "AES256-GCM-SHA384";
+        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256: return "CHACHA20-POLY1305-SHA256";
+        case CipherSuite::TLS_AES_128_CCM_SHA256:       return "AES128-CCM-SHA256";
+        case CipherSuite::TLS_SM4_GCM_SM3:              return "SM4-GCM-SM3";
+        case CipherSuite::TLS_SM4_CCM_SM3:              return "SM4-CCM-SM3";
+        default: return "?";
+    }
+}
+
+static const char* sig_name(SignatureAlgorithm sig) {
+    switch (sig) {
+        case SignatureAlgorithm::ED25519:                 return "Ed25519";
+        case SignatureAlgorithm::ED448:                   return "Ed448";
+        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256:  return "ECDSA-P256";
+        case SignatureAlgorithm::ECDSA_SECP384R1_SHA384:  return "ECDSA-P384";
+        case SignatureAlgorithm::ECDSA_SECP521R1_SHA512:  return "ECDSA-P521";
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA256:     return "RSA-PSS-256";
+        case SignatureAlgorithm::SM2_SM3:                 return "SM2-SM3";
+        default: return "?";
+    }
+}
+
+static std::unique_ptr<tls_certificate> make_cert_for_sig(SignatureAlgorithm sig) {
+    auto cert = std::make_unique<tls_certificate>();
+    cert->subject_name = "localhost";
+    cert->sig_alg = sig;
+    switch (sig) {
+        case SignatureAlgorithm::ED25519:                ed25519_keygen(cert->pub.ed25519, cert->priv.ed25519); break;
+        case SignatureAlgorithm::ED448:                  ed448_keygen(cert->pub.ed448, cert->priv.ed448); break;
+        case SignatureAlgorithm::ECDSA_SECP256R1_SHA256: ecdsa_p256_keygen(cert->pub.ecdsa_p256, cert->priv.ecdsa_p256); break;
+        case SignatureAlgorithm::ECDSA_SECP384R1_SHA384: ecdsa_p384_keygen(cert->pub.ecdsa_p384, cert->priv.ecdsa_p384); break;
+        case SignatureAlgorithm::ECDSA_SECP521R1_SHA512: ecdsa_p521_keygen(cert->pub.ecdsa_p521, cert->priv.ecdsa_p521); break;
+        case SignatureAlgorithm::RSA_PSS_RSAE_SHA256:    rsa_keygen(cert->pub.rsa, cert->priv.rsa); break;
+        case SignatureAlgorithm::SM2_SM3:                sm2_keygen(cert->pub.sm2, cert->priv.sm2); break;
+        default: return nullptr;
+    }
+    return cert;
+}
+
+// 单个组合的 0-RTT 完整流程（完整握手 → NewSessionTicket → PSK 恢复 → early data 往返 → EoED）。
+// 返回空串表示成功，否则返回失败阶段描述。
+static std::string run_0rtt_combination(CipherSuite cs, SignatureAlgorithm sig) {
+    tls_certificate_manager cert_mgr;
+    auto cert = make_cert_for_sig(sig);
+    if (!cert) return "make cert";
+    cert_mgr.add_certificate("localhost", std::move(cert));
+
+    // ── 阶段 1: 完整握手（指定加密套件）──
+    tls_session client;
+    client.server_name = "localhost";
+    client.cipher_suite = cs;
+    std::vector<uint8_t> ch;
+    if (!tls13_make_client_hello(client, ch)) return "client hello";
+
+    tls_session server;
+    server.cipher_suite = cs;   // 服务端显式偏好目标套件
+    std::vector<uint8_t> sf;
+    if (!tls13_make_server_flight(server, ch.data(), ch.size(), sf, cert_mgr)) return "server flight";
+    if (server.cipher_suite != cs) return "cipher not negotiated";
+
+    std::vector<uint8_t> cf;
+    if (!tls13_process_server_flight(client, sf.data(), sf.size(), cf, &cert_mgr)) return "client process";
+    if (!tls13_process_client_finished(server, cf.data(), cf.size())) return "client finished";
+
+    // ── 阶段 1.5: 主记录层应用数据双向往返（验证协商套件的记录层正确性）──
+    const uint8_t app_msg[] = "TLS1.3 app data round-trip";
+    auto app_enc = tls_encrypt(client, ContentType::APPLICATION_DATA, app_msg, sizeof(app_msg) - 1);
+    ContentType app_ct;
+    std::vector<uint8_t> app_dec;
+    if (!tls_decrypt(server, app_enc.data(), app_enc.size(), app_ct, app_dec)) return "app record decrypt";
+    if (app_dec.size() != sizeof(app_msg) - 1 ||
+        memcmp(app_dec.data(), app_msg, sizeof(app_msg) - 1) != 0) return "app record mismatch";
+    auto app_enc2 = tls_encrypt(server, ContentType::APPLICATION_DATA, app_msg, sizeof(app_msg) - 1);
+    ContentType app_ct2;
+    if (!tls_decrypt(client, app_enc2.data(), app_enc2.size(), app_ct2, app_dec)) return "app record decrypt2";
+    if (app_dec.size() != sizeof(app_msg) - 1 ||
+        memcmp(app_dec.data(), app_msg, sizeof(app_msg) - 1) != 0) return "app record mismatch2";
+
+    // ── 阶段 2: NewSessionTicket → 客户端存储 PSK ──
+    std::vector<uint8_t> ticket;
+    if (!tls13_make_new_session_ticket(server, ticket)) return "new session ticket";
+    if (!tls13_store_psk(client, ticket.data(), ticket.size())) return "store psk";
+
+    // ── 阶段 3: PSK 恢复握手（0-RTT）──
+    tls_session client2, server2;
+    client2.server_name = "localhost";
+    client2.cipher_suite = client.cipher_suite;
+    client2.psk_valid = true;
+    client2.psk_identity_len = client.psk_identity_len;
+    memcpy(client2.psk_identity, client.psk_identity, client.psk_identity_len);
+    memcpy(client2.psk_value, client.psk_value, tls_hash_len(client.cipher_suite));
+    client2.ticket_age_add = client.ticket_age_add;
+    client2.ticket_issue_time = client.ticket_issue_time;
+
+    server2.is_server = true;
+    server2.cipher_suite = server.cipher_suite;
+    server2.psk_valid = true;
+    server2.psk_identity_len = server.psk_identity_len;
+    memcpy(server2.psk_identity, server.psk_identity, server.psk_identity_len);
+    memcpy(server2.psk_value, server.psk_value, tls_hash_len(server.cipher_suite));
+    server2.ticket_age_add = server.ticket_age_add;
+    server2.ticket_issue_time = server.ticket_issue_time;
+
+    std::vector<uint8_t> psk_ch;
+    if (!tls13_make_psk_client_hello(client2, psk_ch)) return "psk client hello";
+    bool accept_early = false;
+    if (!tls13_process_psk_client_hello(server2, psk_ch.data(), psk_ch.size(), accept_early)) return "psk process";
+    if (!accept_early) return "early data not accepted";
+
+    // ── 阶段 4: 0-RTT early data 往返 ──
+    const uint8_t early_msg[] = "0-RTT matrix payload";
+    auto early_enc = tls13_encrypt_early_data(client2, early_msg, sizeof(early_msg) - 1);
+    if (early_enc.empty()) return "early encrypt";
+    ContentType early_ct;
+    std::vector<uint8_t> early_dec;
+    if (!tls13_decrypt_early_data(server2, early_enc.data(), early_enc.size(), early_ct, early_dec)) return "early decrypt";
+    if (early_dec.size() != sizeof(early_msg) - 1 ||
+        memcmp(early_dec.data(), early_msg, sizeof(early_msg) - 1) != 0) return "early mismatch";
+
+    // ── 阶段 5: EndOfEarlyData ──
+    auto eoed = tls13_make_end_of_early_data();
+    if (eoed.empty()) return "eoed make";
+    if (!tls13_process_end_of_early_data(client2, eoed.data(), eoed.size())) return "eoed process";
+
+    return "";
+}
+
+void test_tls13_0rtt_matrix() {
+    std::printf("\n=== TLS 1.3 0-RTT: 全部加密套件 × 认证套件组合 ===\n");
+    const CipherSuite ciphers[] = {
+        CipherSuite::TLS_AES_128_GCM_SHA256,
+        CipherSuite::TLS_AES_256_GCM_SHA384,
+        CipherSuite::TLS_CHACHA20_POLY1305_SHA256,
+        CipherSuite::TLS_AES_128_CCM_SHA256,
+        CipherSuite::TLS_SM4_GCM_SM3,
+        CipherSuite::TLS_SM4_CCM_SM3,
+    };
+    const SignatureAlgorithm sigs[] = {
+        SignatureAlgorithm::ED25519,
+        SignatureAlgorithm::ED448,
+        SignatureAlgorithm::ECDSA_SECP256R1_SHA256,
+        SignatureAlgorithm::ECDSA_SECP384R1_SHA384,
+        SignatureAlgorithm::ECDSA_SECP521R1_SHA512,
+        SignatureAlgorithm::RSA_PSS_RSAE_SHA256,
+        SignatureAlgorithm::SM2_SM3,
+    };
+    int fail_count = 0, total = 0;
+    const int iterations = 5;   // 每个组合重复 5 次完整流程，暴露间歇性/未初始化内存问题
+    for (CipherSuite cs : ciphers) {
+        for (SignatureAlgorithm sig : sigs) {
+            ++total;
+            std::string d;
+            for (int it = 0; it < iterations; ++it) {
+                d = run_0rtt_combination(cs, sig);
+                if (!d.empty()) break;
+            }
+            std::string name = std::string(cs_name(cs)) + " + " + sig_name(sig);
+            if (d.empty()) {
+                ++::jptest::g_pass;
+                std::cout << "  \u2713 0-RTT matrix: " << name << std::endl;
+            } else {
+                ++::jptest::g_fail;
+                ++fail_count;
+                ::jptest::g_last_fail_msg = name;
+                std::cout << "  \u2717 0-RTT matrix: " << name << " — fail at: " << d << std::endl;
+            }
+        }
+    }
+    std::printf("  0-RTT matrix: %d combinations, %d failed\n", total, fail_count);
 }
 
 // ========================================================================
@@ -1025,8 +1205,9 @@ void test_tls13_cert_verify_rfc8446_content() {
 
         static const char* ctx = "TLS 1.3, server CertificateVerify";
         std::vector<uint8_t> content;
+        content.insert(content.end(), 64, 0x20);  // RFC 8446 4.4.3: 64 个 0x20 空格
         content.insert(content.end(), ctx, ctx + strlen(ctx));
-        content.insert(content.end(), 64, 0);
+        content.push_back(0x00);             // RFC 8446 4.4.3: 单个 0x00 分隔符
         content.insert(content.end(), s2.transcript_hash, s2.transcript_hash + tls_hash_len(s2.cipher_suite));
 
         const tls_certificate* cert = cert_mgr.get_default_certificate();
@@ -1073,8 +1254,9 @@ void test_sign_scheme_cert_verify_context() {
     for (int i = 0; i < 32; ++i) th[i] = (uint8_t)(i * 7 + 1);
     static const char* ctx = "TLS 1.3, server CertificateVerify";
     std::vector<uint8_t> content;
+    content.insert(content.end(), 64, 0x20);  // RFC 8446 4.4.3: 64 个 0x20 空格
     content.insert(content.end(), ctx, ctx + strlen(ctx));
-    content.insert(content.end(), 64, 0);
+    content.push_back(0x00);             // RFC 8446 4.4.3: 单个 0x00 分隔符
     content.insert(content.end(), th, th + 32);
 
     uint8_t sig[64]; size_t sig_len = 0;
@@ -1461,6 +1643,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_sni_multi_domain);
     RUN_TEST(test_simplified_handshake_api);
     RUN_TEST(test_tls13_0rtt);
+    RUN_TEST(test_tls13_0rtt_matrix);
     RUN_TEST(test_signature_algorithm_extensions);
     RUN_TEST(test_tls13_full_handshake_ecdsa_p384);
     RUN_TEST(test_tls13_full_handshake_ecdsa_p521);
