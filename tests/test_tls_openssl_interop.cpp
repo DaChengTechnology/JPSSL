@@ -1,19 +1,17 @@
 /**
- * test_tls_openssl_interop.cpp — jpssl ↔ OpenSSL TLS 1.3 互操作测试
+ * test_tls_openssl_interop.cpp — jpssl ↔ OpenSSL 互操作测试
  *
- * 覆盖本机 OpenSSL 支持的 TLS 1.3 加密套件（逐套件探测，不可用时 SKIP）：
- *   TLS_AES_128_GCM_SHA256 / TLS_AES_256_GCM_SHA384
- *   TLS_CHACHA20_POLY1305_SHA256 / TLS_AES_128_CCM_SHA256
- *   TLS_SM4_GCM_SM3 / TLS_SM4_CCM_SM3（RFC 8998，OpenSSL ≥ 3.x 部分版本支持）
+ * 覆盖两大部分：
+ *   A. TLS 1.3（RFC 8446 / RFC 8998）：本机 OpenSSL 支持的套件逐套探测，
+ *      不可用时 SKIP：
+ *      TLS_AES_128_GCM_SHA256 / TLS_AES_256_GCM_SHA384
+ *      TLS_CHACHA20_POLY1305_SHA256 / TLS_AES_128_CCM_SHA256
+ *      TLS_SM4_GCM_SM3 / TLS_SM4_CCM_SM3（RFC 8998，标准 OpenSSL 无实现 → SKIP）
+ *   B. TLS 1.2（RFC 5246）：jpssl 服务端 ↔ OpenSSL 客户端，
+ *      覆盖 jpssl 服务端支持的 8 个套件（ECDHE-ECDSA / ECDHE-RSA / RSA）。
  *
- * 每个套件验证两个方向：
- *   A. jpssl 服务端 ↔ OpenSSL 客户端（OpenSSL 指定单个 ciphersuite 连接）
- *   B. OpenSSL 服务端 ↔ jpssl 客户端（jpssl 指定目标套件连接）
  * 每个方向断言：握手成功、协商套件与目标一致、双向应用数据一致。
- *
- * 注意：OpenSSL 3.0.x 默认构建不含 TLS_AES_128_CCM_SHA256 与 RFC 8998
- *       SM 套件（SSL_CTX_set_ciphersuites 报 no cipher match），此时该套件
- *       标记 SKIP —— 内部往返正确性由 test_tls.cpp 的组合矩阵覆盖。
+ * 平台：Windows (Winsock) + Linux (POSIX socket)。
  *
  * 编译需要链接 OpenSSL (libssl + libcrypto)。
  */
@@ -21,6 +19,8 @@
 #include "tls.hpp"
 #include "tls_socket.hpp"
 #include "ecdsa.hpp"
+#include "rsa.hpp"
+#include "sm2.hpp"
 
 #include <openssl/ssl.h>
 #include <openssl/evp.h>
@@ -29,12 +29,18 @@
 #include <openssl/err.h>
 #include <openssl/rand.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <netdb.h>
 #include <poll.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -49,34 +55,76 @@
 using namespace jpssl;
 using namespace jpssl::tls;
 
-// ═══════════════════════════════════════════════════════════════════════
-//  辅助
-// ═══════════════════════════════════════════════════════════════════════
+// ============================================================
+//  平台 socket 适配
+// ============================================================
 
-// 目标套件 → OpenSSL ciphersuite 名
-static const char* ossl_cs_name(CipherSuite cs) {
-    switch (cs) {
-        case CipherSuite::TLS_AES_128_GCM_SHA256:       return "TLS_AES_128_GCM_SHA256";
-        case CipherSuite::TLS_AES_256_GCM_SHA384:       return "TLS_AES_256_GCM_SHA384";
-        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256: return "TLS_CHACHA20_POLY1305_SHA256";
-        case CipherSuite::TLS_AES_128_CCM_SHA256:       return "TLS_AES_128_CCM_SHA256";
-        case CipherSuite::TLS_SM4_GCM_SM3:              return "TLS_SM4_GCM_SM3";
-        case CipherSuite::TLS_SM4_CCM_SM3:              return "TLS_SM4_CCM_SM3";
-        default: return nullptr;
-    }
+#ifdef _WIN32
+using jp_sock_t = SOCKET;
+static void sock_close(jp_sock_t fd) { closesocket(fd); }
+static int do_poll(pollfd* fds, int n, int timeout_ms) {
+    return WSAPoll(fds, (ULONG)n, timeout_ms);
+}
+#else
+using jp_sock_t = int;
+static void sock_close(jp_sock_t fd) { ::close(fd); }
+static int do_poll(pollfd* fds, int n, int timeout_ms) {
+    return ::poll(fds, (nfds_t)n, timeout_ms);
+}
+#endif
+
+static void set_socket_timeouts(jp_sock_t fd) {
+    timeval tv{};
+    tv.tv_sec = 5; tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, (int)sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, (int)sizeof(tv));
 }
 
-static const char* cs_short_name(CipherSuite cs) {
-    switch (cs) {
-        case CipherSuite::TLS_AES_128_GCM_SHA256:       return "AES128-GCM-SHA256";
-        case CipherSuite::TLS_AES_256_GCM_SHA384:       return "AES256-GCM-SHA384";
-        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256: return "CHACHA20-POLY1305-SHA256";
-        case CipherSuite::TLS_AES_128_CCM_SHA256:       return "AES128-CCM-SHA256";
-        case CipherSuite::TLS_SM4_GCM_SM3:              return "SM4-GCM-SM3";
-        case CipherSuite::TLS_SM4_CCM_SM3:              return "SM4-CCM-SM3";
-        default: return "?";
+// 循环读取恰好 want 字节
+static bool ssl_read_full(SSL* ssl, uint8_t* buf, size_t want) {
+    size_t got = 0;
+    while (got < want) {
+        int n = SSL_read(ssl, buf + got, (int)(want - got));
+        if (n <= 0) {
+            int e = SSL_get_error(ssl, n);
+            if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) continue;
+            return false;
+        }
+        got += (size_t)n;
     }
+    return true;
 }
+
+static bool ssl_write_all(SSL* ssl, const uint8_t* data, size_t len) {
+    size_t sent = 0;
+    while (sent < len) {
+        int n = SSL_write(ssl, data + sent, (int)(len - sent));
+        if (n <= 0) {
+            int e = SSL_get_error(ssl, n);
+            if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) continue;
+            return false;
+        }
+        sent += (size_t)n;
+    }
+    return true;
+}
+
+// 收集 OpenSSL 错误队列全文（用于定位握手失败原因）
+static std::string ossl_errors() {
+    std::string out;
+    unsigned long e = 0;
+    char buf[256];
+    while ((e = ERR_get_error()) != 0) {
+        ERR_error_string_n(e, buf, sizeof(buf));
+        out += buf;
+        out += "\n";
+    }
+    return out;
+}
+
+// ============================================================
+//  证书辅助
+// ============================================================
 
 // jpssl 服务端证书（ECDSA P-256，自持密钥）
 static std::unique_ptr<tls_certificate> make_jpssl_ecdsa_cert() {
@@ -84,6 +132,24 @@ static std::unique_ptr<tls_certificate> make_jpssl_ecdsa_cert() {
     cert->subject_name = "localhost";
     cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     ecdsa_p256_keygen(cert->pub.ecdsa_p256, cert->priv.ecdsa_p256);
+    return cert;
+}
+
+// jpssl 服务端证书（RSA-2048，自持密钥）
+static std::unique_ptr<tls_certificate> make_jpssl_rsa_cert() {
+    auto cert = std::make_unique<tls_certificate>();
+    cert->subject_name = "localhost";
+    cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
+    if (!rsa_keygen(cert->pub.rsa, cert->priv.rsa)) return nullptr;
+    return cert;
+}
+
+// jpssl 服务端证书（SM2，RFC 8998 国密套件要求）
+static std::unique_ptr<tls_certificate> make_jpssl_sm2_cert() {
+    auto cert = std::make_unique<tls_certificate>();
+    cert->subject_name = "localhost";
+    cert->sig_alg = SignatureAlgorithm::SM2_SM3;
+    sm2_keygen(cert->pub.sm2, cert->priv.sm2);
     return cert;
 }
 
@@ -117,7 +183,37 @@ static EVP_PKEY* ossl_gen_ecdsa_p256(uint8_t xy_buf[64]) {
     return pkey;
 }
 
-// OpenSSL 自签证书（ECDSA P-256），CN=localhost
+// OpenSSL 生成 RSA-2048 密钥对；公钥 n/e 以 256/3 字节大端导出。
+// 返回 OpenSSL EVP_PKEY（含私钥）。
+static EVP_PKEY* ossl_gen_rsa_2048(uint8_t n_buf[256], uint8_t e_buf[3]) {
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
+    if (!ctx) return nullptr;
+    EVP_PKEY* pkey = nullptr;
+    if (EVP_PKEY_keygen_init(ctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0 ||
+        EVP_PKEY_keygen(ctx, &pkey) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        return nullptr;
+    }
+    EVP_PKEY_CTX_free(ctx);
+
+    BIGNUM* n = nullptr, * e = nullptr;
+    if (EVP_PKEY_get_bn_param(pkey, "n", &n) != 1 ||
+        EVP_PKEY_get_bn_param(pkey, "e", &e) != 1) {
+        BN_free(n); BN_free(e); EVP_PKEY_free(pkey);
+        return nullptr;
+    }
+    int n_len = BN_bn2binpad(n, n_buf, 256);
+    int e_len = BN_bn2binpad(e, e_buf, 3);
+    BN_free(n); BN_free(e);
+    if (n_len != 256 || e_len != 3) {
+        EVP_PKEY_free(pkey);
+        return nullptr;
+    }
+    return pkey;
+}
+
+// OpenSSL 自签证书，CN=localhost
 static X509* ossl_self_signed(EVP_PKEY* pkey) {
     X509* x = X509_new();
     if (!x) return nullptr;
@@ -126,7 +222,8 @@ static X509* ossl_self_signed(EVP_PKEY* pkey) {
     X509_gmtime_adj(X509_get_notBefore(x), -60);
     X509_gmtime_adj(X509_get_notAfter(x), 60L * 60 * 24 * 30);
     X509_set_pubkey(x, pkey);
-    X509_NAME* name = X509_get_subject_name(x);
+    // OpenSSL 4.x 起 X509_get_subject_name 返回 const，X509_set_issuer_name 需要非 const
+    X509_NAME* name = const_cast<X509_NAME*>(X509_get_subject_name(x));
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
                                (const unsigned char*)"localhost", -1, -1, 0);
     X509_set_issuer_name(x, name);
@@ -137,61 +234,195 @@ static X509* ossl_self_signed(EVP_PKEY* pkey) {
     return x;
 }
 
-// 用单个 TLS 1.3 ciphersuite 配置 OpenSSL 上下文；返回 false 表示该套件
-// 本机 OpenSSL 不支持（no cipher match）—— 测试应 SKIP 而非失败。
+// ============================================================
+//  套件命名
+// ============================================================
+
+// 目标套件 → OpenSSL ciphersuite 名称（TLS 1.3）
+static const char* ossl_cs_name(CipherSuite cs) {
+    switch (cs) {
+        case CipherSuite::TLS_AES_128_GCM_SHA256:       return "TLS_AES_128_GCM_SHA256";
+        case CipherSuite::TLS_AES_256_GCM_SHA384:       return "TLS_AES_256_GCM_SHA384";
+        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256: return "TLS_CHACHA20_POLY1305_SHA256";
+        case CipherSuite::TLS_AES_128_CCM_SHA256:       return "TLS_AES_128_CCM_SHA256";
+        case CipherSuite::TLS_SM4_GCM_SM3:              return "TLS_SM4_GCM_SM3";
+        case CipherSuite::TLS_SM4_CCM_SM3:              return "TLS_SM4_CCM_SM3";
+        default: return nullptr;
+    }
+}
+
+// TLS 1.2 套件表：OpenSSL cipher list 名称 + 服务端证书类型
+struct tls12_suite_entry {
+    CipherSuite cs;
+    const char* ossl_name;
+    bool need_ecdsa_cert;
+};
+
+static const tls12_suite_entry kTLS12Suites[] = {
+    { CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+      "ECDHE-ECDSA-AES128-GCM-SHA256", true },
+    { CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+      "ECDHE-ECDSA-AES256-GCM-SHA384", true },
+    { CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+      "ECDHE-ECDSA-CHACHA20-POLY1305", true },
+    { CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+      "ECDHE-RSA-AES128-GCM-SHA256", false },
+    { CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+      "ECDHE-RSA-AES256-GCM-SHA384", false },
+    { CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+      "ECDHE-RSA-CHACHA20-POLY1305", false },
+    { CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256,
+      "AES128-GCM-SHA256", false },
+    { CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384,
+      "AES256-GCM-SHA384", false },
+};
+
+static const char* cs_short_name(CipherSuite cs) {
+    switch (cs) {
+        case CipherSuite::TLS_AES_128_GCM_SHA256:       return "AES128-GCM-SHA256";
+        case CipherSuite::TLS_AES_256_GCM_SHA384:       return "AES256-GCM-SHA384";
+        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256: return "CHACHA20-POLY1305-SHA256";
+        case CipherSuite::TLS_AES_128_CCM_SHA256:       return "AES128-CCM-SHA256";
+        case CipherSuite::TLS_SM4_GCM_SM3:              return "SM4-GCM-SM3";
+        case CipherSuite::TLS_SM4_CCM_SM3:              return "SM4-CCM-SM3";
+        case CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: return "ECDHE-ECDSA-AES128-GCM-SHA256";
+        case CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384: return "ECDHE-ECDSA-AES256-GCM-SHA384";
+        case CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: return "ECDHE-ECDSA-CHACHA20-POLY1305";
+        case CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:     return "ECDHE-RSA-AES128-GCM-SHA256";
+        case CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:     return "ECDHE-RSA-AES256-GCM-SHA384";
+        case CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: return "ECDHE-RSA-CHACHA20-POLY1305";
+        case CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256:           return "AES128-GCM-SHA256";
+        case CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384:           return "AES256-GCM-SHA384";
+        default: return "?";
+    }
+}
+
+// 用单个 TLS 1.3 ciphersuite 配置 OpenSSL 上下文；返回 false 表示本机
+// OpenSSL 不支持（no cipher match）—— 测试应 SKIP 而非失败。
 static bool ossl_ctx_set_tls13_only(SSL_CTX* ctx, const char* cs_name) {
-    // min/max 均为 TLS 1.3 即保证不协商 TLS 1.2（无需再清 TLS 1.2 套件；
-    // TLS 1.3-only 下 SSL_CTX_set_cipher_list 会因无可用 TLS 1.2 套件返回 0）
     SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
     SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
     return SSL_CTX_set_ciphersuites(ctx, cs_name) == 1;
 }
 
-static void set_socket_timeouts(int fd) {
-    timeval tv{};
-    tv.tv_sec = 5; tv.tv_usec = 0;
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+// 用单个 TLS 1.2 cipher 配置 OpenSSL 上下文
+static bool ossl_ctx_set_tls12_only(SSL_CTX* ctx, const char* cipher_name) {
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
+    return SSL_CTX_set_cipher_list(ctx, cipher_name) == 1;
 }
 
-// 循环读取恰好 want 字节
-static bool ssl_read_full(SSL* ssl, uint8_t* buf, size_t want) {
-    size_t got = 0;
-    while (got < want) {
-        int n = SSL_read(ssl, buf + got, (int)(want - got));
-        if (n <= 0) {
-            int e = SSL_get_error(ssl, n);
-            if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) continue;
-            return false;
-        }
-        got += (size_t)n;
+// ============================================================
+//  方向 A：jpssl 服务端（TLS 1.2）↔ OpenSSL 客户端
+// ============================================================
+
+static bool interop_tls12_jpssl_server_ossl_client(const tls12_suite_entry& e, std::string& why) {
+    SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) { why = "SSL_CTX_new failed"; return false; }
+    if (!ossl_ctx_set_tls12_only(ctx, e.ossl_name)) {
+        SSL_CTX_free(ctx);
+        why = std::string("SKIP: OpenSSL 不支持该 cipher: ") + e.ossl_name;
+        return true;
     }
-    return true;
-}
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
 
-static bool ssl_write_all(SSL* ssl, const uint8_t* data, size_t len) {
-    size_t sent = 0;
-    while (sent < len) {
-        int n = SSL_write(ssl, data + sent, (int)(len - sent));
-        if (n <= 0) {
-            int e = SSL_get_error(ssl, n);
-            if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) continue;
-            return false;
-        }
-        sent += (size_t)n;
+    // jpssl 服务端证书（按套件选择 ECDSA 或 RSA）
+    tls_certificate_manager cert_mgr;
+    auto cert = e.need_ecdsa_cert ? make_jpssl_ecdsa_cert() : make_jpssl_rsa_cert();
+    if (!cert) { why = "jpssl cert generation failed"; SSL_CTX_free(ctx); return false; }
+    cert_mgr.add_certificate("localhost", std::move(cert));
+
+    tls_listener listener;
+    std::string err;
+    if (!listener.listen(0, "127.0.0.1", &err)) {
+        why = "jpssl listen: " + err; SSL_CTX_free(ctx); return false;
     }
-    return true;
+    uint16_t port = listener.local_port();
+
+    std::string srv_err;
+    std::atomic<bool> srv_ok{false};
+    std::atomic<bool> stop{false};
+    std::thread srv_th([&] {
+        for (int i = 0; i < 80; ++i) {
+            if (stop.load()) return;
+            if (listener.wait_readable(100)) break;
+        }
+        if (stop.load()) return;
+        tls_connection conn;
+        if (!listener.accept(conn, cert_mgr, &err)) { srv_err = "accept: " + err; return; }
+        std::vector<uint8_t> buf;
+        if (!conn.recv(buf, &err)) { srv_err = "recv: " + err; return; }
+        static const char expect[] = "ping-from-ossl-client";
+        if (buf.size() != sizeof(expect) - 1 ||
+            std::memcmp(buf.data(), expect, sizeof(expect) - 1) != 0) {
+            srv_err = "jpssl server recv mismatch";
+            return;
+        }
+        static const char resp[] = "pong-from-jpssl-server";
+        if (!conn.send((const uint8_t*)resp, sizeof(resp) - 1, &err)) {
+            srv_err = "send: " + err;
+            return;
+        }
+        srv_ok = true;
+    });
+
+    bool ok = false;
+    jp_sock_t fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == (jp_sock_t)-1) { why = "socket failed"; SSL_CTX_free(ctx); stop = true; srv_th.join(); return false; }
+    set_socket_timeouts(fd);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (::connect(fd, (sockaddr*)&addr, sizeof(addr)) != 0) {
+        why = "connect failed"; sock_close(fd); SSL_CTX_free(ctx);
+        stop = true; srv_th.join(); return false;
+    }
+
+    SSL* ssl = SSL_new(ctx);
+    SSL_set_fd(ssl, (int)fd);
+    SSL_set_tlsext_host_name(ssl, "localhost");
+    if (SSL_connect(ssl) == 1) {
+        const SSL_CIPHER* c = SSL_get_current_cipher(ssl);
+        const char* got = c ? SSL_CIPHER_get_name(c) : nullptr;
+        if (got && std::strcmp(got, e.ossl_name) == 0) {
+            static const char ping[] = "ping-from-ossl-client";
+            static const char expect_resp[] = "pong-from-jpssl-server";
+            uint8_t rbuf[64] = {0};
+            if (ssl_write_all(ssl, (const uint8_t*)ping, sizeof(ping) - 1) &&
+                ssl_read_full(ssl, rbuf, sizeof(expect_resp) - 1) &&
+                std::memcmp(rbuf, expect_resp, sizeof(expect_resp) - 1) == 0) {
+                ok = true;
+            } else {
+                why = "ossl client data exchange failed";
+            }
+        } else {
+            why = "ossl client negotiated wrong suite: " + std::string(got ? got : "(null)");
+        }
+    } else {
+        why = "SSL_connect failed:\n" + ossl_errors() + "server: " + srv_err;
+    }
+
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    sock_close(fd);
+    SSL_CTX_free(ctx);
+    stop = true;
+    srv_th.join();
+
+    if (!ok && why.empty()) why = srv_err.empty() ? "unknown" : srv_err;
+    if (ok && !srv_ok) { ok = false; why = srv_err.empty() ? "jpssl server failed" : srv_err; }
+    return ok;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  方向 A：jpssl 服务端 ↔ OpenSSL 客户端
-// ═══════════════════════════════════════════════════════════════════════
+// ============================================================
+//  方向 A：jpssl 服务端（TLS 1.3）↔ OpenSSL 客户端
+// ============================================================
 
 static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why) {
     const char* cs_name = ossl_cs_name(cs);
     if (!cs_name) { why = "no ossl suite name"; return false; }
 
-    // 先探测本机 OpenSSL 是否支持该套件（失败直接 SKIP，不启动任何线程）
     SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) { why = "SSL_CTX_new failed"; return false; }
     if (!ossl_ctx_set_tls13_only(ctx, cs_name)) {
@@ -201,9 +432,18 @@ static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why) {
     }
     SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
 
-    // jpssl 服务端
+    // RFC 8998：SM 套件要求客户端提供 curveSM2 key_share；
+    // OpenSSL 默认只声明 supported_groups 而不发 share，需强制其发送。
+    if (tls_use_sm3(cs) && SSL_CTX_set1_groups_list(ctx, "SM2") != 1) {
+        SSL_CTX_free(ctx);
+        why = "SKIP: OpenSSL 不支持 curveSM2 group";
+        return true;
+    }
     tls_certificate_manager cert_mgr;
-    cert_mgr.add_certificate("localhost", make_jpssl_ecdsa_cert());
+    if (tls_use_sm3(cs))
+        cert_mgr.add_certificate("localhost", make_jpssl_sm2_cert());
+    else
+        cert_mgr.add_certificate("localhost", make_jpssl_ecdsa_cert());
     tls_listener listener;
     std::string err;
     if (!listener.listen(0, "127.0.0.1", &err)) { why = "jpssl listen: " + err; SSL_CTX_free(ctx); return false; }
@@ -213,7 +453,6 @@ static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why) {
     std::atomic<bool> srv_ok{false};
     std::atomic<bool> stop{false};
     std::thread srv_th([&] {
-        // 等待连接就绪（带超时，避免主线程异常路径 join 永久阻塞）
         for (int i = 0; i < 80; ++i) {
             if (stop.load()) return;
             if (listener.wait_readable(100)) break;
@@ -221,7 +460,6 @@ static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why) {
         if (stop.load()) return;
         tls_connection conn;
         if (!listener.accept(conn, cert_mgr, &err)) { srv_err = "accept: " + err; return; }
-        // 接收 OpenSSL 客户端数据
         std::vector<uint8_t> buf;
         if (!conn.recv(buf, &err)) { srv_err = "recv: " + err; return; }
         static const char expect[] = "ping-from-ossl-client";
@@ -230,7 +468,6 @@ static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why) {
             srv_err = "jpssl server recv mismatch";
             return;
         }
-        // 回包
         static const char resp[] = "pong-from-jpssl-server";
         if (!conn.send((const uint8_t*)resp, sizeof(resp) - 1, &err)) {
             srv_err = "send: " + err;
@@ -239,26 +476,23 @@ static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why) {
         srv_ok = true;
     });
 
-    // OpenSSL 客户端
     bool ok = false;
-
-    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) { why = "socket failed"; SSL_CTX_free(ctx); srv_th.join(); return false; }
+    jp_sock_t fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == (jp_sock_t)-1) { why = "socket failed"; SSL_CTX_free(ctx); stop = true; srv_th.join(); return false; }
     set_socket_timeouts(fd);
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
     if (::connect(fd, (sockaddr*)&addr, sizeof(addr)) != 0) {
-        why = "connect failed"; ::close(fd); SSL_CTX_free(ctx);
+        why = "connect failed"; sock_close(fd); SSL_CTX_free(ctx);
         stop = true; srv_th.join(); return false;
     }
 
     SSL* ssl = SSL_new(ctx);
-    SSL_set_fd(ssl, fd);
+    SSL_set_fd(ssl, (int)fd);
     SSL_set_tlsext_host_name(ssl, "localhost");
     if (SSL_connect(ssl) == 1) {
-        // 协商套件校验
         const SSL_CIPHER* c = SSL_get_current_cipher(ssl);
         const char* got = c ? SSL_CIPHER_get_name(c) : nullptr;
         if (got && std::strcmp(got, cs_name) == 0) {
@@ -276,14 +510,15 @@ static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why) {
             why = "ossl client negotiated wrong suite: " + std::string(got ? got : "(null)");
         }
     } else {
-        unsigned long e = ERR_peek_last_error();
-        why = "SSL_connect failed: " + std::string(ERR_error_string(e, nullptr));
+        unsigned long errcode = ERR_peek_last_error();
+        why = "SSL_connect failed:\n" + ossl_errors() + "server: " + srv_err;
     }
 
     SSL_shutdown(ssl);
     SSL_free(ssl);
-    ::close(fd);
+    sock_close(fd);
     SSL_CTX_free(ctx);
+    stop = true;
     srv_th.join();
 
     if (!ok && why.empty()) why = srv_err.empty() ? "unknown" : srv_err;
@@ -291,9 +526,9 @@ static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why) {
     return ok;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  方向 B：OpenSSL 服务端 ↔ jpssl 客户端
-// ═══════════════════════════════════════════════════════════════════════
+// ============================================================
+//  方向 B：OpenSSL 服务端（TLS 1.3）↔ jpssl 客户端
+// ============================================================
 
 static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why) {
     const char* cs_name = ossl_cs_name(cs);
@@ -316,33 +551,31 @@ static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why) {
     SSL_CTX_use_certificate(ctx, x509);
     SSL_CTX_use_PrivateKey(ctx, pkey);
 
-    // 监听
-    int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (lfd < 0) { why = "socket failed"; SSL_CTX_free(ctx); X509_free(x509); EVP_PKEY_free(pkey); return false; }
+    jp_sock_t lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (lfd == (jp_sock_t)-1) { why = "socket failed"; SSL_CTX_free(ctx); X509_free(x509); EVP_PKEY_free(pkey); return false; }
     int one = 1;
-    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&one, sizeof(one));
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(0);
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
     if (::bind(lfd, (sockaddr*)&addr, sizeof(addr)) != 0 || ::listen(lfd, 4) != 0) {
-        why = "bind/listen failed"; ::close(lfd); SSL_CTX_free(ctx); X509_free(x509); EVP_PKEY_free(pkey); return false;
+        why = "bind/listen failed"; sock_close(lfd); SSL_CTX_free(ctx); X509_free(x509); EVP_PKEY_free(pkey); return false;
     }
     socklen_t alen = sizeof(addr);
     getsockname(lfd, (sockaddr*)&addr, &alen);
     uint16_t port = ntohs(addr.sin_port);
 
-    // 服务端线程：accept + SSL_accept + 数据交换
     std::string srv_err;
     std::atomic<bool> srv_ok{false};
     std::thread srv_th([&] {
-        pollfd pfd{lfd, POLLIN, 0};
-        if (::poll(&pfd, 1, 8000) <= 0) { srv_err = "accept timeout"; return; }
-        int cfd = ::accept(lfd, nullptr, nullptr);
-        if (cfd < 0) { srv_err = "accept failed"; return; }
+        pollfd pfd{ lfd, POLLIN, 0 };
+        if (do_poll(&pfd, 1, 8000) <= 0) { srv_err = "accept timeout"; return; }
+        jp_sock_t cfd = ::accept(lfd, nullptr, nullptr);
+        if (cfd == (jp_sock_t)-1) { srv_err = "accept failed"; return; }
         set_socket_timeouts(cfd);
         SSL* ssl = SSL_new(ctx);
-        SSL_set_fd(ssl, cfd);
+        SSL_set_fd(ssl, (int)cfd);
         if (SSL_accept(ssl) == 1) {
             const SSL_CIPHER* c = SSL_get_current_cipher(ssl);
             const char* got = c ? SSL_CIPHER_get_name(c) : nullptr;
@@ -365,7 +598,7 @@ static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why) {
         }
         SSL_shutdown(ssl);
         SSL_free(ssl);
-        ::close(cfd);
+        sock_close(cfd);
     });
 
     // jpssl 客户端：预期证书（公钥与 OpenSSL 服务端配对）
@@ -404,7 +637,7 @@ static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why) {
     }
 
     srv_th.join();
-    ::close(lfd);
+    sock_close(lfd);
     SSL_CTX_free(ctx);
     X509_free(x509);
     EVP_PKEY_free(pkey);
@@ -414,12 +647,38 @@ static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why) {
     return ok;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ============================================================
 //  测试入口
-// ═══════════════════════════════════════════════════════════════════════
+// ============================================================
+
+void test_tls12_openssl_interop() {
+    std::printf("\n=== TLS 1.2 套件 × OpenSSL 互操作（jpssl 服务端 ↔ OpenSSL 客户端）===\n");
+    const int kTotal = (int)(sizeof(kTLS12Suites) / sizeof(kTLS12Suites[0]));
+    int pass = 0, skip = 0, fail = 0;
+
+    for (const auto& e : kTLS12Suites) {
+        std::string why;
+        bool r = interop_tls12_jpssl_server_ossl_client(e, why);
+        std::string tag = std::string("A jpssl-server <-> ossl-client ") + e.ossl_name;
+        if (r && why.rfind("SKIP", 0) == 0) {
+            ++skip;
+            std::cout << "  - " << tag << " : " << why << std::endl;
+        } else if (r) {
+            ++pass;
+            std::cout << "  \xE2\x9C\x93 " << tag << std::endl;
+        } else {
+            ++fail;
+            std::cout << "  \xE2\x9C\x97 " << tag << " - " << why << std::endl;
+        }
+    }
+
+    std::printf("  TLS 1.2 OpenSSL interop: %d pass, %d skip, %d fail (共 %d 套件)\n",
+                pass, skip, fail, kTotal);
+    TEST("TLS 1.2 OpenSSL 互操作可用套件全部通过", fail == 0);
+}
 
 void test_tls13_openssl_interop() {
-    std::printf("\n=== TLS 1.3 加密套件 × OpenSSL 互操作 ===\n");
+    std::printf("\n=== TLS 1.3 套件 × OpenSSL 互操作 ===\n");
 
     const CipherSuite suites[] = {
         CipherSuite::TLS_AES_128_GCM_SHA256,
@@ -445,10 +704,10 @@ void test_tls13_openssl_interop() {
                 std::cout << "  - " << tag << " : " << why << std::endl;
             } else if (r) {
                 ++pass;
-                std::cout << "  ✓ " << tag << std::endl;
+                std::cout << "  \xE2\x9C\x93 " << tag << std::endl;
             } else {
                 ++fail;
-                std::cout << "  ✗ " << tag << " — " << why << std::endl;
+                std::cout << "  \xE2\x9C\x97 " << tag << " - " << why << std::endl;
             }
         }
 
@@ -462,23 +721,35 @@ void test_tls13_openssl_interop() {
                 std::cout << "  - " << tag << " : " << why << std::endl;
             } else if (r) {
                 ++pass;
-                std::cout << "  ✓ " << tag << std::endl;
+                std::cout << "  \xE2\x9C\x93 " << tag << std::endl;
             } else {
                 ++fail;
-                std::cout << "  ✗ " << tag << " — " << why << std::endl;
+                std::cout << "  \xE2\x9C\x97 " << tag << " - " << why << std::endl;
             }
         }
     }
 
     std::printf("  OpenSSL interop: %d pass, %d skip, %d fail (共 %d 套件 × 2 方向)\n",
                 pass, skip, fail, kTotal);
-    TEST("TLS 1.3 OpenSSL 互操作: 可用套件全部通过", fail == 0);
+    TEST("TLS 1.3 OpenSSL 互操作可用套件全部通过", fail == 0);
 }
 
 // 直接可执行入口（同时保持 test_utils 框架兼容）
 #ifndef JPSSL_INTEROP_NO_MAIN
 int main() {
+#ifdef _WIN32
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        std::fprintf(stderr, "WSAStartup failed\n");
+        return 1;
+    }
+#endif
+    test_tls12_openssl_interop();
     test_tls13_openssl_interop();
-    return test_summary();
+    int rc = test_summary();
+#ifdef _WIN32
+    WSACleanup();
+#endif
+    return rc;
 }
 #endif

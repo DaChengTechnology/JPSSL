@@ -489,8 +489,15 @@ bool tls_certificate::sign_scheme(uint16_t scheme, const uint8_t* data, size_t d
             if (!ecdsa_sign_to_der(raw, sizeof(raw), der, sizeof(der), dl)) return false;
             std::memcpy(sig, der, dl); sig_len = dl; return true;
         }
-        case SignatureAlgorithm::SM2_SM3:
-            sig_len = 64; sm2_sign(priv.sm2, data, data_len, sig, za); return true;
+        case SignatureAlgorithm::SM2_SM3: {
+            // RFC 8998/OpenSSL 实测：TLS 1.3 CertificateVerify 中 SM2 签名
+            // 采用 DER 编码（30 45 02 21 ... 02 20 ...），而非裸 64 字节 r||s。
+            uint8_t raw[64], der[160];
+            sm2_sign(priv.sm2, data, data_len, raw, za);
+            size_t dl = sizeof(der);
+            if (!ecdsa_sign_to_der(raw, sizeof(raw), der, sizeof(der), dl)) return false;
+            std::memcpy(sig, der, dl); sig_len = dl; return true;
+        }
         case SignatureAlgorithm::RSA_PKCS1_SHA256:
         case SignatureAlgorithm::RSA_PKCS1_SHA384:
         case SignatureAlgorithm::RSA_PKCS1_SHA512:
@@ -537,9 +544,12 @@ bool tls_certificate::verify_scheme(uint16_t scheme, const uint8_t* data, size_t
             else if (!ecdsa_sig_from_der(sig, sig_len, raw, sizeof(raw))) return false;
             return ecdsa_p521_verify(pub.ecdsa_p521, data, data_len, raw);
         }
-        case SignatureAlgorithm::SM2_SM3:
-            if (sig_len != 64) return false;
-            return sm2_verify(pub.sm2, data, data_len, sig, za);
+        case SignatureAlgorithm::SM2_SM3: {
+            uint8_t raw[64];
+            if (sig_len == 64) std::memcpy(raw, sig, 64);
+            else if (!ecdsa_sig_from_der(sig, sig_len, raw, sizeof(raw))) return false;
+            return sm2_verify(pub.sm2, data, data_len, raw, za);
+        }
         case SignatureAlgorithm::RSA_PKCS1_SHA256:
         case SignatureAlgorithm::RSA_PKCS1_SHA384:
         case SignatureAlgorithm::RSA_PKCS1_SHA512: {
@@ -1378,12 +1388,33 @@ std::vector<uint8_t> tls_encrypt_handshake(tls_session& s, const uint8_t* hs_msg
     std::span<const uint8_t> aad_span(aad,5);
 
     std::vector<uint8_t> ciphertext;uint8_t tag[16];
-    if(cipher_needs_sm4_ctx(s.cipher_suite)){
-        sm4_ctx_init_from_key(s.sm4, write_key);
-        sm4_gcm_encrypt(&s.sm4,nonce,12,inner,aad_span,ciphertext,tag,16);
-    }else{
-        aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
-        aes_gcm_encrypt_auto(ctx,nonce,12,inner,aad_span,ciphertext,tag,16);
+    // RFC 8446 5.2：TLS 1.3 握手记录与应用程序记录使用相同的 AEAD 构造，
+    // 必须按套件分发（此前 ChaCha20/CCM 误走 AES-GCM/SM4-GCM 分支）。
+    switch(s.cipher_suite){
+        case CipherSuite::TLS_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_AES_256_GCM_SHA384: {
+            aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
+            aes_gcm_encrypt_auto(ctx,nonce,12,inner,aad_span,ciphertext,tag,16);
+            break;
+        }
+        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
+            chacha20_poly1305_encrypt(write_key, nonce, inner, aad_span, ciphertext, tag);
+            break;
+        case CipherSuite::TLS_AES_128_CCM_SHA256: {
+            aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
+            aes_ccm_encrypt(ctx, nonce, 12, inner, aad_span, ciphertext, tag, 16);
+            break;
+        }
+        case CipherSuite::TLS_SM4_GCM_SM3: {
+            sm4_ctx_init_from_key(s.sm4, write_key);
+            sm4_gcm_encrypt(&s.sm4,nonce,12,inner,aad_span,ciphertext,tag,16);
+            break;
+        }
+        case CipherSuite::TLS_SM4_CCM_SM3: {
+            sm4_ctx_init_from_key(s.sm4, write_key);
+            sm4_ccm_encrypt(&s.sm4, nonce, 12, inner, aad_span, ciphertext, tag, 16);
+            break;
+        }
     }
     record.insert(record.end(),ciphertext.begin(),ciphertext.end());
     record.insert(record.end(),tag,tag+16);
@@ -1412,12 +1443,37 @@ static bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_
     bool ok = false;
     // RFC 8446 5.2：AAD = record 头 5 字节
     std::span<const uint8_t> aad_span(record,5);
-    if(cipher_needs_sm4_ctx(s.cipher_suite)){
-        sm4_ctx_init_from_key(s.sm4, read_key);
-        ok = sm4_gcm_decrypt(&s.sm4,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
-    }else{
-        aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
-        ok = aes_gcm_decrypt_auto(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
+    switch(s.cipher_suite){
+        case CipherSuite::TLS_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_AES_256_GCM_SHA384: {
+            aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
+            ok = aes_gcm_decrypt_auto(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
+            break;
+        }
+        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
+            ok = chacha20_poly1305_decrypt(read_key, nonce,
+                                           std::span<const uint8_t>(ciphertext,ct_len),
+                                           aad_span, tag, inner);
+            break;
+        case CipherSuite::TLS_AES_128_CCM_SHA256: {
+            aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
+            ok = aes_ccm_decrypt(ctx, nonce, 12,
+                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 aad_span, tag, 16, inner);
+            break;
+        }
+        case CipherSuite::TLS_SM4_GCM_SM3: {
+            sm4_ctx_init_from_key(s.sm4, read_key);
+            ok = sm4_gcm_decrypt(&s.sm4,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
+            break;
+        }
+        case CipherSuite::TLS_SM4_CCM_SM3: {
+            sm4_ctx_init_from_key(s.sm4, read_key);
+            ok = sm4_ccm_decrypt(&s.sm4, nonce, 12,
+                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 aad_span, tag, 16, inner);
+            break;
+        }
     }
     if(!ok) return false;
 
@@ -3174,10 +3230,15 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
                                             aad_span, tag, 16);
                     break;
                 }
-                case CipherSuite::TLS_SM4_GCM_SM3:
-                case CipherSuite::TLS_SM4_CCM_SM3: {
+                case CipherSuite::TLS_SM4_GCM_SM3: {
                     sm4_ctx_init_from_key(s.sm4, write_key);
                     sm4_gcm_encrypt_inplace(&s.sm4, nonce, 12, inner, inner_len,
+                                            aad_span, tag, 16);
+                    break;
+                }
+                case CipherSuite::TLS_SM4_CCM_SM3: {
+                    sm4_ctx_init_from_key(s.sm4, write_key);
+                    sm4_ccm_encrypt_inplace(&s.sm4, nonce, 12, inner, inner_len,
                                             aad_span, tag, 16);
                     break;
                 }
@@ -3269,10 +3330,16 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
                                  aad_span, tag, 16, inner);
             break;
         }
-        case CipherSuite::TLS_SM4_GCM_SM3:
-        case CipherSuite::TLS_SM4_CCM_SM3: {
+        case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, read_key);
             ok = sm4_gcm_decrypt(&s.sm4, nonce, 12,
+                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 aad_span, tag, 16, inner);
+            break;
+        }
+        case CipherSuite::TLS_SM4_CCM_SM3: {
+            sm4_ctx_init_from_key(s.sm4, read_key);
+            ok = sm4_ccm_decrypt(&s.sm4, nonce, 12,
                                  std::span<const uint8_t>(ciphertext,ct_len),
                                  aad_span, tag, 16, inner);
             break;

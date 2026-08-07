@@ -95,6 +95,42 @@ static inline __m128i ccm_mac_data(__m128i state, const uint8_t* data, size_t le
     return state;
 }
 
+// RFC 3610 搂2.2锛氶檮鍔犺閫佽瘉鏁版嵁 a 缂栫爜涓?[len(a)] || a锛屼笌闀垮害鍓嶇紑鍚屽潡鎷煎悗鎸?16 瀛楄妭琛ラ綈銆?
+static inline __m128i ccm_mac_aad(__m128i state, const uint8_t* aad, size_t a_len,
+                                  const __m128i* rk, int rounds) {
+    uint8_t prefix[6];
+    size_t plen;
+    if (a_len < 0xFF00) {
+        prefix[0] = (uint8_t)(a_len >> 8);
+        prefix[1] = (uint8_t)(a_len & 0xFF);
+        plen = 2;
+    } else {
+        prefix[0] = 0xFF; prefix[1] = 0xFE;
+        prefix[2] = (uint8_t)(a_len >> 24);
+        prefix[3] = (uint8_t)(a_len >> 16);
+        prefix[4] = (uint8_t)(a_len >> 8);
+        prefix[5] = (uint8_t)(a_len & 0xFF);
+        plen = 6;
+    }
+    size_t first = (16 - plen < a_len) ? (16 - plen) : a_len;
+    uint8_t block[16] = {};
+    std::memcpy(block, prefix, plen);
+    std::memcpy(block + plen, aad, first);
+    state = ccm_mac_block(state, _mm_loadu_si128((const __m128i*)block), rk, rounds);
+    size_t pos = first;
+    while (pos + 16 <= a_len) {
+        __m128i b = _mm_loadu_si128((const __m128i*)(aad + pos));
+        state = ccm_mac_block(state, b, rk, rounds);
+        pos += 16;
+    }
+    if (pos < a_len) {
+        uint8_t last[16] = {};
+        std::memcpy(last, aad + pos, a_len - pos);
+        state = ccm_mac_block(state, _mm_loadu_si128((const __m128i*)last), rk, rounds);
+    }
+    return state;
+}
+
 #endif // __x86_64__ || _M_X64
 
 /// 构造 AAD 长度前缀块（RFC 3610 §2.2），不足 16 字节补零
@@ -148,12 +184,7 @@ static void aes_ccm_encrypt_impl(const aes_context& ctx,
                                           _mm_loadu_si128((const __m128i*)B0),
                                           rk, rounds);
         if (!aad.empty()) {
-            uint8_t prefix[16];
-            ccm_aad_prefix(prefix, aad.size());
-            mac_state = ccm_mac_block(mac_state,
-                                      _mm_loadu_si128((const __m128i*)prefix),
-                                      rk, rounds);
-            mac_state = ccm_mac_data(mac_state, aad.data(), aad.size(), rk, rounds);
+            mac_state = ccm_mac_aad(mac_state, aad.data(), aad.size(), rk, rounds);
         }
 
         const bool fast_ctr = q <= 4;
@@ -245,19 +276,39 @@ static void aes_ccm_encrypt_impl(const aes_context& ctx,
         aes_encrypt_block(ctx, mac, mac);
 
         if (!aad.empty()) {
-            uint8_t prefix[16] = {};
-            ccm_aad_prefix(prefix, aad.size());
-            for (int j = 0; j < 16; ++j) mac[j] ^= prefix[j];
-            aes_encrypt_block(ctx, mac, mac);
+            // RFC 3610：AAD = [len(a)] || a，拼接后按 16 字节补齐
+            uint8_t prefix[6];
+            size_t plen;
+            if (aad.size() < 0xFF00) {
+                prefix[0] = (uint8_t)(aad.size() >> 8);
+                prefix[1] = (uint8_t)(aad.size() & 0xFF);
+                plen = 2;
+            } else {
+                prefix[0] = 0xFF; prefix[1] = 0xFE;
+                prefix[2] = (uint8_t)(aad.size() >> 24);
+                prefix[3] = (uint8_t)(aad.size() >> 16);
+                prefix[4] = (uint8_t)(aad.size() >> 8);
+                prefix[5] = (uint8_t)(aad.size() & 0xFF);
+                plen = 6;
+            }
             size_t pos = 0;
-            while (pos + 16 <= aad.size()) {
-                for (int j = 0; j < 16; ++j) mac[j] ^= aad[pos + j];
+            size_t total = plen + aad.size();
+            while (pos + 16 <= total) {
+                uint8_t block[16] = {};
+                for (size_t k = 0; k < 16; ++k) {
+                    size_t idx = pos + k;
+                    block[k] = (idx < plen) ? prefix[idx] : aad[idx - plen];
+                }
+                for (int j = 0; j < 16; ++j) mac[j] ^= block[j];
                 aes_encrypt_block(ctx, mac, mac);
                 pos += 16;
             }
-            if (pos < aad.size()) {
+            if (pos < total) {
                 uint8_t last[16] = {};
-                std::memcpy(last, aad.data() + pos, aad.size() - pos);
+                for (size_t k = 0; k < total - pos; ++k) {
+                    size_t idx = pos + k;
+                    last[k] = (idx < plen) ? prefix[idx] : aad[idx - plen];
+                }
                 for (int j = 0; j < 16; ++j) mac[j] ^= last[j];
                 aes_encrypt_block(ctx, mac, mac);
             }
@@ -387,12 +438,7 @@ static bool aes_ccm_decrypt_impl(const aes_context& ctx,
                                           _mm_loadu_si128((const __m128i*)B0),
                                           rk, rounds);
         if (!aad.empty()) {
-            uint8_t prefix[16];
-            ccm_aad_prefix(prefix, aad.size());
-            mac_state = ccm_mac_block(mac_state,
-                                      _mm_loadu_si128((const __m128i*)prefix),
-                                      rk, rounds);
-            mac_state = ccm_mac_data(mac_state, aad.data(), aad.size(), rk, rounds);
+            mac_state = ccm_mac_aad(mac_state, aad.data(), aad.size(), rk, rounds);
         }
 
         // 先解密（直写 out）并同步累加 MAC
@@ -508,19 +554,39 @@ static bool aes_ccm_decrypt_impl(const aes_context& ctx,
         aes_encrypt_block(ctx, mac, mac);
 
         if (!aad.empty()) {
-            uint8_t prefix[16] = {};
-            ccm_aad_prefix(prefix, aad.size());
-            for (int j = 0; j < 16; ++j) mac[j] ^= prefix[j];
-            aes_encrypt_block(ctx, mac, mac);
+            // RFC 3610：AAD = [len(a)] || a，拼接后按 16 字节补齐
+            uint8_t prefix[6];
+            size_t plen;
+            if (aad.size() < 0xFF00) {
+                prefix[0] = (uint8_t)(aad.size() >> 8);
+                prefix[1] = (uint8_t)(aad.size() & 0xFF);
+                plen = 2;
+            } else {
+                prefix[0] = 0xFF; prefix[1] = 0xFE;
+                prefix[2] = (uint8_t)(aad.size() >> 24);
+                prefix[3] = (uint8_t)(aad.size() >> 16);
+                prefix[4] = (uint8_t)(aad.size() >> 8);
+                prefix[5] = (uint8_t)(aad.size() & 0xFF);
+                plen = 6;
+            }
             size_t pos = 0;
-            while (pos + 16 <= aad.size()) {
-                for (int j = 0; j < 16; ++j) mac[j] ^= aad[pos + j];
+            size_t total = plen + aad.size();
+            while (pos + 16 <= total) {
+                uint8_t block[16] = {};
+                for (size_t k = 0; k < 16; ++k) {
+                    size_t idx = pos + k;
+                    block[k] = (idx < plen) ? prefix[idx] : aad[idx - plen];
+                }
+                for (int j = 0; j < 16; ++j) mac[j] ^= block[j];
                 aes_encrypt_block(ctx, mac, mac);
                 pos += 16;
             }
-            if (pos < aad.size()) {
+            if (pos < total) {
                 uint8_t last[16] = {};
-                std::memcpy(last, aad.data() + pos, aad.size() - pos);
+                for (size_t k = 0; k < total - pos; ++k) {
+                    size_t idx = pos + k;
+                    last[k] = (idx < plen) ? prefix[idx] : aad[idx - plen];
+                }
                 for (int j = 0; j < 16; ++j) mac[j] ^= last[j];
                 aes_encrypt_block(ctx, mac, mac);
             }
