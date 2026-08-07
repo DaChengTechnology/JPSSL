@@ -6,7 +6,8 @@
  *      不可用时 SKIP：
  *      TLS_AES_128_GCM_SHA256 / TLS_AES_256_GCM_SHA384
  *      TLS_CHACHA20_POLY1305_SHA256 / TLS_AES_128_CCM_SHA256
- *      TLS_SM4_GCM_SM3 / TLS_SM4_CCM_SM3（RFC 8998，标准 OpenSSL 无实现 → SKIP）
+ *      TLS_SM4_GCM_SM3 / TLS_SM4_CCM_SM3（RFC 8998，仅 OpenSSL ≥ 4.0 参与，否则 SKIP）
+ *      TLS_AES_128_CCM_8_SHA256：OpenSSL 4.0 握手报 "no ciphers available"，暂屏蔽
  *   B. TLS 1.2（RFC 5246）：jpssl 服务端 ↔ OpenSSL 客户端，
  *      覆盖 jpssl 服务端支持的 8 个套件（ECDHE-ECDSA / ECDHE-RSA / RSA）。
  *
@@ -23,6 +24,7 @@
 #include "sm2.hpp"
 
 #include <openssl/ssl.h>
+#include <openssl/opensslv.h>
 #include <openssl/evp.h>
 #include <openssl/ec.h>
 #include <openssl/x509.h>
@@ -51,6 +53,16 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+// OpenSSL 4.0 起才支持 RFC 8998 国密（SM4-GCM / SM4-CCM-SM3）互操作；
+// 低于 4.0 时屏蔽国密用例（按编译期链接的头文件版本判断）。
+static bool ossl_supports_sm_suites() {
+#ifdef OPENSSL_VERSION_NUMBER
+    return OPENSSL_VERSION_NUMBER >= 0x40000000L;
+#else
+    return false;
+#endif
+}
 
 using namespace jpssl;
 using namespace jpssl::tls;
@@ -973,12 +985,13 @@ void test_tls12_openssl_interop() {
 void test_tls13_openssl_interop() {
     std::printf("\n=== TLS 1.3 套件 × OpenSSL 互操作 ===\n");
 
+    // TLS_AES_128_CCM_8_SHA256 暂屏蔽：OpenSSL 4.0 两端握手均报
+    // "no ciphers available"，无法完成互操作。
     const CipherSuite suites[] = {
         CipherSuite::TLS_AES_128_GCM_SHA256,
         CipherSuite::TLS_AES_256_GCM_SHA384,
         CipherSuite::TLS_CHACHA20_POLY1305_SHA256,
         CipherSuite::TLS_AES_128_CCM_SHA256,
-        CipherSuite::TLS_AES_128_CCM_8_SHA256,
         CipherSuite::TLS_SM4_GCM_SM3,
         CipherSuite::TLS_SM4_CCM_SM3,
     };
@@ -987,6 +1000,18 @@ void test_tls13_openssl_interop() {
 
     for (CipherSuite cs : suites) {
         const char* short_name = cs_short_name(cs);
+
+        // 国密（RFC 8998）套件仅在 OpenSSL >= 4.0 时参与互操作
+        const bool sm_suite = (cs == CipherSuite::TLS_SM4_GCM_SM3 ||
+                               cs == CipherSuite::TLS_SM4_CCM_SM3);
+        if (sm_suite && !ossl_supports_sm_suites()) {
+            skip += 2;
+            std::cout << "  - A jpssl-server <-> ossl-client " << short_name
+                      << " : SKIP (OpenSSL < 4.0，无 RFC 8998 国密支持)" << std::endl;
+            std::cout << "  - B ossl-server <-> jpssl-client " << short_name
+                      << " : SKIP (OpenSSL < 4.0，无 RFC 8998 国密支持)" << std::endl;
+            continue;
+        }
 
         // 方向 A：jpssl 服务端 ↔ OpenSSL 客户端
         {
