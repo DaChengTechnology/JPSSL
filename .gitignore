@@ -3,6 +3,7 @@ build-arm64/
 build-armv9/
 build-arm84/
 build-win/
+build-ios/
 .cache/
 .codewhale/
 build_test/
@@ -11,3 +12,14 @@ wiki/
 package-lock.json
 build-bench/
 .deepseek/
+
+# iOS XCFramework 构建产物（由 ios/build-xcframework.sh 生成）
+ios/JPSsl.xcframework/
+
+# Android
+android/.gradle/
+android/build/
+android/local.properties
+android/jpssl/build/
+android/**/.cxx/
+android/.idea/

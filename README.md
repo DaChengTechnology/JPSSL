@@ -253,6 +253,72 @@ ctest --test-dir build-win --output-on-failure
 
 
 
+## Android（arm64-v8a）实现
+
+新增 `android/` Gradle 工程：通过 NDK + CMake 把 jpssl 编译为 **libjpssl.so**（内部静态链接 `jpssl_cpu`），并用 **JNI（`JNI_OnLoad → RegisterNatives`）** 导出 Java 与 Kotlin 可直接调用的 native 符号。
+
+- **ABI**：仅构建 **arm64-v8a（ARMv8/AArch64）**，不构建 x86/x86_64（`ndk.abiFilters`）。
+- **最低版本号**：`minSdk` 与 CMake `ANDROID_PLATFORM` **统一卡在 android-21**（arm64-v8a / 64 位 ABI 最低基线，Android 5.0）。
+- **导出算法符号**：版本号、CSPRNG、Base64、SHA-1/256/384/512、SHA3-256/384/512、SM3、HMAC-SHA256/SHA384/SM3、AES-GCM、ChaCha20-Poly1305、X25519、Ed25519、SM2、SM4（ECB/CBC）、RSA（2048/4096，PKCS#1 v1.5）。
+- **硬件加速**：ARMv8 NEON/crypto 全量启用（AES-GCM、ChaCha20、SHA-1/2/3、SM3、SM4），SHA-512/SHA-3/SM3/SM4 源单独按 `armv8.4-a+crypto` 编译，运行时由 `cpu_features` 自动分派，低版本 CPU 安全回退标量。
+
+```bash
+
+# 1) 在 android/ 下生成 wrapper（一次性；需已安装 Gradle）
+cd android && gradle wrapper
+
+# 2) 构建 AAR（自动调用 NDK CMake 编译 libjpssl.so）
+#    需 Android SDK + NDK（r23+）+ JDK 17，并配置 local.properties 或 ANDROID_HOME
+./gradlew :jpssl:assembleRelease
+
+```
+
+产物：`android/jpssl/build/outputs/aar/jpssl-release.aar`。Java 侧 `io.github.jpssl.Jpssl`（静态 native 方法）与 Kotlin 侧 `io.github.jpssl` 扩展函数（`ByteArray.sha256()`、`aesGcmEncrypt()`、`sm2Sign()` 等）一一对应。
+
+
+
+## HarmonyOS / OpenHarmony (鸿蒙) 构建
+
+
+
+支持在 HarmonyOS NEXT（鸿蒙）7.0 及兼容 OpenHarmony 版本的应用 native 模块中使用，提供 `libjpssl_cpu.a` 与 `libjpssl_cpu.so`。需要 HarmonyOS NDK（DevEco Studio 自带，或命令行下载的 SDK 的 `native` 目录）。
+
+
+
+```bash
+
+# 1) 指定 NDK 路径（HarmonyOS NEXT SDK 的 native 目录）交叉编译
+
+cmake -S . -B build-ohos \
+
+      -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/ohos.cmake \
+
+      -DOHOS_NDK_HOME="/path/to/.../native" \
+
+      -DOHOS_ARCH=arm64-v8a \
+
+      -DCMAKE_BUILD_TYPE=Release
+
+cmake --build build-ohos
+
+```
+
+不传 `-DOHOS_NDK_HOME` 时，toolchain 会依次查找环境变量 `OHOS_NDK_HOME`、`DEVECO_SDK_HOME`（DevEco Studio SDK 下自动取最新版本目录）。
+
+
+
+- `OHOS_ARCH`：`arm64-v8a`（默认，真机）/ `armeabi-v7a` / `x86_64`（模拟器）。
+
+- `OHOS_STL`：`c++_shared`（默认）/ `c++_static`。
+
+- arm64-v8a 下 NEON/crypto 硬件加速全量启用（AES-GCM / ChaCha20 / SHA-1/2/3 / SM3 / SM4 等），运行时由 `cpu_features` 自动分派；`include/rand_os.hpp` 的随机源在鸿蒙上优先走 `getrandom()`，失败回退 `/dev/urandom`。
+
+- 鸿蒙 NDK 面向应用 native 模块（`.so`），不提供可执行文件链接运行时，因此该 toolchain 下**只构建库**：`jpssl-test`、命令行工具、测试与示例自动跳过；OpenMP / MUSA GPU 加速（仅 Linux）自动禁用。
+
+- 在鸿蒙工程中集成时，可将构建出的 `libjpssl_cpu.so` 放入 `src/main/cpp/libs/arm64-v8a/`，并在 `CMakeLists.txt`（应用侧）中 `target_link_libraries(... jpssl_cpu)` + `target_include_directories(... include/)`。
+
+
+
 ## TLS 稳定性测试
 
 
@@ -334,6 +400,8 @@ ctest --test-dir build-win -R test_tls_stability --output-on-failure
 - **RSA keygen 素数预算兜底**：素数搜索预算 100ms（`rsa_keygen`/`rsa_keygen_crt` 及其 4096 版本统一），超时即从预制素数表（`src/rsa_prebuilt_primes_data.inc`，1024 位×50 对 + 2048 位×50 对，MR 已验证）随机取一组完成 keygen，保证 keygen 永不因素数搜索卡死。预制素数公开、仅作测试/兜底，不用于生产密钥。注：构建规则为 unscanned，`.inc` 通过 `OBJECT_DEPENDS` 显式跟踪，改动后自动触发 `rsa.cpp` 重编。
 
 - **MUSA GPU 加速**：仅支持 Linux，Windows 上 `-DJP_ENABLE_MUSA=ON` 会被自动禁用并提示。
+
+- **HarmonyOS / OpenHarmony（鸿蒙）**：通过 `cmake/toolchains/ohos.cmake` 交叉编译，只产出 `libjpssl_cpu.a` / `libjpssl_cpu.so`（详见上方 "HarmonyOS / OpenHarmony (鸿蒙) 构建"）。arm64-v8a 全量启用 NEON/crypto 加速；随机源优先 `getrandom()`；`cpu_features.hpp` 的 ARM 特性检测识别 `__OHOS_FAMILY__`/`__OHOS__`（同为 Linux 内核，走 `getauxval`），并容错缺失 `<asm/hwcap.h>` 的 sysroot。
 
 - **OpenSSL**：仅测试/基准的对比需要；未安装时相关对比测试自动跳过，库本身不依赖。
 
@@ -592,6 +660,10 @@ jpssl-crypt rand 32
 | **SM4-CCM** | SM4 AEAD 认证加密 (NIST SP 800-38C) | — | — |
 
 | **TLS 1.2/1.3** | 完整握手, 密码套件协商, ECDHE/RSA, AES-GCM/ChaCha20/CCM/SM4-GCM, 0-RTT, RFC 8998 | AVX2/AVX512 GCM, ARM NEON GCM | — |
+
+| **QUIC v1/v2 SSL** | QUIC 所需 TLS 1.3 支持（RFC 9001/9369）：无记录层握手、quic_transport_parameters 扩展、Initial/握手/1-RTT 数据包保护密钥、头部保护掩码 | — | — |
+
+| **DTLS 1.2/1.3** | 标准数据报 TLS（RFC 6347/9147）：记录层（epoch/seq + AEAD）、握手（cookie/分片/重传/ACK）、ECDHE（X25519/P-256/X448）、AES-128/256-GCM、ChaCha20 | — | — |
 
 
 
@@ -1836,6 +1908,243 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 
 
 
+#### 11. QUIC v1 / v2（RFC 9001 / RFC 9369）
+
+
+
+QUIC 不使用 TLS 记录层：握手消息直接以原始 TLS Handshake 字节流交付，由 QUIC 封装进
+
+CRYPTO 帧并在 QUIC 数据包保护下传输；应用数据由 QUIC 层（STREAM 帧）加密，不经过 TLS。
+
+jpssl 提供 QUIC 所需的全部 TLS 支持——`quic_transport_parameters` 扩展、无记录层握手、
+
+Initial / 握手 / 1-RTT 数据包保护密钥派生与头部保护掩码。**v1 与 v2 的 TLS 握手完全一致**，
+
+差异仅在初始盐与密钥派生标签（RFC 9369 §3.3）：`tls_quic_*` 函数以 `QuicVersion` 参数区分。
+
+
+
+```cpp
+
+#include "tls.hpp"
+
+using namespace jpssl::tls;
+
+
+
+// ── 服务端：证书管理器（同 TLS 1.3） ──
+
+tls_certificate_manager cert_mgr;
+
+cert_mgr.add_certificate("example.com", std::move(server_cert));
+
+
+
+// ── 客户端：配置 QUIC 传输参数并生成 ClientHello ──
+
+tls_session client;
+
+client.server_name = "example.com";           // SNI
+
+client.quic_version = QuicVersion::V1;        // 或 V2（RFC 9369）
+
+client.quic_transport_params.initial_source_connection_id = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08};
+
+client.quic_transport_params.initial_max_data = 1048576;      // 流控参数
+
+client.quic_transport_params.initial_max_streams_uni = 100;
+
+std::vector<uint8_t> client_hello;
+
+tls_quic_make_client_hello(client, client_hello);            // 原始握手字节，交给 CRYPTO 帧
+
+
+
+// ── 服务端：处理 ClientHello，生成完整回包（SH+EE+Cert+CV+SF，均为原始字节） ──
+
+tls_session server;
+
+server.quic_version = QuicVersion::V1;
+
+server.quic_transport_params.original_destination_connection_id = client.quic_transport_params.initial_source_connection_id;
+
+server.quic_transport_params.initial_source_connection_id = {0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18};
+
+std::vector<uint8_t> server_flight;
+
+tls_quic_make_server_flight(server, client_hello.data(), client_hello.size(), server_flight, cert_mgr);
+
+
+
+// ── 客户端：处理回包并生成 Client Finished（trust 提供 CA 根时走 x509 链验证） ──
+
+auto trust = tls_trust_store::from_pem_file("ca.crt");
+
+std::vector<uint8_t> client_finished;
+
+tls_quic_process_server_flight(client, server_flight.data(), server_flight.size(), client_finished, &trust);
+
+
+
+// ── 服务端：验证客户端 Finished → 握手完成 ──
+
+tls_quic_process_client_finished(server, client_finished.data(), client_finished.size());
+
+
+
+// ── 提取 QUIC 数据包保护密钥（客户端/服务端各自派生，结果逐字节一致） ──
+
+quic_packet_keys cli_hs_key, srv_hs_key, cli_1rtt_key, srv_1rtt_key;
+
+tls_quic_get_handshake_keys(client, client.quic_version, cli_hs_key, srv_hs_key);  // "client in"/"server in"
+
+tls_quic_get_application_keys(client, client.quic_version, cli_1rtt_key, srv_1rtt_key);
+
+// cli_hs_key 用于客户端发送 Handshake 包；srv_hs_key 用于解密服务端 Handshake 包
+
+
+
+// ── Initial 密钥（客户端发送第一个 Initial 包前由 DST CID 派生） ──
+
+quic_initial_keys init_keys;
+
+uint8_t dst_cid[8] = {0x83,0x94,0xc8,0xf0,0x3e,0x51,0x57,0x08};
+
+tls_quic_derive_initial_secrets(client.quic_version, dst_cid, 8, init_keys);
+
+
+
+// ── 头部保护掩码（sample 为受保护载荷按 RFC 9001 §5.4 采样的 16 字节） ──
+
+uint8_t mask[5];
+
+tls_quic_header_protection_mask(client.cipher_suite, init_keys.client.hp, 16,
+
+                                sample, 16, mask, 5);
+
+```
+
+服务端在 `tls_quic_make_server_flight` 前必须为 `server.quic_transport_params` 设置
+
+`original_destination_connection_id`（与客户端首包 DST CID 一致）与 `initial_source_connection_id`；
+
+客户端必须设置 `initial_source_connection_id`（RFC 9000 §7.2/§18.2）。
+
+`tls_session.quic_peer_transport_params` 在握手解析后保存对端传输参数（`quic_peer_params_valid`）。
+
+QUIC 模式也可用 `tls13_make_quic_client_hello` / `tls13_make_quic_server_flight` /
+
+`tls13_process_quic_server_flight` / `tls13_process_quic_client_finished` 便捷包装。
+
+> QUIC v1 与 v2 的线格式、版本号（v1=`0x00000001`，v2=`0x6b3343cf`）与包类型位由 QUIC 层负责；
+
+> 本模块仅提供 TLS 部分。Initial 数据包恒用 AEAD_AES_128_GCM + SHA-256，握手/1-RTT 套件
+
+> 由 TLS 协商（AES-128/256-GCM、ChaCha20-Poly1305 等，对应 16/32 字节密钥）。
+
+
+
+#### 12. DTLS 1.2 / 1.3（RFC 6347 / RFC 9147）
+
+
+
+DTLS 在不可靠的数据报传输（UDP）上提供与 TLS 同等的安全保证。jpssl 提供标准 DTLS
+
+记录层与握手（`include/dtls.hpp` / `src/dtls.cpp`）。
+
+
+
+```cpp
+
+#include "dtls.hpp"
+
+using namespace jpssl::dtls;
+
+
+
+// ── 服务端：证书管理器（同 TLS 1.3） ──
+
+tls_certificate_manager cert_mgr;
+
+cert_mgr.add_certificate("example.com", std::move(server_cert));
+
+
+
+// ── 客户端：配置并完成握手 ──
+
+dtls_session client;
+
+client.ver = DTLSVersion::V13;                 // 或 V12（RFC 6347）
+
+client.server_name = "example.com";
+
+dtls_handshake_input in;                        // datagram=nullptr → 客户端首步
+
+auto step = dtls_handshake_step(client, in);    // 生成 ClientHello 数据报
+
+// 与服务端交换数据报，直到双方 handshake_done：
+
+//   server: dtls_handshake_step(server, in{datagram, cert_manager=&cert_mgr})
+
+//   client: dtls_handshake_step(client, in{datagram, trust_store=&trust})
+
+
+
+// ── 应用数据（握手完成后） ──
+
+std::vector<uint8_t> enc = dtls_protect_application(client, (const uint8_t*)"hello", 5);
+
+std::vector<uint8_t> dec;
+
+dtls_unprotect_application(server, enc.data(), enc.size(), dec);
+
+```
+
+`dtls_handshake_step` 是纯数据报状态机（datagram in → datagram out），可嵌入任意传输
+
+（内存、UDP、回调式事件循环）；内部处理记录层加解密、握手消息分片重组、cookie 交换
+
+（DTLS 1.2）、message_seq、Finished 校验与 DTLS 1.3 ACK。
+
+
+
+UDP socket 封装（含握手超时重传）：
+
+
+
+```cpp
+
+dtls_connection server, client;
+
+server.set_version(DTLSVersion::V13);
+
+server.bind(0, "127.0.0.1");                 // 绑本地端口
+
+uint16_t port = server.local_port();
+
+// 服务端线程：server.server_handshake(cert_mgr);
+
+client.set_version(DTLSVersion::V13);
+
+client.set_server_name("example.com");
+
+client.connect("127.0.0.1", port, &trust);   // 客户端连接并完成握手
+
+client.send((const uint8_t*)"hi", 2);        // 发送应用数据
+
+std::vector<uint8_t> resp; server.recv(resp); // 接收
+
+```
+
+支持：DTLS 1.2（ECDHE-X25519/P-256 + AES-128-GCM/ChaCha20，cookie 可选）与
+
+DTLS 1.3（X25519/P-256/X448 + AES-128/256-GCM/ChaCha20，Ed25519/ECDSA/RSA-PSS 证书）。
+
+> 说明：DTLS 1.3 未实现 HelloRetryRequest 与 Connection ID（RFC 9146）；DTLS 1.2
+> cookie 交换默认关闭（`dtls_session::require_cookie = true` 开启）。
+
+
+
 ### Ed25519
 
 
@@ -2573,9 +2882,11 @@ client.recv(resp, &err);
 - **无防重放**：应用数据记录不带 epoch/sequence 滑动窗口，重放的旧数据报
   会被当作新数据接受。
 
-**未来计划**：后续版本将实现标准 `DTLS 1.2/1.3`（RFC 6347/9147，含 cookie、
-握手分片/重传/乱序重组、防重放）以及 `QUIC + HTTP/3`（RFC 9000/9114），
-届时本数据报模式将被标准协议取代。在此之前，UDP 场景请评估上述缺陷，
+**标准 DTLS 1.2/1.3 已在本次发布提供**（见「TLS 1.2/1.3」小节第 12 点「DTLS 1.2/1.3」），
+建议新代码直接使用标准 DTLS。`QUIC` 传输层（CRYPTO/STREAM 帧、连接迁移、
+拥塞控制）与 `HTTP/3`（RFC 9000/9114）仍列入后续版本计划。
+QUIC 所需的 TLS 层支持已提供（见「TLS 1.2/1.3」小节第 11 点「QUIC v1/v2」）。
+在此之前，UDP 场景请评估上述缺陷，
 并优先考虑使用 TCP + TLS 或标准 DTLS 实现。
 ### 非阻塞模式（事件循环）
 

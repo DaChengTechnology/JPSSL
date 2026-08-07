@@ -82,6 +82,63 @@ enum class CipherSuite : uint16_t {
 struct tls_record { ContentType type; TLSVersion ver; std::vector<uint8_t> payload; };
 
 // ═══════════════════════════════════════════════════════════════════════
+//  QUIC (RFC 9001 / RFC 9369) 支持
+// ═══════════════════════════════════════════════════════════════════════
+/// QUIC 协议版本（线格式 32 位版本号）。
+/// V1 = RFC 9000/9001（版本号 0x00000001），V2 = RFC 9369（版本号 0x6b3343cf）。
+/// QUIC v2 与 v1 的 TLS 握手完全一致，区别仅在初始盐、数据包保护密钥派生标签
+/// 与线格式（RFC 9369 §3.3）。
+enum class QuicVersion : uint32_t {
+    V1 = 0x00000001,
+    V2 = 0x6b3343cf
+};
+
+/// QUIC 传输参数（RFC 9000 §18）——通过 TLS 扩展 0x0039 在
+/// ClientHello（客户端参数）与 EncryptedExtensions（服务端参数）中携带，
+/// 并由 TLS 握手签名提供完整性保护（RFC 9001 §8.2）。
+/// 字段按参数 ID 排列；值为 0 / 空向量表示该参数缺省（编码时省略）。
+struct quic_transport_parameters {
+    std::vector<uint8_t> original_destination_connection_id; // 0x00 server only
+    uint64_t max_idle_timeout = 0;                            // 0x01 (0 = 禁用)
+    std::vector<uint8_t> stateless_reset_token;              // 0x02 server only (16 字节)
+    uint64_t max_udp_payload_size = 65527;                   // 0x03 (>= 1200)
+    uint64_t initial_max_data = 0;                           // 0x04
+    uint64_t initial_max_stream_data_bidi_local = 0;         // 0x05
+    uint64_t initial_max_stream_data_bidi_remote = 0;        // 0x06
+    uint64_t initial_max_stream_data_uni = 0;                // 0x07
+    uint64_t initial_max_streams_bidi = 0;                   // 0x08
+    uint64_t initial_max_streams_uni = 0;                    // 0x09
+    uint64_t ack_delay_exponent = 3;                         // 0x0a (<= 20)
+    uint64_t max_ack_delay = 25;                             // 0x0b (< 2^14)
+    bool disable_active_migration = false;                   // 0x0c (零长度值)
+    std::vector<uint8_t> preferred_address;                  // 0x0d server only (原始编码)
+    uint64_t active_connection_id_limit = 2;                 // 0x0e (>= 2)
+    std::vector<uint8_t> initial_source_connection_id;       // 0x0f
+    std::vector<uint8_t> retry_source_connection_id;         // 0x10 server only
+    /// 未知/扩展参数（含 RFC 9368 version_information 等），解码时原样保留。
+    std::vector<std::pair<uint64_t, std::vector<uint8_t>>> custom;
+
+    /// 编码为 TLS 扩展 0x0039 的 extension_data（RFC 9000 §18.1 传输参数序列）。
+    std::vector<uint8_t> encode() const;
+    /// 解码；非法值（长度/范围错误）返回 false。
+    static bool decode(const uint8_t* data, size_t len, quic_transport_parameters& out);
+};
+
+/// 一组 QUIC 数据包保护密钥（RFC 9001 §5.1）：AEAD key + IV + 头部保护 hp。
+struct quic_packet_keys {
+    uint8_t key[32] = {}; size_t key_len = 0;   // 16 (AES-128) / 32 (AES-256/ChaCha20)
+    uint8_t iv[12] = {};
+    uint8_t hp[32] = {};  size_t hp_len = 0;    // 与 AEAD key 等长
+};
+
+/// QUIC Initial 密钥（RFC 9001 §5.2，恒为 AEAD_AES_128_GCM + SHA-256）。
+struct quic_initial_keys {
+    uint8_t initial_secret[32] = {};
+    quic_packet_keys client;
+    quic_packet_keys server;
+};
+
+// ═══════════════════════════════════════════════════════════════════════
 //  TLS 会话状态
 // ═══════════════════════════════════════════════════════════════════════
 // 用于 support SHA-256、SHA-384 和 SM3 transcript
@@ -151,6 +208,29 @@ struct tls_session {
     std::vector<std::string> alpn_protos;
     // 本次握手协商出的协议（两端一致），为空表示未协商 ALPN。
     std::string alpn_selected;
+
+    // ── QUIC 模式（RFC 9001 / 9369）：TLS 握手承载于 QUIC CRYPTO 帧 ──
+    // 置为 true 后，TLS 1.3 握手不再使用记录层（无 record 头/无 ChangeCipherSpec），
+    // 握手消息以原始 TLS Handshake 字节流交付；ClientHello 与 EncryptedExtensions
+    // 自动携带 quic_transport_parameters 扩展（RFC 9001 §8.2）。
+    bool quic_mode = false;
+    QuicVersion quic_version = QuicVersion::V1;
+    /// 本端要发送的 QUIC 传输参数（客户端 → CH，服务端 → EE）。
+    quic_transport_parameters quic_transport_params;
+    /// 对端传输参数（握手解析后有效）。
+    quic_transport_parameters quic_peer_transport_params;
+    bool quic_peer_params_valid = false;
+
+    // QUIC 数据包保护 secret（RFC 9001 §5.1）：
+    //   handshake secret = HKDF-Expand-Label(Handshake Secret, "client in"/"server in")
+    //   application secret = HKDF-Expand-Label(Master Secret, "client in"/"server in")
+    // 由 tls13_derive_handshake_keys / tls13_derive_application_keys 在 quic_mode 下派生。
+    uint8_t quic_client_hs_secret[48] = {};
+    uint8_t quic_server_hs_secret[48] = {};
+    uint8_t quic_client_app_secret[48] = {};
+    uint8_t quic_server_app_secret[48] = {};
+    bool quic_hs_secrets_ready = false;
+    bool quic_app_secrets_ready = false;
 };
 
 // 默认支持的签名方案全量列表（RFC 8446 + RFC 8998，客户端偏好序）
@@ -525,4 +605,88 @@ void tls_transcript_update(tls_session& s, const uint8_t* data, size_t len);
 void tls_transcript_finalize(tls_session& s);
 std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint32_t validity_days = 365);
 x509::KeyType tls_sig_alg_to_key_type(SignatureAlgorithm sig_alg);
+
+// ═══════════════════════════════════════════════════════════════════════
+//  QUIC (RFC 9001 / RFC 9369) API
+// ═══════════════════════════════════════════════════════════════════════
+
+// QUIC varint 编解码（RFC 9000 §16），供传输参数解析及 QUIC 层复用。
+size_t quic_varint_encoded_len(uint64_t v);
+void   quic_varint_encode(std::vector<uint8_t>& out, uint64_t v);
+bool   quic_varint_decode(const uint8_t* p, size_t len, uint64_t& v, size_t& consumed);
+
+/// 派生 QUIC Initial 数据包保护密钥（RFC 9001 §5.2 / RFC 9369 §3.3）。
+/// 恒用 SHA-256 + AEAD_AES_128_GCM；dst_conn_id 为客户端首个 Initial 包中的
+/// Destination Connection ID（1..20 字节）。v1/v2 使用不同初始盐。
+bool tls_quic_derive_initial_secrets(QuicVersion ver, const uint8_t* dst_conn_id,
+                                     size_t cid_len, quic_initial_keys& out);
+
+/// 由 QUIC traffic secret（handshake/application "client in"/"server in"）
+/// 派生数据包保护 key/iv/hp（RFC 9001 §5.1）。v1 用 "quic key/iv/hp"，
+/// v2 用 "quicv2 key/iv/hp"（RFC 9369 §3.3.2）。
+bool tls_quic_derive_packet_keys(const uint8_t* secret, size_t secret_len,
+                                 QuicVersion ver, CipherSuite cs, quic_packet_keys& out);
+
+/// 取握手阶段数据包保护密钥（在服务端处理完 ClientHello、客户端处理完
+/// ServerHello 之后调用）。
+bool tls_quic_get_handshake_keys(tls_session& s, QuicVersion ver,
+                                 quic_packet_keys& client, quic_packet_keys& server);
+/// 取 1-RTT（应用数据）数据包保护密钥（握手完成后调用）。
+bool tls_quic_get_application_keys(tls_session& s, QuicVersion ver,
+                                   quic_packet_keys& client, quic_packet_keys& server);
+
+/// 计算 QUIC 头部保护掩码（RFC 9001 §5.4）：
+///   AES 套件：mask = AES-ECB(hp_key, sample)[0..mask_len]
+///   ChaCha20 套件：counter = sample[0..3]（小端），nonce = sample[4..15]，
+///     mask = ChaCha20(hp_key, counter, nonce)[0..mask_len]
+/// mask_len 最长 5（短头包）。成功返回 true。
+bool tls_quic_header_protection_mask(CipherSuite cs, const uint8_t* hp_key, size_t hp_len,
+                                     const uint8_t* sample, size_t sample_len,
+                                     uint8_t* mask, size_t mask_len);
+
+/// 客户端：生成 QUIC 模式的 TLS 1.3 ClientHello（自动携带
+/// quic_transport_parameters 扩展，RFC 9001 §8.2）。
+/// 返回原始握手消息字节（无记录层），由 QUIC 层封装为 CRYPTO 帧。
+/// 调用前设置 s.quic_mode = true、s.quic_version 并填充 s.quic_transport_params。
+bool tls_quic_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello);
+
+/// 服务端：处理 QUIC 客户端 ClientHello 并生成完整回包
+/// （ServerHello + EncryptedExtensions + Certificate + CertificateVerify + Finished）。
+/// 返回原始握手消息字节（无记录层）；EncryptedExtensions 携带本端传输参数。
+/// 客户端必须提供 quic_transport_parameters 扩展，否则握手失败（RFC 9001 §8.2）。
+bool tls_quic_make_server_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
+                                 std::vector<uint8_t>& server_flight,
+                                 const tls_certificate_manager& cert_manager);
+
+/// 客户端：处理服务端回包并生成 Client Finished。
+/// data 为原始握手消息字节（ServerHello 明文 + 加密握手消息明文，无记录层）。
+/// trust_store 提供时对服务端证书链执行 x509 链验证。
+bool tls_quic_process_server_flight(tls_session& s, const uint8_t* data, size_t len,
+                                    std::vector<uint8_t>& client_finished,
+                                    const tls_trust_store* trust_store = nullptr);
+
+/// 服务端：验证客户端 Finished（data 为原始握手消息字节）。
+bool tls_quic_process_client_finished(tls_session& s, const uint8_t* data, size_t len);
+
+// QUIC 模式便捷包装（等价于 tls13_* 但强制 quic_mode）
+inline bool tls13_make_quic_client_hello(tls_session& s, std::vector<uint8_t>& out) {
+    s.quic_mode = true;
+    return tls_quic_make_client_hello(s, out);
+}
+inline bool tls13_make_quic_server_flight(tls_session& s, const uint8_t* ch, size_t ch_len,
+                                          std::vector<uint8_t>& out,
+                                          const tls_certificate_manager& cert_mgr) {
+    s.quic_mode = true;
+    return tls_quic_make_server_flight(s, ch, ch_len, out, cert_mgr);
+}
+inline bool tls13_process_quic_server_flight(tls_session& s, const uint8_t* data, size_t len,
+                                             std::vector<uint8_t>& cf,
+                                             const tls_trust_store* trust_store = nullptr) {
+    s.quic_mode = true;
+    return tls_quic_process_server_flight(s, data, len, cf, trust_store);
+}
+inline bool tls13_process_quic_client_finished(tls_session& s, const uint8_t* data, size_t len) {
+    s.quic_mode = true;
+    return tls_quic_process_client_finished(s, data, len);
+}
 }

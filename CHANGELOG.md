@@ -3,6 +3,92 @@
 ## [Unreleased]
 
 ### Added
+- **iOS 实现（最低 iOS 13.0，仅 arm64 / ARMv8）＋ Swift 符号导出**：
+  - 新增 `cmake/toolchains/ios-arm64.cmake` 交叉编译 toolchain：`IOS_SDK`
+    （`iphoneos` / `iphonesimulator`）选择 SDK，锁定
+    `CMAKE_OSX_ARCHITECTURES=arm64`（纯 ARMv8 64 位，无 armv7/x86_64 slice）、
+    `CMAKE_OSX_DEPLOYMENT_TARGET=13.0`（iOS 13 起仅支持 64 位设备，天然 ≥ ARMv8）；
+    NEON 源默认 `-march=armv8-a+crypto`（可用 `-DJP_ARM_MARCH` 覆盖），
+    SHA-512/SHA-3/SM3/SM4 扩展源单独 armv8.4-a + 运行时 `cpu_features` 分派，
+    低版本芯片安全回退标量；OpenMP / MUSA 自动关闭；
+  - 新增 `ios/bridge/` Swift 符号桥接层：`jpssl.h`（纯 C、`extern "C"` 全 API 面）＋
+    `jpssl_bridge.cpp`（实现）＋ `module.modulemap`（Clang 模块 `JPSslC`），
+    iOS 构建时自动编入静态库 `libjpssl_cpu.a`（CMakeLists 按
+    `CMAKE_SYSTEM_NAME=STREQUAL iOS` 追加源与 include 路径）；
+  - 覆盖算法：SHA-1/256/384/512、SHA3、SHAKE128/256、SM3、HMAC、HKDF、
+    AES（ECB/CBC/GCM/CCM/GHASH）、ChaCha20-Poly1305、SM4（CBC/GCM/CCM）、
+    X25519/X448、Ed25519/Ed448、ECDSA P-256/384/521、SM2、RSA-2048/4096
+    （PKCS#1 v1.5、OAEP、PSS、PKCS1v15）、X.509 证书解析/验签、TLS 1.3 高层
+    socket 连接（`tls_connection` 封装）、Base64；
+  - 新增 `ios/Sources/JPSsl/JPSsl.swift` 惯用 Swift API（`JPSsl.Hash/AES/RSA/…`）；
+  - 新增 `ios/build-xcframework.sh`：CMake 构建真机 + Apple Silicon 模拟器切片、
+    组装 `JPSslC.framework`（Headers/Modules/Info.plist）、
+    `xcodebuild -create-xcframework` 产出 `ios/JPSsl.xcframework`；
+  - 新增 `ios/Package.swift`（Swift Package，binaryTarget 引用 XCFramework，iOS 13+）；
+  - `.github/workflows/ios.yml`：macOS runner 上执行构建并做 Swift 编译冒烟测试；
+  - README 新增 iOS 集成说明（`ios/README.md`）。
+- **HarmonyOS / OpenHarmony（鸿蒙 7.0）实现**：
+  - 新增 `cmake/toolchains/ohos.cmake` 交叉编译 toolchain：自动定位 HarmonyOS NDK
+    （`-DOHOS_NDK_HOME` → `$OHOS_NDK_HOME` → `$DEVECO_SDK_HOME`），支持
+    `OHOS_ARCH`（arm64-v8a 默认 / armeabi-v7a / x86_64）与 `OHOS_STL`，产出
+    `libjpssl_cpu.a` / `libjpssl_cpu.so`；
+  - `CMakeLists.txt` 新增 `JP_OHOS` 目标平台判定（`CMAKE_SYSTEM_NAME=OHOS`）：
+    只构建库，测试/命令行工具/示例/基准自动跳过（OpenHarmony NDK 面向应用
+    native 模块，不提供可执行文件链接运行时）；OpenMP、MUSA GPU（仅 Linux）
+    自动禁用；arm64-v8a 全量启用 NEON/crypto 硬件加速（含 `ecp_nistz256_arm.S`）；
+  - `rand_os.cpp`：鸿蒙随机源优先 `getrandom()`（musl），失败回退 `/dev/urandom`；
+  - `cpu_features.hpp`：ARM 特性检测识别 `__OHOS_FAMILY__`/`__OHOS__`（同为
+    Linux 内核，走 `getauxval`），以 `__has_include` 容错缺失 `<asm/hwcap.h>`
+    的鸿蒙 sysroot 并手动补齐 HWCAP/HWCAP2 位定义；
+  - README 新增鸿蒙构建与工程集成说明。
+- **QUIC v1 / v2 SSL 支持（RFC 9000/9001/9369）**：为 QUIC 提供必要的 TLS 1.3 支持，
+  TLS 握手不再使用记录层（无 record 头 / 无 ChangeCipherSpec），握手消息以原始
+  TLS Handshake 字节流交付给 QUIC CRYPTO 帧：
+  - `tls_quic_make_client_hello` / `tls_quic_make_server_flight` /
+    `tls_quic_process_server_flight` / `tls_quic_process_client_finished`
+    （及 `tls13_make_quic_*` 便捷包装），ClientHello 与 EncryptedExtensions
+    自动携带 `quic_transport_parameters`（0x0039）扩展，缺少该扩展时拒绝握手；
+  - `quic_transport_parameters` 结构（RFC 9000 §18）完整编解码：全部标准参数
+    （0x00–0x10）＋未知/扩展参数原样保留，含 RFC 9000 §16 varint 编解码
+    （`quic_varint_encode/decode`）；
+  - Initial 数据包保护密钥 `tls_quic_derive_initial_secrets`：v1 盐
+    `0x38762cf7…`、v2 盐 `0x0dede3de…`（RFC 9001 §5.2 / 9369 §3.3.1）；
+  - 握手/1-RTT 数据包保护密钥：`tls_quic_get_handshake_keys` /
+    `tls_quic_get_application_keys` 与 `tls_quic_derive_packet_keys`
+    （v1 标签 "quic key/iv/hp"，v2 标签 "quicv2 key/iv/hp"，RFC 9369 §3.3.2）；
+  - 头部保护掩码 `tls_quic_header_protection_mask`（AES-ECB / ChaCha20，RFC 9001 §5.4）；
+  - `tls_session` 新增 `quic_mode` / `quic_version` / `quic_transport_params` /
+    `quic_peer_transport_params` 及 QUIC secret 状态，`tls13_derive_*` 在
+    `quic_mode` 下自动派生 "client in"/"server in" 流量 secret。
+- **DTLS 1.2 / DTLS 1.3（RFC 6347 / RFC 9147）标准数据报 TLS**：
+  - 新增 `include/dtls.hpp` / `src/dtls.cpp`，完整实现 DTLS 记录层与握手：
+  - DTLS 记录层：1.2（`type||version||epoch||seq||len` 13 字节头）与 1.3
+    （unified header + 记录号加密，RFC 9147 §4）两种格式，epoch/序列号
+    滑动窗口、AEAD（AES-128/256-GCM、ChaCha20-Poly1305）、1.2 的
+    GCM salt(4) 与 ChaCha20 fixed-IV(12) nonce 构造；
+  - DTLS 1.2 握手：HelloVerifyRequest cookie 交换、message_seq 与
+    分片/重组、ChangeCipherSpec、ECDHE（X25519/P-256）密钥交换、
+    TLS 1.2 PRF（P_SHA256/384）密钥派生、Finished（12 字节 verify_data）；
+  - DTLS 1.3 握手：复用 TLS 1.3 消息（"dtls13" HKDF 标签前缀，RFC 9147 §5.9）、
+    DTLSHandshake 分帧、ACK 记录（content type 26）、记录号加密、
+    握手/1-RTT 应用流量密钥、CertificateVerify（Ed25519/ECDSA/RSA-PSS）；
+  - 步进式握手状态机 `dtls_handshake_step`（datagram in → datagram out，
+    支持同一数据报内先握手消息后加密记录的密钥就绪重试）；
+  - `dtls_connection`：UDP socket 封装（`connect` / `bind`+`server_handshake` /
+    `send` / `recv`），含握手超时重传、首个数据报 recvfrom 学习对端地址。
+
+### Tests
+- 新增 `test_dtls`（CTest 目标）：DTLS 1.2/1.3 内存数据报握手 × AES-128-GCM /
+  AES-256-GCM(SHA-384) / ChaCha20，X25519/P-256/X448 密钥交换，cookie 交换，
+  双向应用数据（含 10/20KB 大消息分片）、记录格式与篡改拒绝、
+  x509 链验证（正确 CA 通过 / 错误 CA 拒绝）、UDP socket 端到端握手与数据
+  交换，共 54 项全部通过；全套 32 个 CTest 无回归。
+- 新增 `test_quic`（CTest 目标）：RFC 9001 A.1 / RFC 9369 A.1 Initial 密钥、
+  RFC 9001/9369 A.5 1-RTT 密钥（ChaCha20）、头部保护掩码测试向量全部逐字节匹配；
+  transport parameters 编解码往返与非法值拒绝；QUIC v1/v2 × AES-128-GCM/ChaCha20
+  完整握手往返（含 x509 链验证、X448 密钥交换），客户端与服务端派生的数据包
+  保护密钥逐字节一致；缺少 `quic_transport_parameters` 扩展被拒绝，共 86 项全部通过；
+  全套 30 个 CTest 无回归。
 - **TLS socket 托管外部 fd**：`tls_connection::attach(fd, take_ownership=true)`
   接管调用方已创建的 socket（TCP 已连接 / accept 出的连接 / UDP 已 connect 或已 bind），
   并在其上完成握手；`take_ownership=false` 借用模式不关闭外部句柄；
@@ -20,7 +106,9 @@
 > 报文格式与标准 `DTLS`（RFC 6347/9147）、`QUIC`（RFC 9000）不互通，
 > 无法与 OpenSSL/Wireshark 等标准实现互操作；缺少 DTLS 的 cookie 抗 DoS、
 > 握手分片/重传/乱序重组与防重放，UDP 丢包即握手失败。
-> **标准 DTLS 1.2/1.3 与 QUIC + HTTP/3 列入后续版本计划**，届时将取代本模式。
+> **标准 DTLS 1.2/1.3 已在本次发布提供（见上方 Added），建议新代码使用；
+> QUIC 传输层 + HTTP/3 仍列入后续版本计划**。
+> 注：QUIC 所需的 TLS 层支持已在本次发布提供（见上方 Added）。
 
 ### Tests
 - `test_tls_socket` 新增外部 TCP fd 托管（attach + client_handshake 双向收发）、

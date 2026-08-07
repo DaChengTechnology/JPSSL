@@ -21,9 +21,43 @@
 #include <sys/types.h>
 #endif
 
-#if defined(__aarch64__) && defined(__linux__)
+// OpenHarmony/HarmonyOS 与 Linux 同为 Linux 内核（musl libc），getauxval 可用。
+// 部分鸿蒙 sysroot 不提供 <asm/hwcap.h>，此处用 __has_include 容错并手动补齐
+// 所需的 HWCAP/HWCAP2 位定义（arm64 Linux UAPI 位值）。
+#if defined(__aarch64__) && (defined(__linux__) || defined(__OHOS_FAMILY__) || defined(__OHOS__))
 #include <sys/auxv.h>
+#if defined(__has_include)
+#if __has_include(<asm/hwcap.h>)
 #include <asm/hwcap.h>
+#endif
+#endif
+#ifndef HWCAP_AES
+#define HWCAP_AES   (1u << 3)
+#endif
+#ifndef HWCAP_PMULL
+#define HWCAP_PMULL (1u << 4)
+#endif
+#ifndef HWCAP_SHA1
+#define HWCAP_SHA1  (1u << 5)
+#endif
+#ifndef HWCAP_SHA2
+#define HWCAP_SHA2  (1u << 6)
+#endif
+#ifndef HWCAP_CRC32
+#define HWCAP_CRC32 (1u << 7)
+#endif
+#ifndef HWCAP2_SHA512
+#define HWCAP2_SHA512 (1u << 5)
+#endif
+#ifndef HWCAP2_SHA3
+#define HWCAP2_SHA3   (1u << 1)
+#endif
+#ifndef HWCAP2_SM4
+#define HWCAP2_SM4    (1u << 3)
+#endif
+#ifndef HWCAP2_SM3
+#define HWCAP2_SM3    (1u << 2)
+#endif
 #endif
 
 namespace jpssl {
@@ -174,7 +208,7 @@ inline bool cpu_has_sha_ni() {
 //  ARMv8 / ARMv8.1 / ARMv8.2 / ARMv9 特性检测（aarch64）
 //
 //  macOS（Apple Silicon）: 通过 sysctlbyname("hw.optional.arm.FEAT_*") 查询
-//  Linux:                 getauxval(AT_HWCAP / AT_HWCAP2)
+//  Linux / OpenHarmony(鸿蒙): getauxval(AT_HWCAP / AT_HWCAP2)（同为 Linux 内核）
 //  其他 aarch64 平台:     回退到编译期 __ARM_FEATURE_* 宏（安全，无运行时检测时
 //                         不会错误地启用 crypto 代码路径）
 // ═══════════════════════════════════════════════════════════════════════
@@ -202,7 +236,7 @@ inline bool cpu_has_neon() {
 inline bool cpu_has_arm_aes() {
 #if defined(__aarch64__) && defined(__APPLE__)
     return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_AES");
-#elif defined(__aarch64__) && defined(__linux__)
+#elif defined(__aarch64__) && (defined(__linux__) || defined(__OHOS_FAMILY__) || defined(__OHOS__))
     return (getauxval(AT_HWCAP) & HWCAP_AES) != 0;
 #elif defined(__aarch64__)
 #if defined(__ARM_FEATURE_AES)
@@ -219,7 +253,7 @@ inline bool cpu_has_arm_aes() {
 inline bool cpu_has_arm_pmull() {
 #if defined(__aarch64__) && defined(__APPLE__)
     return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_PMULL");
-#elif defined(__aarch64__) && defined(__linux__)
+#elif defined(__aarch64__) && (defined(__linux__) || defined(__OHOS_FAMILY__) || defined(__OHOS__))
     return (getauxval(AT_HWCAP) & HWCAP_PMULL) != 0;
 #elif defined(__aarch64__)
 #if defined(__ARM_FEATURE_PMULL)
@@ -236,7 +270,7 @@ inline bool cpu_has_arm_pmull() {
 inline bool cpu_has_arm_sha1() {
 #if defined(__aarch64__) && defined(__APPLE__)
     return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_SHA1");
-#elif defined(__aarch64__) && defined(__linux__)
+#elif defined(__aarch64__) && (defined(__linux__) || defined(__OHOS_FAMILY__) || defined(__OHOS__))
     return (getauxval(AT_HWCAP) & HWCAP_SHA1) != 0;
 #elif defined(__aarch64__)
 #if defined(__ARM_FEATURE_SHA1)
@@ -253,7 +287,7 @@ inline bool cpu_has_arm_sha1() {
 inline bool cpu_has_arm_sha2() {
 #if defined(__aarch64__) && defined(__APPLE__)
     return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_SHA256");
-#elif defined(__aarch64__) && defined(__linux__)
+#elif defined(__aarch64__) && (defined(__linux__) || defined(__OHOS_FAMILY__) || defined(__OHOS__))
     return (getauxval(AT_HWCAP) & HWCAP_SHA2) != 0;
 #elif defined(__aarch64__)
 #if defined(__ARM_FEATURE_SHA2)
@@ -270,7 +304,7 @@ inline bool cpu_has_arm_sha2() {
 inline bool cpu_has_arm_crc32() {
 #if defined(__aarch64__) && defined(__APPLE__)
     return detail_cpu::sysctl_feature("hw.optional.armv8_crc32");
-#elif defined(__aarch64__) && defined(__linux__)
+#elif defined(__aarch64__) && (defined(__linux__) || defined(__OHOS_FAMILY__) || defined(__OHOS__))
     return (getauxval(AT_HWCAP) & HWCAP_CRC32) != 0;
 #elif defined(__aarch64__)
 #if defined(__ARM_FEATURE_CRC32)
@@ -287,7 +321,7 @@ inline bool cpu_has_arm_crc32() {
 inline bool cpu_has_arm_sha512() {
 #if defined(__aarch64__) && defined(__APPLE__)
     return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_SHA512");
-#elif defined(__aarch64__) && defined(__linux__)
+#elif defined(__aarch64__) && (defined(__linux__) || defined(__OHOS_FAMILY__) || defined(__OHOS__))
 #if defined(HWCAP2_SHA512)
     return (getauxval(AT_HWCAP2) & HWCAP2_SHA512) != 0;
 #else
@@ -308,7 +342,7 @@ inline bool cpu_has_arm_sha512() {
 inline bool cpu_has_arm_sha3() {
 #if defined(__aarch64__) && defined(__APPLE__)
     return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_SHA3");
-#elif defined(__aarch64__) && defined(__linux__)
+#elif defined(__aarch64__) && (defined(__linux__) || defined(__OHOS_FAMILY__) || defined(__OHOS__))
 #if defined(HWCAP2_SHA3)
     return (getauxval(AT_HWCAP2) & HWCAP2_SHA3) != 0;
 #else
@@ -329,7 +363,7 @@ inline bool cpu_has_arm_sha3() {
 inline bool cpu_has_arm_sm4() {
 #if defined(__aarch64__) && defined(__APPLE__)
     return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_SM4");
-#elif defined(__aarch64__) && defined(__linux__)
+#elif defined(__aarch64__) && (defined(__linux__) || defined(__OHOS_FAMILY__) || defined(__OHOS__))
 #if defined(HWCAP2_SM4)
     return (getauxval(AT_HWCAP2) & HWCAP2_SM4) != 0;
 #else
@@ -350,7 +384,7 @@ inline bool cpu_has_arm_sm4() {
 inline bool cpu_has_arm_sm3() {
 #if defined(__aarch64__) && defined(__APPLE__)
     return detail_cpu::sysctl_feature("hw.optional.arm.FEAT_SM3");
-#elif defined(__aarch64__) && defined(__linux__)
+#elif defined(__aarch64__) && (defined(__linux__) || defined(__OHOS_FAMILY__) || defined(__OHOS__))
 #if defined(HWCAP2_SM3)
     return (getauxval(AT_HWCAP2) & HWCAP2_SM3) != 0;
 #else

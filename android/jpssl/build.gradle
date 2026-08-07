@@ -1,0 +1,67 @@
+// jpssl — Android 库模块（arm64-v8a, ARMv8）
+//
+// 最低版本号：minSdk 与 NDK ANDROID_PLATFORM 统一卡在 android-21（Android 5.0，
+// arm64-v8a / 64 位 ABIs 的最低基线）。仅构建 arm64-v8a，不构建 x86/x86_64。
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'io.github.jpssl'
+    compileSdk 34
+
+    defaultConfig {
+        // ── 最低版本号：卡 arm64-v8a 基线 = API 21 ──
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+
+        ndk {
+            // 仅 arm64-v8a（ARMv8）。需要 x86_64 模拟器/调试可自行追加。
+            abiFilters 'arm64-v8a'
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags "-O2 -fvisibility=hidden -fvisibility-inlines-hidden"
+                // ANDROID_PLATFORM 与 minSdk 一致：android-21
+                arguments "-DANDROID_PLATFORM=android-21",
+                        "-DANDROID_STL=c++_shared",
+                        "-DJP_ENABLE_NEON=ON",
+                        "-DJP_ENABLE_AVX2=OFF",
+                        "-DJP_ENABLE_AVX512=OFF",
+                        "-DJP_ENABLE_MUSA=OFF",
+                        "-DJP_ENABLE_OPENMP=OFF",
+                        "-DJP_ENABLE_BENCH=OFF"
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+        }
+    }
+}
+
+dependencies {
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib'
+}

@@ -66,6 +66,16 @@ add_executable(test_tls test_tls.cpp)
 target_include_directories(test_tls PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_tls PRIVATE jpssl_cpu ${MUSA_LIBS})
 
+# ── QUIC v1/v2 SSL 支持单元测试 ──────────────────────────────────────────
+add_executable(test_quic test_quic.cpp)
+target_include_directories(test_quic PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_quic PRIVATE jpssl_cpu ${MUSA_LIBS})
+
+# ── DTLS 1.2/1.3 单元测试 ────────────────────────────────────────────────
+add_executable(test_dtls test_dtls.cpp)
+target_include_directories(test_dtls PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_dtls PRIVATE jpssl_cpu ${MUSA_LIBS})
+
 # ── TLS 1.3 X448/Ed448 握手测试 (OpenSSL 对比) ───────────────────────────
 if(OpenSSL_FOUND)
 add_executable(test_tls448 test_tls448.cpp)
@@ -264,6 +274,8 @@ add_test(NAME test_sha512        COMMAND test_sha512)
 endif()
 add_test(NAME test_sha1          COMMAND test_sha1)
 add_test(NAME test_tls           COMMAND test_tls)
+add_test(NAME test_quic          COMMAND test_quic)
+add_test(NAME test_dtls          COMMAND test_dtls)
 if(OpenSSL_FOUND)
 add_test(NAME test_tls448        COMMAND test_tls448)
 endif()

@@ -7,6 +7,24 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     enable_language(ASM)
 endif()
 
+# ── HarmonyOS / OpenHarmony (鸿蒙) ────────────────────────────────────────
+# 由 cmake/toolchains/ohos.cmake（或 NDK 自带 ohos.toolchain.cmake）注入，
+# CMAKE_SYSTEM_NAME 为 "OHOS"。鸿蒙 native 模块只产出 .so/.a：
+#   - 只构建 libjpssl_cpu(.a/.so)，测试/命令行工具/示例/基准全部跳过
+#     （OpenHarmony NDK 不提供可执行文件链接运行时）
+#   - MUSA GPU 加速仅支持 Linux，鸿蒙上自动禁用
+#   - NEON/crypto 硬件加速按 arm64-v8a / x86_64 走既有 aarch64/x86_64 分支
+if(CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+    set(JP_OHOS TRUE)
+    # NDK toolchain 未设置处理器时按 OHOS_ARCH 归一化，保证下方匹配分支生效
+    if(OHOS_ARCH STREQUAL "arm64-v8a" AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+        set(CMAKE_SYSTEM_PROCESSOR aarch64)
+    elseif(OHOS_ARCH STREQUAL "x86_64" AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+        set(CMAKE_SYSTEM_PROCESSOR x86_64)
+    endif()
+    message(STATUS "目标平台: HarmonyOS/OpenHarmony (OHOS), ABI=${OHOS_ARCH}, STL=${OHOS_STL}")
+endif()
+
 # ── CTest ───────────────────────────────────────────────────────────────
 include(CTest)
 enable_testing()
@@ -53,7 +71,8 @@ else()
 endif()
 
 # OpenMP (CPU 批量模幂并行化, 可用 -DJP_ENABLE_OPENMP=OFF 关闭)
-if(JP_ENABLE_OPENMP)
+# 鸿蒙 NDK 不提供 libomp，自动禁用（串行回退）。
+if(JP_ENABLE_OPENMP AND NOT JP_OHOS)
     find_package(OpenMP)
 endif()
 
@@ -62,7 +81,7 @@ option(JP_ENABLE_MUSA "Enable MUSA GPU acceleration (experimental)" OFF)
 option(JP_ENABLE_BENCH "Build benchmark executables (benchmarks/)" OFF)
 option(JP_ENABLE_OPENMP "Enable OpenMP parallelism for CPU batch RSA (default ON)" ON)
 
-if(JP_ENABLE_MUSA AND NOT WIN32)
+if(JP_ENABLE_MUSA AND NOT WIN32 AND NOT JP_OHOS)
     list(APPEND CMAKE_MODULE_PATH /usr/local/musa/cmake)
     find_package(MUSA REQUIRED)
     set(MUSA_VERBOSE_BUILD ON)
@@ -81,8 +100,8 @@ else()
     set(MUSA_FOUND FALSE)
     set(MUSA_LIBRARIES "")
     set(MUSA_INCLUDE_DIRS "")
-    if(WIN32 AND JP_ENABLE_MUSA)
-        message(WARNING "MUSA GPU 加速不支持 Windows，已自动禁用")
+    if((WIN32 OR JP_OHOS) AND JP_ENABLE_MUSA)
+        message(WARNING "MUSA GPU 加速不支持 Windows/鸿蒙，已自动禁用")
     else()
         message(STATUS "MUSA GPU 加速: 已禁用 (使用 -DJP_ENABLE_MUSA=ON 启用)")
     endif()
@@ -110,6 +129,7 @@ set(CPU_SOURCES
     src/ed448_batch_cpu.cpp
     src/ed448_batch_dispatch.cpp
     src/tls.cpp
+    src/dtls.cpp
     src/x509.cpp
     src/ed25519.cpp
     src/ed25519_r51.cpp
@@ -209,6 +229,17 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     list(APPEND CPU_SOURCES src/ecp_nistz256_arm.S)
 endif()
 
+# ── iOS ────────────────────────────────────────────────────────────────
+# 导出 Swift 符号的 extern "C" 桥接层（ios/bridge/jpssl_bridge.cpp + jpssl.h）
+# 仅在 iOS 构建时编入静态库，配合 module.modulemap /
+# XCFramework / Package.swift 供 Swift 侧 import 使用（最低 iOS 13.0 / arm64）。
+# 注意：桥接源依赖 ios/bridge 头文件，对应 target_include_directories
+# 在 add_library 之后的既有 include 块中补充（见下方 jpssl_cpu 的 include 设置）。
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    list(APPEND CPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/ios/bridge/jpssl_bridge.cpp)
+    message(STATUS "iOS: 已包含 Swift 桥接层 (ios/bridge/jpssl_bridge.cpp)")
+endif()
+
 add_library(jpssl_cpu STATIC ${CPU_SOURCES})
 add_library(jpssl_cpu_shared SHARED ${CPU_SOURCES})
 if(WIN32)
@@ -227,6 +258,11 @@ target_include_directories(jpssl_cpu PUBLIC
 target_include_directories(jpssl_cpu_shared PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # Swift 桥接头文件目录（jpssl.h）
+    target_include_directories(jpssl_cpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ios/bridge)
+    target_include_directories(jpssl_cpu_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ios/bridge)
+endif()
 set_target_properties(jpssl_cpu_shared PROPERTIES
     OUTPUT_NAME jpssl_cpu
     VERSION ${PROJECT_VERSION}
@@ -441,6 +477,11 @@ if(JP_ENABLE_MUSA)
     target_compile_definitions(jpssl_cpu PRIVATE JP_MUSA)
     target_compile_definitions(jpssl_cpu_shared PRIVATE JP_MUSA)
 endif()
+if(JP_OHOS)
+    # 公开给依赖方：库用户可用 JP_OHOS 感知平台差异
+    target_compile_definitions(jpssl_cpu PUBLIC JP_OHOS)
+    target_compile_definitions(jpssl_cpu_shared PUBLIC JP_OHOS)
+endif()
 
 # Link OpenSSL was removed — Ed25519, X25519, SHA-512 are all pure C++20 now
 # OpenSSL::Crypto kept only on individual test targets that compare vs OpenSSL
@@ -482,9 +523,9 @@ if(JP_ENABLE_MUSA)
 endif()
 
 # ═══════════════════════════════════════════════════════════════════════
-#  jpssl-test — 测试 & Benchmark 可执行文件
+#  jpssl-test — 测试 & Benchmark 可执行文件（鸿蒙 NDK 不构建可执行文件）
 # ═══════════════════════════════════════════════════════════════════════
-if(JP_ENABLE_MUSA AND NOT WIN32)
+if(JP_ENABLE_MUSA AND NOT WIN32 AND NOT JP_OHOS)
     musa_add_executable(jpssl-test src/main.cpp)
     target_include_directories(jpssl-test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -493,7 +534,7 @@ if(JP_ENABLE_MUSA AND NOT WIN32)
     # GPU 测试函数由 #ifdef JP_MUSA 守卫，须对 main.cpp 可见
     target_compile_definitions(jpssl-test PRIVATE JP_MUSA)
     target_link_libraries(jpssl-test jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
-else()
+elseif(NOT JP_OHOS)
     add_executable(jpssl-test src/main.cpp)
     target_include_directories(jpssl-test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -502,40 +543,45 @@ else()
 endif()
 
 # ═══════════════════════════════════════════════════════════════════════
-#  命令行工具
+#  命令行工具（鸿蒙 NDK 不构建可执行文件，跳过）
 # ═══════════════════════════════════════════════════════════════════════
+if(NOT JP_OHOS)
+    add_executable(jpssl-cert src/cmd/jpssl_cert.cpp)
+    add_executable(jpssl-crypt src/cmd/jpssl_crypt.cpp)
+    target_include_directories(jpssl-cert PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${MUSA_INCLUDE_DIRS}
+    )
+    target_include_directories(jpssl-crypt PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${MUSA_INCLUDE_DIRS}
+    )
+    if(JP_ENABLE_MUSA)
+        target_link_libraries(jpssl-cert PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
+        target_link_libraries(jpssl-crypt PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
+    else()
+        target_link_libraries(jpssl-cert PRIVATE jpssl_cpu)
+        target_link_libraries(jpssl-crypt PRIVATE jpssl_cpu)
+    endif()
 
-add_executable(jpssl-cert src/cmd/jpssl_cert.cpp)
-add_executable(jpssl-crypt src/cmd/jpssl_crypt.cpp)
-target_include_directories(jpssl-cert PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${MUSA_INCLUDE_DIRS}
-)
-target_include_directories(jpssl-crypt PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${MUSA_INCLUDE_DIRS}
-)
-if(JP_ENABLE_MUSA)
-    target_link_libraries(jpssl-cert PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
-    target_link_libraries(jpssl-crypt PRIVATE jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
-else()
-    target_link_libraries(jpssl-cert PRIVATE jpssl_cpu)
-    target_link_libraries(jpssl-crypt PRIVATE jpssl_cpu)
+    # ── 安装 ────────────────────────────────────────────────────────────────
+    include(GNUInstallDirs)
+    install(TARGETS jpssl-cert jpssl-crypt
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
 endif()
-
-# ── 安装 ────────────────────────────────────────────────────────────────
-include(GNUInstallDirs)
-install(TARGETS jpssl-cert jpssl-crypt
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
 
 # ═══════════════════════════════════════════════════════════════════════
 #  单元测试 (CTest)
-add_subdirectory(tests)
+if(NOT JP_OHOS)
+    add_subdirectory(tests)
+endif()
 
 # HTTPS + 国际 CT 示例
-add_subdirectory(examples)
+if(NOT JP_OHOS)
+    add_subdirectory(examples)
+endif()
 
-if(JP_ENABLE_BENCH)
+if(JP_ENABLE_BENCH AND NOT JP_OHOS)
     add_subdirectory(benchmarks)
 endif()
