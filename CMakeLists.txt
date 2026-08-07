@@ -125,6 +125,7 @@ set(CPU_SOURCES
     src/hkdf.cpp
     src/x25519.cpp
     src/x448.cpp
+    src/dh.cpp
     src/ed448.cpp
     src/ed448_batch_cpu.cpp
     src/ed448_batch_dispatch.cpp

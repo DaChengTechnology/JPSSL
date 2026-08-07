@@ -103,12 +103,23 @@ void reset_session_preserving_config(tls_session& s) {
     auto salgs_cert = s.sig_algs_cert;
     auto ks = s.ks_group;
     auto cs = s.cipher_suite;
+    auto psk12_valid = s.tls12_psk_valid;
+    auto psk12_id_len = s.tls12_psk_identity_len;
+    auto psk12_val_len = s.tls12_psk_value_len;
+    uint8_t psk12_id[128], psk12_val[64];
+    memcpy(psk12_id, s.tls12_psk_identity, sizeof(psk12_id));
+    memcpy(psk12_val, s.tls12_psk_value, sizeof(psk12_val));
     s = tls_session{};
     s.alpn_protos = std::move(alpn);
     s.sig_algs = std::move(salgs);
     s.sig_algs_cert = std::move(salgs_cert);
     s.ks_group = ks;
     s.cipher_suite = cs;
+    s.tls12_psk_valid = psk12_valid;
+    s.tls12_psk_identity_len = psk12_id_len;
+    s.tls12_psk_value_len = psk12_val_len;
+    memcpy(s.tls12_psk_identity, psk12_id, sizeof(s.tls12_psk_identity));
+    memcpy(s.tls12_psk_value, psk12_val, sizeof(s.tls12_psk_value));
 }
 
 // poll 多个 fd（POSIX poll / Windows select）。就绪 fd 的 revents 被设置。
@@ -648,6 +659,9 @@ bool tls_connection::client_handshake(const std::string& host,
 bool tls_connection::do_client_handshake(const tls_certificate_manager* trust_store,
                                          const tls_trust_store* trust,
                                          std::string* error) {
+    if (tls_version_ == TLSVersion::V12)
+        return do_client_handshake_tls12(trust_store, trust, error);
+
     handshake_guard hg(handshake_pending_);
     // 1. ClientHello（裸握手消息）→ 封装为明文 record 发送
     std::vector<uint8_t> ch;
@@ -724,13 +738,143 @@ bool tls_connection::do_client_handshake(const tls_certificate_manager* trust_st
     return true;
 }
 
+// TLS 1.2 客户端握手（RFC 5246）：ClientHello → 明文服务端 flight
+// （ServerHello + [Certificate] + [ServerKeyExchange] + ServerHelloDone）
+// → ClientKeyExchange → 客户端 CCS + 加密 Finished → 服务端 CCS + 加密 Finished。
+bool tls_connection::do_client_handshake_tls12(const tls_certificate_manager* trust_store,
+                                               const tls_trust_store* trust,
+                                               std::string* error) {
+    handshake_guard hg(handshake_pending_);
+
+    // 1. ClientHello（裸握手消息）→ 明文 record
+    std::vector<uint8_t> ch;
+    if (!tls12_make_client_hello(session_, ch)) {
+        set_err(error, "tls12_make_client_hello failed");
+        return false;
+    }
+    auto ch_record = make_record((uint8_t)ContentType::HANDSHAKE, ch.data(), ch.size());
+    if (!write_all(ch_record.data(), ch_record.size(), error)) return false;
+
+    // 2. 读取明文服务端 flight：OpenSSL 等服务端把 ServerHello / Certificate /
+    //    ServerKeyExchange / ServerHelloDone 拆成多条 record 发送，逐条累积裸
+    //    握手消息，直到收到完整 ServerHelloDone 为止。
+    std::vector<uint8_t> flight;
+    bool shd = false;
+    while (!shd) {
+        uint8_t rtype = 0;
+        std::vector<uint8_t> payload;
+        if (!read_record(rtype, payload, error)) return false;
+        if (rtype == (uint8_t)ContentType::ALERT) {
+            set_err(error, "TLS alert during handshake");
+            return false;
+        }
+        if (rtype != (uint8_t)ContentType::HANDSHAKE) continue;
+        flight.insert(flight.end(), payload.begin(), payload.end());
+        size_t off = 0;
+        while (off + 4 <= flight.size()) {
+            size_t hlen = ((size_t)flight[off+1] << 16) |
+                          ((size_t)flight[off+2] << 8) | flight[off+3];
+            if (off + 4 + hlen > flight.size()) break; // 消息不完整，等待后续 record
+            if (flight[off] == (uint8_t)HandshakeType::SERVER_HELLO_DONE) {
+                shd = true;
+                break;
+            }
+            off += 4 + hlen;
+        }
+    }
+
+    // 3. 解析服务端 flight：生成 ClientKeyExchange + Client Finished。
+    //    ECDHE/DHE/PSK 套件的 premaster 由库内部计算；RSA 套件需调用方
+    //    生成 48 字节 premaster（version 0x0303 + 46 随机字节）传入。
+    uint8_t rsa_pms[48];
+    rsa_pms[0] = 0x03; rsa_pms[1] = 0x03;
+    jpssl::secure_rand_bytes(rsa_pms + 2, sizeof(rsa_pms) - 2);
+    tls_session trial = session_;
+    std::vector<uint8_t> cf, cke;
+    if (!tls12_process_server_flight(trial, flight.data(), flight.size(),
+                                     rsa_pms, sizeof(rsa_pms), cf, &cke,
+                                     trust_store, trust)) {
+        set_err(error, "tls12_process_server_flight failed");
+        return false;
+    }
+    session_ = std::move(trial);
+
+    // 4. 发送 ClientKeyExchange（明文 handshake record）
+    if (cke.empty()) {
+        set_err(error, "tls12 client key exchange empty");
+        return false;
+    }
+    auto cke_record = make_record((uint8_t)ContentType::HANDSHAKE, cke.data(), cke.size());
+    if (!write_all(cke_record.data(), cke_record.size(), error)) return false;
+
+    // 5. 发送 ChangeCipherSpec（明文）+ 加密的 Client Finished
+    auto ccs = tls_make_change_cipher_spec();
+    if (!write_all(ccs.data(), ccs.size(), error)) return false;
+    std::vector<uint8_t> cf_enc = tls_encrypt(session_, ContentType::HANDSHAKE,
+                                              cf.data(), cf.size());
+    if (cf_enc.empty()) {
+        set_err(error, "tls12 client finished encrypt failed");
+        return false;
+    }
+    if (!write_all(cf_enc.data(), cf_enc.size(), error)) return false;
+
+    // 6. 读取服务端 ChangeCipherSpec（明文）
+    while (true) {
+        uint8_t rtype = 0;
+        std::vector<uint8_t> payload;
+        if (!read_record(rtype, payload, error)) return false;
+        if (rtype == (uint8_t)ContentType::ALERT) {
+            set_err(error, "TLS alert during handshake");
+            return false;
+        }
+        if (rtype == (uint8_t)ContentType::CHANGE_CIPHER_SPEC) break;
+    }
+
+    // 7. 读取加密的 Server Finished 并校验（transcript 已含客户端 Finished）
+    std::vector<uint8_t> sf_plain;
+    while (true) {
+        uint8_t rtype = 0;
+        std::vector<uint8_t> payload;
+        if (!read_record(rtype, payload, error)) return false;
+        if (rtype == (uint8_t)ContentType::ALERT) {
+            set_err(error, "TLS alert during handshake");
+            return false;
+        }
+        if (rtype != (uint8_t)ContentType::HANDSHAKE) continue;
+        auto rec = make_record(rtype, payload.data(), payload.size());
+        ContentType ct = ContentType::HANDSHAKE;
+        if (!tls_decrypt(session_, rec.data(), rec.size(), ct, sf_plain)) {
+            set_err(error, "tls_decrypt server finished failed");
+            return false;
+        }
+        if (sf_plain.size() >= 4 &&
+            sf_plain[0] == (uint8_t)HandshakeType::FINISHED) break;
+    }
+    if (!tls12_verify_finished(session_, sf_plain.data(), sf_plain.size(),
+                               /*for_server=*/true)) {
+        set_err(error, "tls12 server finished verify failed");
+        return false;
+    }
+
+    session_.tls12_secure = true;
+    return true;
+}
+
 bool tls_connection::server_handshake(const tls_certificate_manager& cert_manager,
                                       std::string* error) {
     reset_session_preserving_config(session_);
-    return do_server_handshake(cert_manager, error);
+    return do_server_handshake(cert_manager, nullptr, error);
+}
+
+bool tls_connection::server_handshake(const tls_certificate_manager& cert_manager,
+                                      const tls_psk_store& psk_store,
+                                      std::string* error) {
+    reset_session_preserving_config(session_);
+    return do_server_handshake(cert_manager, &psk_store, error);
 }
 
 bool tls_connection::do_server_handshake(const tls_certificate_manager& cert_manager,
+                                         const tls_psk_store* psk_store,
                                          std::string* error) {
     handshake_guard hg(handshake_pending_);
     // 1. 读取 ClientHello（裸握手消息，可能跨多条 record）
@@ -794,11 +938,9 @@ bool tls_connection::do_server_handshake(const tls_certificate_manager& cert_man
     }
     if (!client_supports_13) {
         // ── TLS 1.2 服务端握手 ──
-        fprintf(stderr, "[TLS12] ClientHello total=%zu legacy_ver=%02x%02x\n",
-                ch_total, ch[4], ch[5]);
         std::vector<uint8_t> hello_flight;
         if (!tls12_make_server_hello_flight(session_, ch.data(), ch_total,
-                                            hello_flight, cert_manager)) {
+                                            hello_flight, cert_manager, psk_store)) {
             set_err(error, "tls12_make_server_hello_flight failed");
             return false;
         }
@@ -825,11 +967,11 @@ bool tls_connection::do_server_handshake(const tls_certificate_manager& cert_man
         }
         // ClientKeyExchange 消息体（跳过 4 字节头）
         size_t cke_body_len = ((size_t)cke[1] << 16) | ((size_t)cke[2] << 8) | cke[3];
-        fprintf(stderr, "[TLS12-TX] ClientKeyExchange len=%zu type=%u\n", 4 + cke_body_len, cke[0]);
         // transcript 使用完整握手消息（含 4 字节头）
         tls_transcript_update(session_, cke.data(), 4 + cke_body_len);
         std::vector<uint8_t> dummy;
-        if (!tls12_process_client_key_exchange(session_, cke.data() + 4, cke_body_len, dummy)) {
+        if (!tls12_process_client_key_exchange(session_, cke.data() + 4, cke_body_len,
+                                               dummy, psk_store)) {
             set_err(error, "tls12_process_client_key_exchange failed");
             return false;
         }
@@ -847,17 +989,14 @@ bool tls_connection::do_server_handshake(const tls_certificate_manager& cert_man
             break;
         }
 
-        fprintf(stderr, "[TLS12] got CKE, deriving keys\n");
         // 读加密的 Client Finished（TLS 1.2 加密记录 type=22）
         std::vector<uint8_t> client_finished_plain;
         while (true) {
             uint8_t rtype = 0;
             std::vector<uint8_t> payload;
             if (!read_record(rtype, payload, error)) {
-                fprintf(stderr, "[TLS12] read finished record failed: %s\n", error->c_str());
                 return false;
             }
-            fprintf(stderr, "[TLS12] read rtype=%d len=%zu\n", rtype, payload.size());
             if (rtype == (uint8_t)ContentType::ALERT) {
                 set_err(error, "TLS alert during handshake");
                 return false;
@@ -872,14 +1011,11 @@ bool tls_connection::do_server_handshake(const tls_certificate_manager& cert_man
             if (client_finished_plain.size() >= 4 &&
                 client_finished_plain[0] == (uint8_t)HandshakeType::FINISHED) break;
         }
-        fprintf(stderr, "[TLS12] got client finished, verifying\n");
         if (!tls12_verify_finished(session_, client_finished_plain.data(),
                                    client_finished_plain.size(), /*for_server=*/false)) {
-            fprintf(stderr, "[TLS12] client finished VERIFY FAILED\n");
             set_err(error, "tls12 client finished verify failed");
             return false;
         }
-        fprintf(stderr, "[TLS12] client finished OK, sending server finished\n");
 
         // RFC 5246 7.4.9：服务端 Finished 的 hash 必须包含客户端 Finished
         tls_transcript_update(session_, client_finished_plain.data(), client_finished_plain.size());
@@ -1407,7 +1543,7 @@ bool tls_listener::accept_udp(tls_connection& conn,
     reset_session_preserving_config(conn.session_);
     sock_ = INVALID_SOCKET_HANDLE;
     open_ = false;
-    return conn.do_server_handshake(cert_manager, error);
+    return conn.do_server_handshake(cert_manager, nullptr, error);
 }
 
 uint16_t tls_listener::local_port() const {
@@ -1449,7 +1585,41 @@ bool tls_listener::accept(tls_connection& conn, const tls_certificate_manager& c
                            last_socket_error());
         return false;
     }
-    return conn.do_server_handshake(cert_manager, error);
+    return conn.do_server_handshake(cert_manager, nullptr, error);
+}
+
+bool tls_listener::accept(tls_connection& conn, const tls_certificate_manager& cert_manager,
+                          const tls_psk_store& psk_store,
+                          std::string* error) {
+    if (!open_) {
+        set_err(error, "listener not open");
+        return false;
+    }
+    sockaddr_storage addr = {};
+    socklen_t alen = sizeof(addr);
+    socket_handle_t fd = ::accept(sock_, (sockaddr*)&addr, &alen);
+    if (fd == INVALID_SOCKET_HANDLE) {
+        would_block_ = is_would_block();
+        if (would_block_) set_err(error, "would block");
+        else set_err(error, "accept failed: " + last_socket_error());
+        return false;
+    }
+    would_block_ = false;
+
+    conn.close();
+    conn.sock_ = fd;
+    conn.open_ = true;
+    conn.owns_socket_ = true;
+    conn.datagram_ = false;
+    conn.set_tcp_nodelay();
+    reset_session_preserving_config(conn.session_);
+    conn.nonblocking_ = nonblocking_;
+    if (nonblocking_ && !set_socket_nonblocking(fd, true)) {
+        set_err(error, "set_nonblocking on accepted socket failed: " +
+                           last_socket_error());
+        return false;
+    }
+    return conn.do_server_handshake(cert_manager, &psk_store, error);
 }
 
 bool tls_listener::set_nonblocking(bool enable, std::string* error) {

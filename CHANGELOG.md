@@ -89,6 +89,25 @@
   完整握手往返（含 x509 链验证、X448 密钥交换），客户端与服务端派生的数据包
   保护密钥逐字节一致；缺少 `quic_transport_parameters` 扩展被拒绝，共 86 项全部通过；
   全套 30 个 CTest 无回归。
+- **TLS 1.2 新增 DHE 与 PSK 密钥交换**：支持 DHE-RSA（ffdhe2048，RFC 7919）、
+  纯 PSK（RFC 4279）与 DHE-PSK（RFC 5487）共 15 个新密码套件
+  （GCM×6 / ChaCha20-Poly1305×3 / AES-CBC×6），含服务端/客户端双向握手、
+  ServerKeyExchange、ClientKeyExchange 与 premaster 派生；CBC 记录层按
+  RFC 5246 6.2.3.1/6.2.3.2 重写（seq‖type‖ver‖len 的 HMAC 输入与 TLS 填充格式），
+  PSK premaster 采用 OpenSSL 兼容格式（纯 PSK 时 other_secret 为 psklen 个零字节）。
+- **TLS 1.2 socket 层客户端握手**：`tls_connection::set_tls_version(TLSVersion::V12)`
+  后 `connect()` / `client_handshake()` 执行完整 TLS 1.2 客户端握手
+  （ClientHello → ServerHelloDone → ClientKeyExchange → CCS → Finished），
+  支持 RSA / ECDHE / DHE / PSK / DHE-PSK 全部 25 套件；会话重置时保留
+  TLS 1.2 PSK 配置（`tls12_psk_*`）。
+- **TLS 1.2 ECDHE 扩展**：客户端 `supported_groups` 通告 X25519 + P-256/P-384 +
+  ffdhe2048，`tls12_process_server_flight` 支持 P-256/P-384 临时密钥的
+  ServerKeyExchange 解析与 premaster 派生（ECDSA 证书曲线须在客户端通告组内，
+  否则 OpenSSL 报 no shared cipher）。
+- **TLS 1.2 OpenSSL 互操作测试扩展**：`test_tls_openssl_interop` 覆盖 25 套件 ×
+  2 方向（jpssl 服务端↔OpenSSL 客户端、OpenSSL 服务端↔jpssl 客户端 socket 层），
+  共 50 用例全部与 OpenSSL 4.0 互通。
+
 - **TLS socket 托管外部 fd**：`tls_connection::attach(fd, take_ownership=true)`
   接管调用方已创建的 socket（TCP 已连接 / accept 出的连接 / UDP 已 connect 或已 bind），
   并在其上完成握手；`take_ownership=false` 借用模式不关闭外部句柄；

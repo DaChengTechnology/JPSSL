@@ -239,7 +239,9 @@ public:
     tls_connection(const tls_connection&) = delete;
     tls_connection& operator=(const tls_connection&) = delete;
 
-    /// 客户端：TCP 连接 + TLS 1.3 客户端握手。
+    /// 客户端：TCP 连接 + TLS 客户端握手（默认 TLS 1.3；
+    /// 通过 set_tls_version(TLSVersion::V12) 切换到 TLS 1.2，支持
+    /// RSA / ECDHE / DHE(ffdhe2048) / PSK / DHE-PSK 密钥交换）。
     /// 默认（trust_store == nullptr）：只信任系统信任库中的 CA 根证书
     /// （tls_trust_store::from_system()，见系统 CA bundle 探测），
     /// 对服务端证书链做 x509 验证；系统信任库不可用时握手失败。
@@ -249,7 +251,8 @@ public:
                  const tls_certificate_manager* trust_store = nullptr,
                  std::string* error = nullptr);
 
-    /// 客户端：TCP 连接 + TLS 1.3 客户端握手，按 x509 信任库验证服务端证书链。
+    /// 客户端：TCP 连接 + TLS 客户端握手（版本见 set_tls_version），
+    /// 按 x509 信任库验证服务端证书链。
     /// trust 提供 CA 根证书时，握手会对服务端证书链执行 x509_verify_chain
     /// （含叶子证书主机名匹配），验证失败则握手失败。
     bool connect(const std::string& host, uint16_t port,
@@ -271,7 +274,8 @@ public:
     /// 查询是否持有外部句柄的所有权（close() 时是否关闭底层 fd）。
     bool owns_socket() const { return owns_socket_; }
 
-    /// 客户端：在已托管的 socket（attach 之后）上执行 TLS 1.3 客户端握手。
+    /// 客户端：在已托管的 socket（attach 之后）上执行 TLS 客户端握手
+    /// （版本见 set_tls_version）。
     /// 不建立任何传输连接，仅做握手；信任语义与 connect() 完全一致
     /// （trust_store == nullptr 时走系统信任库，传 tls_certificate_manager*
     /// 时按 SNI 名称查找预期服务器证书校验 CertificateVerify）。
@@ -283,6 +287,14 @@ public:
     bool client_handshake(const std::string& host,
                           const tls_trust_store& trust,
                           std::string* error = nullptr);
+
+    /// 设置客户端握手使用的 TLS 版本（默认 TLSVersion::V13）。
+    /// 设为 TLSVersion::V12 后，connect() / client_handshake() 执行
+    /// TLS 1.2 客户端握手（支持 RSA、ECDHE、DHE、PSK、DHE-PSK 套件；
+    /// 证书套件校验方式与 connect()/client_handshake() 的信任参数一致，
+    /// PSK 套件需先在 session() 上配置 tls12_psk_*）。
+    void set_tls_version(TLSVersion v) { tls_version_ = v; }
+    TLSVersion tls_version() const { return tls_version_; }
 
     /// 数据报模式（UDP 链接）开关。attach() 对 SOCK_DGRAM 句柄自动启用；
     /// 对 TCP 句柄默认关闭。可手动覆盖：enable=true 要求底层为 UDP socket。
@@ -297,6 +309,12 @@ public:
     /// 服务端：对已建立的 TCP 连接执行 TLS 1.3 服务端握手。
     /// 通常由 tls_listener::accept 调用；也可对原生 socket 手动设置后调用。
     bool server_handshake(const tls_certificate_manager& cert_manager,
+                          std::string* error = nullptr);
+
+    /// 服务端握手（PSK 变体）：psk_store 提供 TLS 1.2 PSK 身份表（RFC 4279/5487），
+    /// 客户端通告 PSK 套件时服务端可协商 PSK / DHE_PSK。
+    bool server_handshake(const tls_certificate_manager& cert_manager,
+                          const tls_psk_store& psk_store,
                           std::string* error = nullptr);
 
     /// 设置/取消非阻塞模式（可在 connect 之前或之后调用；
@@ -367,9 +385,14 @@ private:
     bool do_client_handshake(const tls_certificate_manager* trust_store,
                              const tls_trust_store* trust,
                              std::string* error);
+    /// TLS 1.2 客户端握手（set_tls_version(V12) 时由 do_client_handshake 分发）。
+    bool do_client_handshake_tls12(const tls_certificate_manager* trust_store,
+                                   const tls_trust_store* trust,
+                                   std::string* error);
     /// 建立 TCP 连接并初始化会话（connect 两个重载共用）。
     bool establish_tcp(const std::string& host, uint16_t port, std::string* error);
-    bool do_server_handshake(const tls_certificate_manager& cert_manager, std::string* error);
+    bool do_server_handshake(const tls_certificate_manager& cert_manager,
+                             const tls_psk_store* psk_store, std::string* error);
 
     bool write_all(const uint8_t* data, size_t len, std::string* error);
     /// 数据报模式：单次发送一个完整 UDP 数据报（一条 TLS record）。
@@ -399,6 +422,7 @@ private:
     bool would_block_ = false;       // 最近一次 I/O 是否 would-block
     bool handshake_pending_ = false; // 当前是否处于握手阶段（影响 EAGAIN 处理）
     int handshake_timeout_ms_ = 30000; // 握手阶段有界等待超时
+    TLSVersion tls_version_ = TLSVersion::V13; // 客户端握手版本（默认 TLS 1.3）
     tls_session session_;
     std::vector<uint8_t> rbuf_;   // 接收缓冲（处理半包）
     tls_co_executor* executor_ = nullptr; // 协程执行器（co_send/co_recv 用）
@@ -433,6 +457,11 @@ public:
 
     /// 接受一个 TCP 连接并完成 TLS 1.3 服务端握手。
     bool accept(tls_connection& conn, const tls_certificate_manager& cert_manager,
+                std::string* error = nullptr);
+
+    /// 接受一个 TCP 连接并完成服务端握手（PSK 变体，见 server_handshake）。
+    bool accept(tls_connection& conn, const tls_certificate_manager& cert_manager,
+                const tls_psk_store& psk_store,
                 std::string* error = nullptr);
 
     /// UDP 链接（数据报模式）：绑定 UDP 端口等待客户端握手。

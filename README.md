@@ -659,7 +659,7 @@ jpssl-crypt rand 32
 
 | **SM4-CCM** | SM4 AEAD 认证加密 (NIST SP 800-38C) | — | — |
 
-| **TLS 1.2/1.3** | 完整握手, 密码套件协商, ECDHE/RSA, AES-GCM/ChaCha20/CCM/SM4-GCM, 0-RTT, RFC 8998 | AVX2/AVX512 GCM, ARM NEON GCM | — |
+| **TLS 1.2/1.3** | 完整握手, 密码套件协商, ECDHE/RSA/DHE(ffdhe2048)/PSK/DHE-PSK, AES-GCM/ChaCha20/CCM/CBC/SM4-GCM, 0-RTT, RFC 8998 | AVX2/AVX512 GCM, ARM NEON GCM | — |
 
 | **QUIC v1/v2 SSL** | QUIC 所需 TLS 1.3 支持（RFC 9001/9369）：无记录层握手、quic_transport_parameters 扩展、Initial/握手/1-RTT 数据包保护密钥、头部保护掩码 | — | — |
 
@@ -1584,7 +1584,7 @@ tls13_process_end_of_early_data(client2, eoed.data(), eoed.size());
 
 
 
-支持 **RSA** 和 **ECDHE**（X25519）两种密钥交换方式，完整的密码套件协商、ServerKeyExchange、Certificate、ServerHelloDone 消息流程。
+支持 **RSA**、**ECDHE**（X25519 / P-256 / P-384）、**DHE**（ffdhe2048，RFC 7919）和 **PSK/DHE-PSK**（RFC 4279/5487）密钥交换方式，完整的密码套件协商、ServerKeyExchange、Certificate、ServerHelloDone 消息流程。socket 层客户端通过 `tls_connection::set_tls_version(TLSVersion::V12)` 启用 TLS 1.2 握手（默认 TLS 1.3）。
 
 
 
@@ -1611,6 +1611,40 @@ tls13_process_end_of_early_data(client2, eoed.data(), eoed.size());
 | `0x009C` | RSA | AES-128-GCM | SHA-256 |
 
 | `0x009D` | RSA | AES-256-GCM | SHA-384 |
+
+| `0x003C` | RSA | AES-128-CBC | SHA-256 |
+
+| `0x003D` | RSA | AES-256-CBC | SHA-256 |
+
+| `0x009E` | DHE-RSA（ffdhe2048） | AES-128-GCM | SHA-256 |
+
+| `0x009F` | DHE-RSA（ffdhe2048） | AES-256-GCM | SHA-384 |
+
+| `0xCCAA` | DHE-RSA（ffdhe2048） | ChaCha20-Poly1305 | SHA-256 |
+
+| `0x0067` | DHE-RSA（ffdhe2048） | AES-128-CBC | SHA-256 |
+
+| `0x006B` | DHE-RSA（ffdhe2048） | AES-256-CBC | SHA-256 |
+
+| `0x00A8` | PSK | AES-128-GCM | SHA-256 |
+
+| `0x00A9` | PSK | AES-256-GCM | SHA-384 |
+
+| `0xCCAB` | PSK | ChaCha20-Poly1305 | SHA-256 |
+
+| `0x00AE` | PSK | AES-128-CBC | SHA-256 |
+
+| `0x00AF` | PSK | AES-256-CBC | SHA-384 |
+
+| `0x00AA` | DHE-PSK（ffdhe2048） | AES-128-GCM | SHA-256 |
+
+| `0x00AB` | DHE-PSK（ffdhe2048） | AES-256-GCM | SHA-384 |
+
+| `0xCCAD` | DHE-PSK（ffdhe2048） | ChaCha20-Poly1305 | SHA-256 |
+
+| `0x00B2` | DHE-PSK（ffdhe2048） | AES-128-CBC | SHA-256 |
+
+| `0x00B3` | DHE-PSK（ffdhe2048） | AES-256-CBC | SHA-384 |
 
 
 

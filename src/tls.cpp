@@ -1,4 +1,5 @@
 #include "tls.hpp"
+#include "dh.hpp"
 #include "sha256.hpp"
 #include "sha512.hpp"
 #include "sm3.hpp"
@@ -17,7 +18,7 @@ static const uint8_t RSA_SHA256_DIGEST_INFO[] = {
     0x00, 0x04, 0x20
 };
 
-// 从系统 CSPRNG 读取 32 字节密码学安全随机数（Windows BCrypt / Linux urandom）
+// 从系�?CSPRNG 读取 32 字节密码学安全随机数（Windows BCrypt / Linux urandom�?
 static void rand32(uint8_t* buf){
     if (!jpssl::os_rand_bytes(buf, 32))
         std::memset(buf, 0, 32);
@@ -29,12 +30,28 @@ static CipherSuite select_cipher_suite(uint16_t id){
         case 0x1302: return CipherSuite::TLS_AES_256_GCM_SHA384;
         case 0x1303: return CipherSuite::TLS_CHACHA20_POLY1305_SHA256;
         case 0x1304: return CipherSuite::TLS_AES_128_CCM_SHA256;
+        case 0x1305: return CipherSuite::TLS_AES_128_CCM_8_SHA256;
         case 0x00C6: return CipherSuite::TLS_SM4_GCM_SM3;
         case 0x00C7: return CipherSuite::TLS_SM4_CCM_SM3;
         case 0x009C: return CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256;
         case 0x009D: return CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384;
-        case 0x003D: return CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA256;
-        case 0x003E: return CipherSuite::TLS_RSA_WITH_AES_256_CBC_SHA256;
+        case 0x003C: return CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA256;
+        case 0x003D: return CipherSuite::TLS_RSA_WITH_AES_256_CBC_SHA256;
+        case 0x009E: return CipherSuite::TLS_DHE_RSA_WITH_AES_128_GCM_SHA256;
+        case 0x009F: return CipherSuite::TLS_DHE_RSA_WITH_AES_256_GCM_SHA384;
+        case 0x0067: return CipherSuite::TLS_DHE_RSA_WITH_AES_128_CBC_SHA256;
+        case 0x006B: return CipherSuite::TLS_DHE_RSA_WITH_AES_256_CBC_SHA256;
+        case 0xCCAA: return CipherSuite::TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256;
+        case 0x00A8: return CipherSuite::TLS_PSK_WITH_AES_128_GCM_SHA256;
+        case 0x00A9: return CipherSuite::TLS_PSK_WITH_AES_256_GCM_SHA384;
+        case 0x00AE: return CipherSuite::TLS_PSK_WITH_AES_128_CBC_SHA256;
+        case 0x00AF: return CipherSuite::TLS_PSK_WITH_AES_256_CBC_SHA384;
+        case 0xCCAB: return CipherSuite::TLS_PSK_WITH_CHACHA20_POLY1305_SHA256;
+        case 0x00AA: return CipherSuite::TLS_DHE_PSK_WITH_AES_128_GCM_SHA256;
+        case 0x00AB: return CipherSuite::TLS_DHE_PSK_WITH_AES_256_GCM_SHA384;
+        case 0x00B2: return CipherSuite::TLS_DHE_PSK_WITH_AES_128_CBC_SHA256;
+        case 0x00B3: return CipherSuite::TLS_DHE_PSK_WITH_AES_256_CBC_SHA384;
+        case 0xCCAD: return CipherSuite::TLS_DHE_PSK_WITH_CHACHA20_POLY1305_SHA256;
         case 0xC02B: return CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256;
         case 0xC02C: return CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384;
         case 0xC02F: return CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256;
@@ -50,24 +67,61 @@ static bool cipher_needs_aes_ctx(CipherSuite cs){
         case CipherSuite::TLS_AES_128_GCM_SHA256:
         case CipherSuite::TLS_AES_256_GCM_SHA384:
         case CipherSuite::TLS_AES_128_CCM_SHA256:
+        case CipherSuite::TLS_AES_128_CCM_8_SHA256:
+        case CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA256:
+        case CipherSuite::TLS_RSA_WITH_AES_256_CBC_SHA256:
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_128_CBC_SHA256:
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_256_CBC_SHA256:
+        case CipherSuite::TLS_PSK_WITH_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_PSK_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_PSK_WITH_AES_128_CBC_SHA256:
+        case CipherSuite::TLS_PSK_WITH_AES_256_CBC_SHA384:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_128_CBC_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_256_CBC_SHA384:
             return true;
         default: return false;
     }
 }
 
+// TLS 1.2 CBC 套件（RFC 5246 6.2.3.2）：显式 IV + HMAC + PKCS7 填充
+static bool tls12_is_cbc(CipherSuite cs){
+    return cs == CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA256
+        || cs == CipherSuite::TLS_RSA_WITH_AES_256_CBC_SHA256
+        || cs == CipherSuite::TLS_DHE_RSA_WITH_AES_128_CBC_SHA256
+        || cs == CipherSuite::TLS_DHE_RSA_WITH_AES_256_CBC_SHA256
+        || cs == CipherSuite::TLS_PSK_WITH_AES_128_CBC_SHA256
+        || cs == CipherSuite::TLS_PSK_WITH_AES_256_CBC_SHA384
+        || cs == CipherSuite::TLS_DHE_PSK_WITH_AES_128_CBC_SHA256
+        || cs == CipherSuite::TLS_DHE_PSK_WITH_AES_256_CBC_SHA384;
+}
+
 static size_t aes_key_len(CipherSuite cs){
     switch(cs){
         case CipherSuite::TLS_AES_256_GCM_SHA384: return 32;
-        // TLS 1.2 AES-256-GCM 套件（RFC 5288）：AES-256 需要 32 字节 key
+        // TLS 1.2 AES-256 套件：AES-256 需�?32 字节 key
         case CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:
         case CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:
         case CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_RSA_WITH_AES_256_CBC_SHA256:
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_256_CBC_SHA256:
+        case CipherSuite::TLS_PSK_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_PSK_WITH_AES_256_CBC_SHA384:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_256_CBC_SHA384:
             return 32;
         // ChaCha20-Poly1305 密钥恒为 32 字节（RFC 8439 §2.3 / RFC 7905 §2）：
-        // 若按 16 字节派生，后 16 字节为未初始化内存，early data 与记录层会间歇性解密失败
-        case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
+        // 若按 16 字节派生，后 16 字节为未初始化内存，early data 与记录层会间歇性解密失�?        
+case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
         case CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:
         case CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:
+        case CipherSuite::TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256:
+        case CipherSuite::TLS_PSK_WITH_CHACHA20_POLY1305_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_CHACHA20_POLY1305_SHA256:
             return 32;
         default: return 16;
     }
@@ -76,6 +130,31 @@ static size_t aes_key_len(CipherSuite cs){
 static void aes_ctx_init(aes_context& ctx, const uint8_t* key, size_t key_len){
     if(key_len==32) ctx.init(std::span<const uint8_t,32>(key,32));
     else ctx.init(std::span<const uint8_t,16>(key,16));
+}
+
+// raw CBC encrypt/decrypt (no padding), used for TLS 1.2 record layer
+static void tls_cbc_encrypt_blocks(aes_context& ctx, const uint8_t iv[16],
+                                   const uint8_t* in, size_t nblocks, uint8_t* out){
+    uint8_t prev[16];
+    memcpy(prev, iv, 16);
+    for(size_t i=0;i<nblocks;++i){
+        uint8_t xored[16];
+        for(int j=0;j<16;++j) xored[j]=in[i*16+j]^prev[j];
+        aes_encrypt_block(ctx, xored, out+i*16);
+        memcpy(prev, out+i*16, 16);
+    }
+}
+
+static void tls_cbc_decrypt_blocks(aes_context& ctx, const uint8_t iv[16],
+                                   const uint8_t* in, size_t nblocks, uint8_t* out){
+    uint8_t prev[16];
+    memcpy(prev, iv, 16);
+    for(size_t i=0;i<nblocks;++i){
+        uint8_t d[16];
+        aes_decrypt_block(ctx, in+i*16, d);
+        for(int j=0;j<16;++j) out[i*16+j]=d[j]^prev[j];
+        memcpy(prev, in+i*16, 16);
+    }
 }
 
 static bool cipher_needs_sm4_ctx(CipherSuite cs){ return tls_use_sm4(cs); }
@@ -114,7 +193,7 @@ static void append_sig_alg_extension(std::vector<uint8_t>& ext, uint16_t type,
     }
 }
 
-// 解析 SignatureSchemeList（2 字节长度 + 2*count 字节方案编码）
+// 解析 SignatureSchemeList�? 字节长度 + 2*count 字节方案编码�?
 static bool parse_sig_alg_list(const uint8_t* p, size_t len, std::vector<uint16_t>& out) {
     if (len < 2) return false;
     size_t list_len = ((size_t)p[0] << 8) | p[1];
@@ -125,7 +204,7 @@ static bool parse_sig_alg_list(const uint8_t* p, size_t len, std::vector<uint16_
     return true;
 }
 
-// 在 ClientHello 扩展区查找指定扩展
+// �?ClientHello 扩展区查找指定扩�?
 static bool client_hello_find_extension(const uint8_t* ch, size_t ch_len, uint16_t want,
                                         const uint8_t*& data, size_t& dlen) {
     size_t ext_offset = client_hello_ext_offset(ch, ch_len);
@@ -144,7 +223,7 @@ static bool client_hello_find_extension(const uint8_t* ch, size_t ch_len, uint16
     return false;
 }
 
-// 客户端应广告的 signature_algorithms 列表（配置为空时用全量默认）
+// 客户端应广告�?signature_algorithms 列表（配置为空时用全量默认）
 static std::vector<uint16_t> effective_sig_algs(const tls_session& s) {
     if (s.sig_algs.empty()) return tls_default_signature_algorithms();
     return s.sig_algs;
@@ -194,8 +273,8 @@ static uint16_t select_signature_scheme(const std::vector<uint16_t>& peer_list,
     return 0;
 }
 
-// 证书链签名方案（用于 signature_algorithms_cert 校验）
-// 优先解析证书 DER 中的签名算法；自签名证书回退到 sig_alg 映射
+// 证书链签名方案（用于 signature_algorithms_cert 校验�?
+// 优先解析证书 DER 中的签名算法；自签名证书回退�?sig_alg 映射
 static uint16_t x509_key_type_chain_scheme(x509::KeyType kt) {
     switch (kt) {
         case x509::KeyType::RSA_2048:
@@ -242,9 +321,9 @@ static uint16_t cert_chain_signature_scheme(const tls_certificate& cert) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  transcript 辅助
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 void tls_transcript_update(tls_session& s, const uint8_t* data, size_t len){
     if(!s.transcript_ready){
         if(tls_use_sha384(s.cipher_suite)) sha384_init(&s.transcript_ctx.sha512);
@@ -271,12 +350,12 @@ void tls_transcript_finalize(tls_session& s){
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  证书签名/验证
-// ═══════════════════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════════════
-//  签名方案辅助（RFC 8446 §4.2.3 / RFC 8998）
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
+// ══════════════════════════════════════════════════════════════════════�?
+//  签名方案辅助（RFC 8446 §4.2.3 / RFC 8998�?
+// ══════════════════════════════════════════════════════════════════════�?
 static const uint8_t RSA_SHA384_DIGEST_INFO[] = {
     0x30,0x41,0x30,0x0d,0x06,0x09,0x60,0x86,
     0x48,0x01,0x65,0x03,0x04,0x02,0x02,0x05,
@@ -288,7 +367,7 @@ static const uint8_t RSA_SHA512_DIGEST_INFO[] = {
     0x00,0x04,0x40
 };
 
-// 哈希类方案对应的摘要长度；0 表示未知/非哈希类方案
+// 哈希类方案对应的摘要长度�? 表示未知/非哈希类方案
 static size_t scheme_hash_len(uint16_t scheme) {
     switch (scheme) {
         case (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA256:
@@ -346,7 +425,7 @@ static const uint8_t* digest_info_for_scheme(uint16_t scheme, size_t& di_len) {
     }
 }
 
-// RSASSA-PKCS1-v1_5 签名（RSA-2048）
+// RSASSA-PKCS1-v1_5 签名（RSA-2048�?
 static bool rsa_pkcs1_sign(const rsa_private_key& key, uint16_t scheme,
                            const uint8_t* data, size_t len, uint8_t* sig, size_t& sig_len) {
     size_t hl = scheme_hash_len(scheme);
@@ -371,7 +450,7 @@ static bool rsa_pkcs1_sign(const rsa_private_key& key, uint16_t scheme,
     return true;
 }
 
-// RSASSA-PSS 签名（RSA-2048，saltLen = hLen，RFC 8446 要求）
+// RSASSA-PSS 签名（RSA-2048，saltLen = hLen，RFC 8446 要求�?
 static bool rsa_pss_sign(const rsa_private_key& key, uint16_t scheme,
                          const uint8_t* data, size_t len, uint8_t* sig, size_t& sig_len) {
     PssHash hash;
@@ -400,10 +479,10 @@ static bool rsa_pss_verify(const rsa_public_key& pub, uint16_t scheme,
     return rsassa_pss_verify(pub, data, len, sig, 0, hash);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  证书签名/验证
-// ═══════════════════════════════════════════════════════════════════════
-// ECDSA 签名 DER 编解码（RFC 8446 §4.4.3 / RFC 8422 §5.5）
+// ══════════════════════════════════════════════════════════════════════�?
+// ECDSA 签名 DER 编解码（RFC 8446 §4.4.3 / RFC 8422 §5.5�?
 static bool ecdsa_sign_to_der(const uint8_t* raw, size_t raw_len,
                               uint8_t* out, size_t out_cap, size_t& out_len) {
     size_t half = raw_len / 2;
@@ -490,9 +569,9 @@ bool tls_certificate::sign_scheme(uint16_t scheme, const uint8_t* data, size_t d
             std::memcpy(sig, der, dl); sig_len = dl; return true;
         }
         case SignatureAlgorithm::SM2_SM3: {
-            // RFC 8998/OpenSSL 实测：TLS 1.3 CertificateVerify 中 SM2 签名
-            // 采用 DER 编码（30 45 02 21 ... 02 20 ...），而非裸 64 字节 r||s。
-            uint8_t raw[64], der[160];
+            // RFC 8998/OpenSSL 实测：TLS 1.3 CertificateVerify �?SM2 签名
+            // 采用 DER 编码�?0 45 02 21 ... 02 20 ...），而非�?64 字节 r||s�?            
+uint8_t raw[64], der[160];
             sm2_sign(priv.sm2, data, data_len, raw, za);
             size_t dl = sizeof(der);
             if (!ecdsa_sign_to_der(raw, sizeof(raw), der, sizeof(der), dl)) return false;
@@ -586,9 +665,9 @@ bool tls_certificate::verify(const uint8_t* data, size_t data_len, const uint8_t
     return verify_scheme((uint16_t)sig_alg, data, data_len, sig, sig_len);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  证书管理器
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
+//  证书管理�?
+// ══════════════════════════════════════════════════════════════════════�?
 void tls_certificate_manager::add_certificate(const std::string& domain, std::unique_ptr<tls_certificate> cert){
     if(default_domain.empty())default_domain=domain;
     certificates[domain]=std::move(cert);
@@ -604,9 +683,9 @@ const tls_certificate* tls_certificate_manager::get_default_certificate() const 
     return it!=certificates.end()?it->second.get():nullptr;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  服务端证书加载（PEM / CSR + 私钥）
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
+//  服务端证书加载（PEM / CSR + 私钥�?
+// ══════════════════════════════════════════════════════════════════════�?
 SignatureAlgorithm tls_key_type_to_sig_alg(x509::KeyType kt) {
     switch (kt) {
         case x509::KeyType::RSA_2048: case x509::KeyType::RSA_4096:
@@ -623,7 +702,7 @@ SignatureAlgorithm tls_key_type_to_sig_alg(x509::KeyType kt) {
 
 namespace {
 
-// 用 x509 公钥 raw bytes 填充 tls_certificate.pub
+// �?x509 公钥 raw bytes 填充 tls_certificate.pub
 bool fill_pub(tls_certificate& out, x509::KeyType kt, const std::vector<uint8_t>& pub) {
     switch (kt) {
         case x509::KeyType::RSA_2048: {
@@ -661,7 +740,7 @@ bool fill_pub(tls_certificate& out, x509::KeyType kt, const std::vector<uint8_t>
     }
 }
 
-// 用 x509 私钥 raw bytes 填充 tls_certificate.priv（RSA 需要私钥的 n||e 公钥）
+// �?x509 私钥 raw bytes 填充 tls_certificate.priv（RSA 需要私钥的 n||e 公钥�?
 bool fill_priv(tls_certificate& out, x509::KeyType kt,
                const std::vector<uint8_t>& priv, const std::vector<uint8_t>& pub) {
     switch (kt) {
@@ -701,7 +780,7 @@ bool fill_priv(tls_certificate& out, x509::KeyType kt,
     }
 }
 
-// 从 CSR subject 提取 CN 作为证书主体名
+// �?CSR subject 提取 CN 作为证书主体�?
 std::string csr_common_name(const x509::csr& req) {
     for (const auto& attr : req.subject) {
         if (attr.oid.size() == 3 &&
@@ -729,7 +808,7 @@ std::string read_file_string(const char* path) {
     return s;
 }
 
-// 解析 PEM 中全部证书块（CA bundle 可含多张）
+// 解析 PEM 中全部证书块（CA bundle 可含多张�?
 std::vector<x509::x509_cert> parse_all_pem_certs(const std::string& pem) {
     std::vector<x509::x509_cert> out;
     size_t pos = 0;
@@ -806,7 +885,7 @@ std::unique_ptr<tls_certificate> tls_certificate::from_csr_pem(const std::string
     }
     auto out = std::make_unique<tls_certificate>();
     out->subject_name = csr_common_name(*req);
-    // cert_data 留空：握手时按 CSR 主体自动生成自签名证书
+    // cert_data 留空：握手时�?CSR 主体自动生成自签名证�?
     out->sig_alg = tls_key_type_to_sig_alg(req->key_type);
     if (!fill_pub(*out, req->key_type, req->public_key)) {
         set_err(err, "failed to import CSR public key");
@@ -843,10 +922,10 @@ tls_trust_store tls_trust_store::from_pem_file(const char* path) {
 static const char* const kSystemCaPaths[] = {
     "/etc/ssl/certs/ca-certificates.crt",   // Debian / Ubuntu / Arch / Alpine
     "/etc/pki/tls/certs/ca-bundle.crt",     // RHEL / Fedora / CentOS
-    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  // RHEL 备选
+    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  // RHEL 备�?
     "/etc/ssl/ca-bundle.pem",               // SUSE
     "/etc/ssl/cert.pem",                    // macOS (brew) / OpenBSD
-    "/etc/ssl/certs/ca-bundle.crt",         // 部分发行版
+    "/etc/ssl/certs/ca-bundle.crt",         // 部分发行�?
     nullptr,
 };
 
@@ -867,13 +946,13 @@ tls_trust_store tls_trust_store::from_system() {
         auto ts = from_pem_file(*p);
         if (!ts.empty()) { cached = std::move(ts); loaded = true; return cached; }
     }
-    loaded = true;  // 缓存"未找到"结果，避免每次连接都探测
+    loaded = true;  // 缓存"未找�?结果，避免每次连接都探测
     return cached;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  SNI 解析
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 std::string tls_parse_server_name(const uint8_t* extensions, size_t ext_len){
     if(ext_len<2)return "";
     size_t offset=0;
@@ -895,9 +974,9 @@ std::string tls_parse_server_name(const uint8_t* extensions, size_t ext_len){
     return "";
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  ALPN 解析与选择 (RFC 7301, 扩展类型 0x0010)
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 std::vector<std::string> tls_parse_alpn_list(const uint8_t* data, size_t len) {
     std::vector<std::string> out;
     if (len < 2) return out;
@@ -922,9 +1001,9 @@ std::string tls_select_alpn(const std::vector<std::string>& client_list,
     return {};
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  TLS 1.3 密钥派生
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 static void tls13_derive_handshake_keys(tls_session& s, const uint8_t* shared_secret, size_t shared_len){
     size_t hl=tls_hash_len(s.cipher_suite);
     bool use384=tls_use_sha384(s.cipher_suite);
@@ -964,7 +1043,7 @@ static void tls13_derive_handshake_keys(tls_session& s, const uint8_t* shared_se
         hkdf_expand_label(s.handshake_secret,"s hs traffic",s.transcript_hash,hl,sh_ts,hl);
     }
 
-    // 保存 handshake traffic secrets（Finished 密钥的 BaseKey，RFC 8446 7.1）
+    // 保存 handshake traffic secrets（Finished 密钥�?BaseKey，RFC 8446 7.1�?
     memcpy(s.client_hs_traffic, ch_ts, hl);
     memcpy(s.server_hs_traffic, sh_ts, hl);
 
@@ -1039,7 +1118,7 @@ static void tls13_derive_application_keys(tls_session& s){
         hkdf_expand_label(s.master_secret,"c ap traffic",s.transcript_hash,hl,c_ap_ts,hl);
         hkdf_expand_label(s.master_secret,"s ap traffic",s.transcript_hash,hl,s_ap_ts,hl);
     }
-    // RFC 8446 7.1：Traffic Key/IV 从 Application Traffic Secret 派生
+    // RFC 8446 7.1：Traffic Key/IV �?Application Traffic Secret 派生
     size_t key_len = aes_key_len(s.cipher_suite);
     if(use384){
         hkdf_expand_label_sha384(c_ap_ts,"key",nullptr,0,s.client_write_key,key_len);
@@ -1128,16 +1207,16 @@ static void tls13_derive_keys(tls_session& s, const uint8_t* shared_secret, size
     s.client_seq=0;s.server_seq=0;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  构建 Finished 消息
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 static std::vector<uint8_t> tls13_make_finished(tls_session& s, bool for_server){
     size_t hl=tls_hash_len(s.cipher_suite);
     bool use384=tls_use_sha384(s.cipher_suite);
     bool use_sm3=tls_use_sm3(s.cipher_suite);
     uint8_t finished_key[48];
     // RFC 8446 4.4.4：finished_key = HKDF-Expand-Label(BaseKey, "finished", "", Hash.length)
-    // BaseKey = 对应的 handshake traffic secret（服务端发 Finished 用 server 侧）
+    // BaseKey = 对应�?handshake traffic secret（服务端�?Finished �?server 侧）
     const uint8_t* base_key = for_server ? s.server_hs_traffic : s.client_hs_traffic;
     if(use384) hkdf_expand_label_sha384(base_key,"finished",nullptr,0,finished_key,hl);
     else if(use_sm3) hkdf_expand_label_sm3(base_key,"finished",nullptr,0,finished_key,hl);
@@ -1165,7 +1244,7 @@ static bool tls13_verify_finished(tls_session& s, const uint8_t* hs_msg, size_t 
     bool use384=tls_use_sha384(s.cipher_suite);
     bool use_sm3=tls_use_sm3(s.cipher_suite);
     uint8_t finished_key[48];
-    // RFC 8446 4.4.4：finished_key 用 handshake traffic secret 派生
+    // RFC 8446 4.4.4：finished_key �?handshake traffic secret 派生
     const uint8_t* base_key = for_server ? s.server_hs_traffic : s.client_hs_traffic;
     if(use384) hkdf_expand_label_sha384(base_key,"finished",nullptr,0,finished_key,hl);
     else if(use_sm3) hkdf_expand_label_sm3(base_key,"finished",nullptr,0,finished_key,hl);
@@ -1180,9 +1259,9 @@ static bool tls13_verify_finished(tls_session& s, const uint8_t* hs_msg, size_t 
     return memcmp(expected,hs_msg+4,hl)==0;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  构建 Certificate + CertificateVerify 消息
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 static std::vector<uint8_t> tls13_make_certificate(const tls_certificate& cert){
     // Auto-generate X.509 DER if cert_data is empty
     std::vector<uint8_t> der_data = cert.cert_data;
@@ -1207,7 +1286,7 @@ static std::vector<uint8_t> tls13_make_certificate(const tls_certificate& cert){
 }
 
 // RFC 8446 §4.4.3: CertificateVerify 签名内容 =
-//   64 个 0x20（空格）|| 上下文串 ("TLS 1.3, server/client CertificateVerify")
+//   64 �?0x20（空格）|| 上下文串 ("TLS 1.3, server/client CertificateVerify")
 //   || 0x00（单个分隔符）|| Transcript-Hash
 static std::vector<uint8_t> tls13_cert_verify_content(tls_session& s, bool for_server) {
     static const char* server_ctx = "TLS 1.3, server CertificateVerify";
@@ -1216,16 +1295,16 @@ static std::vector<uint8_t> tls13_cert_verify_content(tls_session& s, bool for_s
     size_t hl = tls_hash_len(s.cipher_suite);
     const char* ctx = for_server ? server_ctx : client_ctx;
     std::vector<uint8_t> content;
-    content.insert(content.end(), 64, 0x20);  // 64 个空格
+    content.insert(content.end(), 64, 0x20);  // 64 个空�?
     content.insert(content.end(), ctx, ctx + strlen(ctx));
-    content.push_back(0x00);                  // 单个 0x00 分隔符
+    content.push_back(0x00);                  // 单个 0x00 分隔�?
     content.insert(content.end(), s.transcript_hash, s.transcript_hash + hl);
     return content;
 }
 
 static std::vector<uint8_t> tls13_make_cert_verify(const tls_certificate& cert, tls_session& s){
-    // RSA-2048 PKCS#1 签名为 256 字节；缓冲区按最大签名 (512B) 预留，
-    // 避免 RSA 证书在 TLS 1.3 CertificateVerify 中发生栈溢出。
+    // RSA-2048 PKCS#1 签名�?256 字节；缓冲区按最大签�?(512B) 预留�?
+    // 避免 RSA 证书�?TLS 1.3 CertificateVerify 中发生栈溢出�?
     uint8_t sig[512];size_t sig_len=0;
     std::vector<uint8_t> content = tls13_cert_verify_content(s, true);
     // RFC 8998 3.2.1: handshake signature uses SM2 id "TLSv1.3+GM+Cipher+Suite"
@@ -1271,12 +1350,12 @@ static bool tls13_verify_cert_verify(const tls_certificate& cert, tls_session& s
     return cert.verify_scheme(alg, content.data(), content.size(), hs_msg+8, sig_len, za_ptr);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  客户端 x509 链验证辅助
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
+//  客户�?x509 链验证辅�?
+// ══════════════════════════════════════════════════════════════════════�?
 namespace {
 
-// 叶子证书主机名匹配（SAN DNS 优先，其次 CN；支持 *.example.com 通配）
+// 叶子证书主机名匹配（SAN DNS 优先，其�?CN；支�?*.example.com 通配�?
 bool tls13_hostname_matches(const x509::x509_cert& leaf, const std::string& host) {
     if (host.empty()) return true;
     for (const auto& dns : leaf.dns_names()) {
@@ -1293,9 +1372,9 @@ bool tls13_hostname_matches(const x509::x509_cert& leaf, const std::string& host
 }
 
 // 服务端证书链 + 信任库验证：
-//   1) 服务端链自身可通过（链已含自签根）；
-//   2) 否则逐个尝试把信任库中的 CA 根追加到链尾后验证。
-// 通过后还需叶子主机名匹配 server_name。
+//   1) 服务端链自身可通过（链已含自签根）�?
+//   2) 否则逐个尝试把信任库中的 CA 根追加到链尾后验证�?
+// 通过后还需叶子主机名匹�?server_name�?
 bool tls13_verify_server_chain(const std::vector<x509::x509_cert>& server_chain,
                                const tls_trust_store& trust,
                                const std::string& hostname) {
@@ -1313,7 +1392,7 @@ bool tls13_verify_server_chain(const std::vector<x509::x509_cert>& server_chain,
     return tls13_hostname_matches(server_chain.front(), hostname);
 }
 
-// 用解析出的 x509 叶子证书构造 tls_certificate（只填公钥，用于 CertificateVerify 验证）
+// 用解析出�?x509 叶子证书构�?tls_certificate（只填公钥，用于 CertificateVerify 验证�?
 std::unique_ptr<tls_certificate> tls_cert_from_x509_leaf(const x509::x509_cert& leaf) {
     auto out = std::make_unique<tls_certificate>();
     out->subject_name = leaf.common_name();
@@ -1324,10 +1403,10 @@ std::unique_ptr<tls_certificate> tls_cert_from_x509_leaf(const x509::x509_cert& 
 
 } // anonymous namespace
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  构建 EncryptedExtensions
-// ═══════════════════════════════════════════════════════════════════════
-// alpn_selected 非空时携带 ALPN 扩展（RFC 7301：服务端只选择一个协议）。
+// ══════════════════════════════════════════════════════════════════════�?
+// alpn_selected 非空时携�?ALPN 扩展（RFC 7301：服务端只选择一个协议）�?
 static std::vector<uint8_t> tls13_make_encrypted_extensions(
     const std::string& alpn_selected,
     const std::vector<uint8_t>* quic_transport_params = nullptr) {
@@ -1359,16 +1438,16 @@ static std::vector<uint8_t> tls13_make_encrypted_extensions(
     return msg;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  TLS 1.3 加密握手消息（用于 EncryptedExtensions 之后的所有消息）
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
+//  TLS 1.3 加密握手消息（用�?EncryptedExtensions 之后的所有消息）
+// ══════════════════════════════════════════════════════════════════════�?
 std::vector<uint8_t> tls_encrypt_handshake(tls_session& s, const uint8_t* hs_msg, size_t hs_len){
     bool is_svr=s.is_server;
     const uint8_t* write_key=is_svr?s.server_write_key:s.client_write_key;
     const uint8_t* write_iv=is_svr?s.server_write_iv:s.client_write_iv;
     uint64_t& seq=is_svr?s.server_seq:s.client_seq;
 
-    // RFC 8446 5.2：TLSInnerPlaintext = content || padding || type（type 只在末尾）
+    // RFC 8446 5.2：TLSInnerPlaintext = content || padding || type（type 只在末尾�?
     std::vector<uint8_t> inner;
     inner.insert(inner.end(),hs_msg,hs_msg+hs_len);
     inner.push_back((uint8_t)ContentType::HANDSHAKE);
@@ -1380,17 +1459,18 @@ std::vector<uint8_t> tls_encrypt_handshake(tls_session& s, const uint8_t* hs_msg
     std::vector<uint8_t> record;
     record.push_back(0x17); // application_data (TLS 1.3 统一使用)
     record.push_back(0x03);record.push_back(0x03);
-    size_t rlen=inner.size()+16;
+    size_t tag_len=tls_aead_tag_len(s.cipher_suite);
+    size_t rlen=inner.size()+tag_len;
     record.push_back((uint8_t)(rlen>>8));record.push_back((uint8_t)rlen);
 
-    // RFC 8446 5.2：TLS 1.3 AEAD 的 additional_data (AAD) = record 头 5 字节
+    // RFC 8446 5.2：TLS 1.3 AEAD �?additional_data (AAD) = record �?5 字节
     uint8_t aad[5]={0x17,0x03,0x03,(uint8_t)(rlen>>8),(uint8_t)rlen};
     std::span<const uint8_t> aad_span(aad,5);
 
     std::vector<uint8_t> ciphertext;uint8_t tag[16];
     // RFC 8446 5.2：TLS 1.3 握手记录与应用程序记录使用相同的 AEAD 构造，
-    // 必须按套件分发（此前 ChaCha20/CCM 误走 AES-GCM/SM4-GCM 分支）。
-    switch(s.cipher_suite){
+    // 必须按套件分发（此前 ChaCha20/CCM 误走 AES-GCM/SM4-GCM 分支）�?    
+switch(s.cipher_suite){
         case CipherSuite::TLS_AES_128_GCM_SHA256:
         case CipherSuite::TLS_AES_256_GCM_SHA384: {
             aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
@@ -1400,9 +1480,10 @@ std::vector<uint8_t> tls_encrypt_handshake(tls_session& s, const uint8_t* hs_msg
         case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
             chacha20_poly1305_encrypt(write_key, nonce, inner, aad_span, ciphertext, tag);
             break;
-        case CipherSuite::TLS_AES_128_CCM_SHA256: {
+        case CipherSuite::TLS_AES_128_CCM_SHA256:
+        case CipherSuite::TLS_AES_128_CCM_8_SHA256: {
             aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
-            aes_ccm_encrypt(ctx, nonce, 12, inner, aad_span, ciphertext, tag, 16);
+            aes_ccm_encrypt(ctx, nonce, 12, inner, aad_span, ciphertext, tag, tag_len);
             break;
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
@@ -1417,11 +1498,11 @@ std::vector<uint8_t> tls_encrypt_handshake(tls_session& s, const uint8_t* hs_msg
         }
     }
     record.insert(record.end(),ciphertext.begin(),ciphertext.end());
-    record.insert(record.end(),tag,tag+16);
+    record.insert(record.end(),tag,tag+tag_len);
     return record;
 }
 
-// 解密握手消息，返回内部 handshake 数据
+// 解密握手消息，返回内�?handshake 数据
 static bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_t record_len, std::vector<uint8_t>& hs_out){
     if(record_len<5)return false;
     bool is_svr=s.is_server;
@@ -1432,7 +1513,9 @@ static bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_
     size_t rlen=(record[3]<<8)|record[4];
     if(5+rlen!=record_len)return false;
     const uint8_t* ciphertext=record+5;
-    size_t ct_len=rlen-16;
+    size_t tag_len=tls_aead_tag_len(s.cipher_suite);
+    if(rlen<tag_len)return false;
+    size_t ct_len=rlen-tag_len;
     const uint8_t* tag=record+5+ct_len;
 
     uint8_t nonce[12];memcpy(nonce,read_iv,12);
@@ -1441,7 +1524,7 @@ static bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_
 
     std::vector<uint8_t> inner;
     bool ok = false;
-    // RFC 8446 5.2：AAD = record 头 5 字节
+    // RFC 8446 5.2：AAD = record �?5 字节
     std::span<const uint8_t> aad_span(record,5);
     switch(s.cipher_suite){
         case CipherSuite::TLS_AES_128_GCM_SHA256:
@@ -1455,11 +1538,12 @@ static bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_
                                            std::span<const uint8_t>(ciphertext,ct_len),
                                            aad_span, tag, inner);
             break;
-        case CipherSuite::TLS_AES_128_CCM_SHA256: {
+        case CipherSuite::TLS_AES_128_CCM_SHA256:
+        case CipherSuite::TLS_AES_128_CCM_8_SHA256: {
             aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
             ok = aes_ccm_decrypt(ctx, nonce, 12,
                                  std::span<const uint8_t>(ciphertext,ct_len),
-                                 aad_span, tag, 16, inner);
+                                 aad_span, tag, tag_len, inner);
             break;
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
@@ -1482,9 +1566,9 @@ static bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_
     return true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  TLS 1.3 完整握手 — 客户端
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
+//  TLS 1.3 完整握手 �?客户�?
+// ══════════════════════════════════════════════════════════════════════�?
 bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello){
     s.ver=TLSVersion::V13;s.is_server=false;
     s.transcript_ready=false;
@@ -1525,7 +1609,7 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         for(char c:s.server_name)ext.push_back((uint8_t)c);
     }
     ext.push_back(0x00);ext.push_back(0x2b);ext.push_back(0x00);ext.push_back(0x03);ext.push_back(0x02);ext.push_back(0x03);ext.push_back(0x04);
-    // supported_groups: 根据会话配置提供 X25519 和/或 X448
+    // supported_groups: 根据会话配置提供 X25519 �?�?X448
     {
         std::vector<uint16_t> groups;
         // SM 套件必须包含 curveSM2（RFC 8998 3.3.1.1）；同时保留 X25519 兜底
@@ -1553,26 +1637,26 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
             ext.push_back((uint8_t)(g>>8));ext.push_back((uint8_t)g);
         }
     }
-    // signature_algorithms + signature_algorithms_cert（RFC 8446 §4.2.3）
+    // signature_algorithms + signature_algorithms_cert（RFC 8446 §4.2.3�?
     {
         const std::vector<uint16_t>& algs = effective_sig_algs(s);
         std::vector<uint16_t> cert_algs =
             s.sig_algs_cert.empty() ? tls_default_signature_algorithms() : s.sig_algs_cert;
-        // RFC 8446: signature_algorithms_cert 必须是 signature_algorithms 的子集
+        // RFC 8446: signature_algorithms_cert 必须�?signature_algorithms 的子�?
         std::vector<uint16_t> cert_filtered;
         for (uint16_t a : cert_algs) if (scheme_in_list(algs, a)) cert_filtered.push_back(a);
         append_sig_alg_extension(ext, 0x000d, algs);
         append_sig_alg_extension(ext, 0x0032, cert_filtered);
     }
-    // key_share: 根据 ks_group 生成对应密钥对
+    // key_share: 根据 ks_group 生成对应密钥�?
     if (tls_use_sm3(s.cipher_suite)) {
-        // curveSM2（RFC 8998 3.3.1.1 必须提供，key_exchange 为 SEC1 非压缩 65 字节）
+        // curveSM2（RFC 8998 3.3.1.1 必须提供，key_exchange �?SEC1 非压�?65 字节�?
         uint8_t sm2_pub[SM2_PUB_SIZE], sm2_priv[SM2_KEY_SIZE];
         sm2_keygen(sm2_pub, sm2_priv);
         memcpy(s.ks_priv, sm2_priv, SM2_KEY_SIZE);
         memcpy(s.ks_pub, sm2_pub, SM2_PUB_SIZE);
         s.ks_group = NamedGroup::curveSM2;
-        // X25519 兜底临时对（服务器不支持 curveSM2 时回退）
+        // X25519 兜底临时对（服务器不支持 curveSM2 时回退�?
         uint8_t x_priv[32], x_pub[32];
         x25519_generate_keypair(x_pub, x_priv);
         memcpy(s.ks_priv_x25519, x_priv, 32);
@@ -1588,7 +1672,7 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         shares.push_back(0x00);shares.push_back(0x1d);
         shares.push_back(0x00);shares.push_back(0x20);
         shares.insert(shares.end(), x_pub, x_pub + 32);
-        // key_share 扩展：RFC 8446 4.2.8，client_shares 为带 2 字节长度的向量
+        // key_share 扩展：RFC 8446 4.2.8，client_shares 为带 2 字节长度的向�?
         ext.push_back(0x00);ext.push_back(0x33);
         uint16_t ks_ext_len = (uint16_t)(shares.size() + 2);
         ext.push_back((uint8_t)(ks_ext_len >> 8));ext.push_back((uint8_t)ks_ext_len);
@@ -1607,10 +1691,10 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         ext.push_back(0x00);ext.push_back(0x1e); // X448
         ext.push_back(0x00);ext.push_back(0x38); // 56
         ext.insert(ext.end(), client_pub, client_pub + 56);
-        // 暂存私钥到 client_write_key（仅前 32 字节不够，改用 ks_priv）
-        // 注意：后续 derive_keys 时使用 ks_priv
+        // 暂存私钥�?client_write_key（仅�?32 字节不够，改�?ks_priv�?
+        // 注意：后�?derive_keys 时使�?ks_priv
     } else if (s.ks_group == NamedGroup::secp256r1) {
-        // secp256r1 (P-256) ECDHE：key_exchange = x||y 裸 64 字节（RFC 8446 4.2.8.2）
+        // secp256r1 (P-256) ECDHE：key_exchange = x||y �?64 字节（RFC 8446 4.2.8.2�?
         uint8_t ecdh_pub[64], ecdh_priv[32];
         ecdsa_p256_keygen(ecdh_pub, ecdh_priv);
         memcpy(s.ks_priv, ecdh_priv, 32);
@@ -1622,7 +1706,7 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         ext.push_back(0x00);ext.push_back(0x40); // 64
         ext.insert(ext.end(), ecdh_pub, ecdh_pub + 64);
     } else if (s.ks_group == NamedGroup::secp384r1) {
-        // secp384r1 (P-384) ECDHE：key_exchange = x||y 裸 96 字节
+        // secp384r1 (P-384) ECDHE：key_exchange = x||y �?96 字节
         uint8_t ecdh_pub[96], ecdh_priv[48];
         ecdsa_p384_keygen(ecdh_pub, ecdh_priv);
         memcpy(s.ks_priv, ecdh_priv, 48);
@@ -1645,7 +1729,7 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         ext.insert(ext.end(),client_pub,client_pub+32);
     }
 
-    // ALPN (RFC 7301)：客户端按偏好序发送协议列表
+    // ALPN (RFC 7301)：客户端按偏好序发送协议列�?
     if (!s.alpn_protos.empty()) {
         size_t list_len = 0;
         for (const auto& p : s.alpn_protos) list_len += 1 + p.size();
@@ -1678,8 +1762,8 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
     client_hello[1]=(uint8_t)(len>>16);client_hello[2]=(uint8_t)(len>>8);client_hello[3]=(uint8_t)len;
 
     tls_transcript_update(s,client_hello.data(),client_hello.size());
-    // 私钥已暂存到 s.ks_priv（支持 X25519 和 X448）
-    // 兼容旧 API：将 X25519 私钥复制到 client_write_key 前 32 字节
+    // 私钥已暂存到 s.ks_priv（支�?X25519 �?X448�?
+    // 兼容�?API：将 X25519 私钥复制�?client_write_key �?32 字节
     if (s.ks_group == NamedGroup::X25519) {
         memcpy(s.client_write_key, s.ks_priv, 32);
     }
@@ -1693,7 +1777,7 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
     if(len<5)return false;
     size_t offset=0;
     const tls_certificate* server_cert=nullptr;
-    std::unique_ptr<tls_certificate> parsed_server_cert;  // x509 验证路径下持有叶子证书
+    std::unique_ptr<tls_certificate> parsed_server_cert;  // x509 验证路径下持有叶子证�?
 
     // 解析 ServerHello（明文）
     if(data[offset]!=(uint8_t)HandshakeType::SERVER_HELLO)return false;
@@ -1706,7 +1790,7 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
 
     tls_transcript_update(s,data+sh_start,4+sh_len);
 
-    // 提取 server_pub 从 key_share（支持 X25519、X448 和 curveSM2）
+    // 提取 server_pub �?key_share（支�?X25519、X448 �?curveSM2�?
     size_t ext_start=sh_start+4+2+32+1+2+1;
     uint16_t ext_total=(data[ext_start]<<8)|data[ext_start+1];
     size_t ext_off=ext_start+2;
@@ -1729,7 +1813,7 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
             } else if(group==(uint16_t)NamedGroup::X448 && key_len==56 && elen>=4+56){
                 memcpy(server_pub_x448,data+ext_off+8,56);found_ks_x448=true;
             } else if(group==(uint16_t)NamedGroup::curveSM2 && elen>=4+64){
-                // curveSM2 采用 SEC1 非压缩 65 字节；兼容部分实现裸 64 字节 x||y
+                // curveSM2 采用 SEC1 非压�?65 字节；兼容部分实现裸 64 字节 x||y
                 if(key_len==65 && data[ext_off+8]==0x04){
                     memcpy(server_pub_sm2,data+ext_off+8,65);
                     server_pub_sm2_len=65;
@@ -1748,17 +1832,17 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
         }
         ext_off+=4+elen;
     }
-    // 默认回退到偏移 50（旧 API 兼容）：X25519 情况下
+    // 默认回退到偏�?50（旧 API 兼容）：X25519 情况�?
     if(!found_ks_x25519 && !found_ks_x448 && !found_ks_sm2 && !found_ks_p256 && !found_ks_p384){
         memcpy(server_pub_x25519,data+sh_start+50,32);
         found_ks_x25519=true;
     }
 
-    // 计算共享密钥（根据会话配置或找到的组选择算法）
+    // 计算共享密钥（根据会话配置或找到的组选择算法�?
     uint8_t shared_secret[56];  // X448 输出 56 字节；但 TLS 1.3 HKDF 使用 32 字节
     size_t shared_len = 32;
     if (found_ks_sm2 && s.ks_group == NamedGroup::curveSM2) {
-        // curveSM2 ECDH：共享密钥 = 32 字节 X 坐标（RFC 8998 3.4）
+        // curveSM2 ECDH：共享密�?= 32 字节 X 坐标（RFC 8998 3.4�?
         if (!sm2_ecdh(shared_secret, s.ks_priv, server_pub_sm2, server_pub_sm2_len))
             return false;
         shared_len = 32;
@@ -1783,10 +1867,10 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
         // 使用 X25519
         uint8_t client_priv[32];
         if (s.ks_group == NamedGroup::X448) {
-            // 客户端请求 X448 但服务端只支持 X25519，回退
-            memcpy(client_priv, s.client_write_key, 32);  // 旧 API 路径
+            // 客户端请�?X448 但服务端只支�?X25519，回退
+            memcpy(client_priv, s.client_write_key, 32);  // �?API 路径
         } else if (s.ks_group == NamedGroup::curveSM2) {
-            // 客户端请求 SM 套件但服务端回退 X25519，使用兜底临时私钥
+            // 客户端请�?SM 套件但服务端回退 X25519，使用兜底临时私�?
             memcpy(client_priv, s.ks_priv_x25519, 32);
         } else {
             memcpy(client_priv, s.ks_priv, 32);
@@ -1799,7 +1883,7 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
     tls13_derive_handshake_keys(s, shared_secret, shared_len);
     init_cipher_ctx(s, s.is_server?s.server_write_key:s.client_write_key);
 
-    // 解析加密的握手消息
+    // 解析加密的握手消�?
     std::vector<uint8_t> hs_msgs;
     while(offset<len){
         if(!s.quic_mode && (data[offset]==0x17 || data[offset]==0x16)){
@@ -1829,11 +1913,11 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
         switch(htype){
             case (uint8_t)HandshakeType::ENCRYPTED_EXTENSIONS:
                 tls_transcript_update(s,hmsg,4+hlen);
-                // ALPN (RFC 7301)：EncryptedExtensions 中服务端返回的 ALPN 扩展
-                // （ProtocolNameList 必须恰好包含一个协议，且必须属于客户端提议列表）
+                // ALPN (RFC 7301)：EncryptedExtensions 中服务端返回�?ALPN 扩展
+                // （ProtocolNameList 必须恰好包含一个协议，且必须属于客户端提议列表�?
                 s.alpn_selected.clear();
                 {
-                    size_t eo = 4; // 跳过握手头
+                    size_t eo = 4; // 跳过握手�?
                     if (eo + 2 <= 4 + hlen) {
                         size_t ee_ext_total = ((size_t)hmsg[eo] << 8) | hmsg[eo + 1];
                         size_t off = eo + 2;
@@ -1873,7 +1957,7 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
                 // signature_algorithms_cert: 校验对端证书链签名算法是否在客户端允许列表内
                 const std::vector<uint16_t>& cert_algs =
                     s.sig_algs_cert.empty() ? tls_default_signature_algorithms() : s.sig_algs_cert;
-                size_t bo = 4; // 跳过握手头
+                size_t bo = 4; // 跳过握手�?
                 // TLS 1.3 Certificate: context_len(1) + list_len(3) + [cert_len(3)+cert+ext_len(2)]*
                 size_t ctx_len = (bo < 4 + hlen) ? hmsg[bo] : 0;
                 size_t list_off = bo + 1 + ctx_len;
@@ -1898,18 +1982,18 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
                         if (p + 2 <= list_end) p += 2 + ((size_t)hmsg[p] << 8 | hmsg[p + 1]); // 跳过证书扩展
                         else break;
                     }
-                    // 客户端 x509 验证：trust_store 提供 CA 根时，验证整条链 + 主机名
+                    // 客户�?x509 验证：trust_store 提供 CA 根时，验证整条链 + 主机�?
                     if (trust_store) {
                         if (!tls13_verify_server_chain(chain, *trust_store, s.server_name)) return false;
-                        // 链验证通过后必须能用叶子证书构造 server_cert 验证 CertificateVerify，
-                        // 否则（如 RSA-4096 对端证书）不能静默跳过 CV 校验，直接判失败。
+                        // 链验证通过后必须能用叶子证书构�?server_cert 验证 CertificateVerify�?
+                        // 否则（如 RSA-4096 对端证书）不能静默跳�?CV 校验，直接判失败�?
                         if (chain.empty() ||
                             !(parsed_server_cert = tls_cert_from_x509_leaf(chain[0])))
                             return false;
                         server_cert = parsed_server_cert.get();
                     }
                 }
-                // 旧行为：cert_manager 按 SNI 查找预期服务器证书（trust_store 未提供时使用）
+                // 旧行为：cert_manager �?SNI 查找预期服务器证书（trust_store 未提供时使用�?
                 if (!server_cert && cert_manager) {
                     server_cert = cert_manager->get_certificate(s.server_name);
                     if (!server_cert) server_cert = cert_manager->get_default_certificate();
@@ -1950,9 +2034,9 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
     return true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  TLS 1.3 完整握手 — 服务端
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
+//  TLS 1.3 完整握手 �?服务�?
+// ══════════════════════════════════════════════════════════════════════�?
 bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
                                std::vector<uint8_t>& server_flight,
                                const tls_certificate_manager& cert_manager){
@@ -1961,8 +2045,8 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     rand32(s.server_random);
     memcpy(s.client_random,client_hello+6,32);
 
-    // RFC 8446 4.1.3：ServerHello 必须回显 ClientHello 的 legacy_session_id
-    // （OpenSSL 等客户端会严格校验，不一致报 "invalid session id"）
+    // RFC 8446 4.1.3：ServerHello 必须回显 ClientHello �?legacy_session_id
+    // （OpenSSL 等客户端会严格校验，不一致报 "invalid session id"�?
     size_t ch_sid_len = 0;
     const uint8_t* ch_sid = nullptr;
     if (ch_len >= 4 + 2 + 32 + 1) {
@@ -1974,7 +2058,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         }
     }
 
-    // ClientHello transcript 更新已移至 cipher_suite 选择之后
+    // ClientHello transcript 更新已移�?cipher_suite 选择之后
 
     { size_t cs_off = 4+2+32; uint8_t sid_len = client_hello[cs_off]; cs_off += 1+sid_len;
       uint16_t cs_list_len = (client_hello[cs_off]<<8)|client_hello[cs_off+1]; cs_off += 2;
@@ -1990,12 +2074,12 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
       else if (cs_has(0x1302)) s.cipher_suite = CipherSuite::TLS_AES_256_GCM_SHA384;
       else if (cs_has(0x1303)) s.cipher_suite = CipherSuite::TLS_CHACHA20_POLY1305_SHA256;
       else if (cs_has(0x1304)) s.cipher_suite = CipherSuite::TLS_AES_128_CCM_SHA256;
+      else if (cs_has(0x1305)) s.cipher_suite = CipherSuite::TLS_AES_128_CCM_8_SHA256;
       else s.cipher_suite = CipherSuite::TLS_AES_128_GCM_SHA256;
     }
 
-    // 记录 ClientHello (须在 cipher_suite 确定后, 保证 transcript 哈希算法与客户端一致)
+    // 记录 ClientHello (须在 cipher_suite 确定�? 保证 transcript 哈希算法与客户端一�?
     tls_transcript_update(s,client_hello,ch_len);
-    fprintf(stderr, "[TLS12-TX] ClientHello len=%zu\n", ch_len);
 
     // 解析 SNI
     uint16_t ext_len_total=0;
@@ -2021,13 +2105,13 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         }
     }
 
-    // 提取 client_pub（支持 X25519、X448 和 curveSM2）和 supported_groups
+    // 提取 client_pub（支�?X25519、X448 �?curveSM2）和 supported_groups
     uint8_t client_pub_x25519[32]; bool found_x25519=false;
     uint8_t client_pub_x448[56]; bool found_x448=false;
     uint8_t client_pub_sm2[65]; size_t client_pub_sm2_len=0; bool found_sm2=false;
     uint8_t client_pub_p256[64]; bool found_p256=false;
     uint8_t client_pub_p384[96]; bool found_p384=false;
-    bool client_supports_x448=false;    // 客户端 supported_groups 列表中是否包含 X448
+    bool client_supports_x448=false;    // 客户�?supported_groups 列表中是否包�?X448
     bool client_supports_curveSM2=false;
     bool client_supports_p256=false;
     bool client_supports_p384=false;
@@ -2063,7 +2147,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
                 } else if(group==(uint16_t)NamedGroup::X448 && key_len==56 && kq+4+56<=ks_end){
                     memcpy(client_pub_x448,client_hello+kq+4,56);found_x448=true;
                 } else if(group==(uint16_t)NamedGroup::curveSM2 && kq+4+64<=ks_end){
-                    // curveSM2 采用 SEC1 非压缩 65 字节；兼容裸 64 字节 x||y
+                    // curveSM2 采用 SEC1 非压�?65 字节；兼容裸 64 字节 x||y
                     if(key_len==65 && client_hello[kq+4]==0x04){
                         memcpy(client_pub_sm2,client_hello+kq+4,65);
                         client_pub_sm2_len=65;found_sm2=true;
@@ -2094,12 +2178,12 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         memcpy(client_pub_x25519,client_hello+50,32);found_x25519=true;
     }
 
-    // signature_algorithms 协商（RFC 8446 §4.2.3）
+    // signature_algorithms 协商（RFC 8446 §4.2.3�?
     if (client_sig_algs.empty()) return false;   // 客户端必须携带该扩展
-    // signature_algorithms_cert 必须是 signature_algorithms 的子集
+    // signature_algorithms_cert 必须�?signature_algorithms 的子�?
     for (uint16_t a : client_sig_algs_cert)
         if (!scheme_in_list(client_sig_algs, a)) return false;
-    // 选择双方共同支持且与证书密钥类型匹配的方案（TLS 1.3 不允许 rsa_pkcs1_*）
+    // 选择双方共同支持且与证书密钥类型匹配的方案（TLS 1.3 不允�?rsa_pkcs1_*�?
     s.selected_sig_alg = select_signature_scheme(client_sig_algs, *cert, s.sig_algs, true);
     if (s.selected_sig_alg == 0) return false;
     // signature_algorithms_cert：证书链签名方案必须被客户端接受
@@ -2108,10 +2192,10 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         if (chain_scheme == 0 || !scheme_in_list(client_sig_algs_cert, chain_scheme)) return false;
     }
 
-    // RFC 8998 3.3.1.1：SM 套件要求 supported_groups 含 curveSM2 且必须提供其 key_share
+    // RFC 8998 3.3.1.1：SM 套件要求 supported_groups �?curveSM2 且必须提供其 key_share
     if (tls_use_sm3(s.cipher_suite) && (!found_sm2 || !client_supports_curveSM2)) return false;
 
-    // 选择密钥交换组：SM 套件优先 curveSM2，其次 X448（如果客户端提供了 key_share）
+    // 选择密钥交换组：SM 套件优先 curveSM2，其�?X448（如果客户端提供�?key_share�?
     bool use_sm2  = tls_use_sm3(s.cipher_suite) && found_sm2 && client_supports_curveSM2;
     bool use_p256 = !use_sm2 && found_p256 && client_supports_p256;
     bool use_p384 = !use_sm2 && !use_p256 && found_p384 && client_supports_p384;
@@ -2124,7 +2208,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     server_flight.push_back(0);server_flight.push_back(0);server_flight.push_back(0);
     server_flight.push_back(0x03);server_flight.push_back(0x03);
     server_flight.insert(server_flight.end(),s.server_random,s.server_random+32);
-    // 回显 ClientHello 的 legacy_session_id（RFC 8446 4.1.3）
+    // 回显 ClientHello �?legacy_session_id（RFC 8446 4.1.3�?
     server_flight.push_back((uint8_t)ch_sid_len);
     if (ch_sid_len > 0 && ch_sid)
         server_flight.insert(server_flight.end(), ch_sid, ch_sid + ch_sid_len);
@@ -2133,7 +2217,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     server_flight.push_back(0x00);
 
     if (use_sm2) {
-        // curveSM2 密钥交换（RFC 8998 3.4：标准 ECDHE，共享密钥 = X 坐标 32 字节）
+        // curveSM2 密钥交换（RFC 8998 3.4：标�?ECDHE，共享密�?= X 坐标 32 字节�?
         uint8_t server_priv[SM2_KEY_SIZE], server_pub[SM2_PUB_SIZE];
         sm2_keygen(server_pub, server_priv);
         if (!sm2_ecdh(shared_secret, server_priv, client_pub_sm2, client_pub_sm2_len))
@@ -2146,7 +2230,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         server_flight.push_back((uint8_t)(ext_total>>8));server_flight.push_back((uint8_t)ext_total);
         // supported_versions
         server_flight.push_back(0x00);server_flight.push_back(0x2b);server_flight.push_back(0x00);server_flight.push_back(0x02);server_flight.push_back(0x03);server_flight.push_back(0x04);
-        // key_share curveSM2（SEC1 非压缩 65 字节）
+        // key_share curveSM2（SEC1 非压�?65 字节�?
         server_flight.push_back(0x00);server_flight.push_back(0x33);
         server_flight.push_back(0x00);server_flight.push_back(0x45); // 69 = 2 + 2 + 65
         server_flight.push_back(0x00);server_flight.push_back(0x29); // curveSM2
@@ -2154,7 +2238,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         server_flight.push_back(0x04);
         server_flight.insert(server_flight.end(), server_pub, server_pub + SM2_PUB_SIZE);
     } else if (use_p256) {
-        // secp256r1 (P-256) ECDHE：key_exchange = x||y 裸 64 字节
+        // secp256r1 (P-256) ECDHE：key_exchange = x||y �?64 字节
         uint8_t server_priv[32], server_pub[64];
         ecdsa_p256_keygen(server_pub, server_priv);
         if (!ecdsa_p256_ecdh(shared_secret, server_priv, client_pub_p256))
@@ -2172,7 +2256,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         server_flight.push_back(0x00);server_flight.push_back(0x40); // 64
         server_flight.insert(server_flight.end(), server_pub, server_pub + 64);
     } else if (use_p384) {
-        // secp384r1 (P-384) ECDHE：key_exchange = x||y 裸 96 字节
+        // secp384r1 (P-384) ECDHE：key_exchange = x||y �?96 字节
         uint8_t server_priv[48], server_pub[96];
         ecdsa_p384_keygen(server_pub, server_priv);
         if (!ecdsa_p384_ecdh(shared_secret, server_priv, client_pub_p384))
@@ -2283,7 +2367,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         server_flight.insert(server_flight.end(),encrypted.begin(),encrypted.end());
     }
 
-    // 注意：应用密钥延迟到 tls13_process_client_finished 成功后派生
+    // 注意：应用密钥延迟到 tls13_process_client_finished 成功后派�?
     return true;
 }
 
@@ -2297,16 +2381,16 @@ bool tls13_process_client_finished(tls_session& s, const uint8_t* data, size_t l
     }
     if(!tls13_verify_finished(s,hs.data(),hs.size(),false))return false;
 
-    // 握手完成，派生应用密钥（在 transcript 更新前）
+    // 握手完成，派生应用密钥（�?transcript 更新前）
     tls13_derive_application_keys(s);
     tls_transcript_update(s,hs.data(),hs.size());
     init_cipher_ctx(s, s.server_write_key);
     return true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  简化版 API（兼容旧接口）
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
+//  简化版 API（兼容旧接口�?
+// ══════════════════════════════════════════════════════════════════════�?
 bool tls13_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,
                              const uint8_t* server_response, size_t resp_len){
     tls13_make_client_hello(s,client_hello);
@@ -2330,12 +2414,12 @@ bool tls13_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
     return tls13_make_server_flight(s, client_hello, ch_len, server_response, cert_manager);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 
 // ── TLS 1.2 密码套件协商 ───────────────────────────────────────────────
 
 // 服务端支持的 TLS 1.2 密码套件列表（按优先级排序）
-// 优先级: ECDHE-ECDSA > ECDHE-RSA > RSA | ChaCha20 > AES-256 > AES-128
+// 优先�? ECDHE-ECDSA > ECDHE-RSA > DHE-RSA > RSA > DHE-PSK > PSK
 static const uint16_t TLS12_SERVER_CIPHERS[] = {
     0xC02C, // 1st ECDHE-ECDSA+AES256+SHA384
     0xCCA9, // 2nd ECDHE-ECDSA+ChaCha20
@@ -2343,13 +2427,38 @@ static const uint16_t TLS12_SERVER_CIPHERS[] = {
     0xCCA8, // 4th ECDHE-RSA+ChaCha20
     0xC02B, // 5th ECDHE-ECDSA+AES128
     0xC02F, // 6th ECDHE-RSA+AES128
-    0x009D, // 7th RSA+AES256
-    0x009C, // 8th RSA+AES128 (fallback)
+    0x009F, // 7th DHE-RSA+AES256-GCM
+    0x009E, // 8th DHE-RSA+AES128-GCM
+    0xCCAA, // 9th DHE-RSA+ChaCha20
+    0x006B, // 10th DHE-RSA+AES256-CBC+SHA256
+    0x0067, // 11th DHE-RSA+AES128-CBC+SHA256
+    0x009D, // 12th RSA+AES256
+    0x009C, // 13th RSA+AES128 (fallback)
+    0x003D, // 14th RSA+AES256-CBC+SHA256
+    0x003C, // 15th RSA+AES128-CBC+SHA256
+    0x00AB, // 16th DHE-PSK+AES256-GCM
+    0x00AA, // 17th DHE-PSK+AES128-GCM
+    0xCCAD, // 18th DHE-PSK+ChaCha20
+    0x00B3, // 19th DHE-PSK+AES256-CBC+SHA384
+    0x00B2, // 20th DHE-PSK+AES128-CBC+SHA256
+    0x00A9, // 21st PSK+AES256-GCM
+    0x00A8, // 22nd PSK+AES128-GCM
+    0xCCAB, // 23rd PSK+ChaCha20
+    0x00AF, // 24th PSK+AES256-CBC+SHA384
+    0x00AE, // 25th PSK+AES128-CBC+SHA256
 };
 
 // 客户端默认支持的 TLS 1.2 密码套件列表
 static const uint16_t TLS12_CLIENT_CIPHERS[] = {
-    0xC02C, 0xCCA9, 0xC030, 0xCCA8, 0xC02B, 0xC02F, 0x009D, 0x009C,
+    0xC02C, 0xCCA9, 0xC030, 0xCCA8, 0xC02B, 0xC02F,
+    0x009F, 0x009E, 0xCCAA, 0x006B, 0x0067,
+    0x009D, 0x009C, 0x003D, 0x003C,
+};
+
+// 客户�?PSK 套件（仅当会话配置了 TLS 1.2 PSK 时加�?ClientHello�?
+static const uint16_t TLS12_CLIENT_PSK_CIPHERS[] = {
+    0x00AB, 0x00AA, 0xCCAD, 0x00B3, 0x00B2,
+    0x00A9, 0x00A8, 0xCCAB, 0x00AF, 0x00AE,
 };
 
 
@@ -2366,8 +2475,73 @@ static bool tls12_is_ecdhe(CipherSuite cs){
         default: return false;
     }
 }
-// 从 ClientHello 中解析密码套件列表
-// 返回解析出的套件数组和数量
+
+// 判断是否 DHE（DHE_RSA / DHE_PSK�?
+static bool tls12_is_dhe(CipherSuite cs){
+    switch(cs){
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_128_CBC_SHA256:
+        case CipherSuite::TLS_DHE_RSA_WITH_AES_256_CBC_SHA256:
+        case CipherSuite::TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_128_CBC_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_256_CBC_SHA384:
+        case CipherSuite::TLS_DHE_PSK_WITH_CHACHA20_POLY1305_SHA256:
+            return true;
+        default: return false;
+    }
+}
+
+// 是否 PSK 套件（PSK / DHE_PSK�?
+static bool tls12_is_psk(CipherSuite cs){
+    switch(cs){
+        case CipherSuite::TLS_PSK_WITH_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_PSK_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_PSK_WITH_AES_128_CBC_SHA256:
+        case CipherSuite::TLS_PSK_WITH_AES_256_CBC_SHA384:
+        case CipherSuite::TLS_PSK_WITH_CHACHA20_POLY1305_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_128_GCM_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_256_GCM_SHA384:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_128_CBC_SHA256:
+        case CipherSuite::TLS_DHE_PSK_WITH_AES_256_CBC_SHA384:
+        case CipherSuite::TLS_DHE_PSK_WITH_CHACHA20_POLY1305_SHA256:
+            return true;
+        default: return false;
+    }
+}
+
+// 是否�?PSK（无 DHE�?
+static bool tls12_is_psk_only(CipherSuite cs){
+    return tls12_is_psk(cs) && !tls12_is_dhe(cs);
+}
+
+// 是否 DHE_PSK
+static bool tls12_is_dhe_psk(CipherSuite cs){
+    return tls12_is_psk(cs) && tls12_is_dhe(cs);
+}
+
+// 是否 DHE_RSA（证书签名的 DHE�?
+static bool tls12_is_dhe_rsa(CipherSuite cs){
+    return tls12_is_dhe(cs) && !tls12_is_psk(cs);
+}
+
+// 需�?ServerKeyExchange 的套�?
+static bool tls12_needs_skx(CipherSuite cs){
+    return tls12_is_ecdhe(cs) || tls12_is_dhe(cs);
+}
+
+// 是否 TLS 1.2 ChaCha20-Poly1305 套件（RFC 7905：fixed_iv_length=12，无显式 nonce）
+static bool tls12_is_chacha(CipherSuite cs){
+    return cs == CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+        || cs == CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+        || cs == CipherSuite::TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+        || cs == CipherSuite::TLS_PSK_WITH_CHACHA20_POLY1305_SHA256
+        || cs == CipherSuite::TLS_DHE_PSK_WITH_CHACHA20_POLY1305_SHA256;
+}
+// �?ClientHello 中解析密码套件列�?
+// 返回解析出的套件数组和数�?
 static std::vector<uint16_t> tls12_parse_client_cipher_suites(const uint8_t* ch, size_t ch_len){
     std::vector<uint16_t> suites;
     if(ch_len < 44) return suites; // min CH size: 1+3+2+32+1+2+2+1 = 44
@@ -2381,7 +2555,7 @@ static std::vector<uint16_t> tls12_parse_client_cipher_suites(const uint8_t* ch,
     return suites;
 }
 
-// 从客户端套件列表中选择服务端支持的最佳套件
+// 从客户端套件列表中选择服务端支持的最佳套�?
 static uint16_t tls12_select_best_cipher_suite(const std::vector<uint16_t>& client_suites){
     for(size_t si=0; si < sizeof(TLS12_SERVER_CIPHERS)/sizeof(TLS12_SERVER_CIPHERS[0]); ++si){
         uint16_t srv_cs = TLS12_SERVER_CIPHERS[si];
@@ -2392,7 +2566,7 @@ static uint16_t tls12_select_best_cipher_suite(const std::vector<uint16_t>& clie
 }
 
 //  TLS 1.2 PRF (P_SHA256)
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 static void tls12_prf(const uint8_t* secret, size_t secret_len, const char* label, const uint8_t* seed, size_t seed_len, uint8_t* out, size_t out_len){
     size_t label_len=strlen(label);
     std::vector<uint8_t> full_seed(label_len+seed_len);
@@ -2411,7 +2585,7 @@ static void tls12_prf(const uint8_t* secret, size_t secret_len, const char* labe
 }
 
 
-// TLS 1.2 PRF (P_SHA384) — for SHA-384 based cipher suites
+// TLS 1.2 PRF (P_SHA384) �?for SHA-384 based cipher suites
 static void tls12_prf_sha384(const uint8_t* secret, size_t secret_len, const char* label, const uint8_t* seed, size_t seed_len, uint8_t* out, size_t out_len){
     size_t label_len=strlen(label);
     std::vector<uint8_t> full_seed(label_len+seed_len);
@@ -2428,54 +2602,50 @@ static void tls12_prf_sha384(const uint8_t* secret, size_t secret_len, const cha
         hmac_sha384(secret,secret_len,a,48,a);
     }
 }
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  TLS 1.2 密钥派生
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 void tls12_derive_keys(tls_session& s, const uint8_t* pre_master, size_t pms_len){
     s.ver=TLSVersion::V12;
-    bool use_sha384 = (s.cipher_suite == CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-                    || s.cipher_suite == CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-                    || s.cipher_suite == CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384);
-    if (pms_len == 0) pms_len = 48;  // 兼容旧调用（RSA premaster 48 字节）
+    bool use_sha384 = tls_use_sha384(s.cipher_suite);
+    if (pms_len == 0) pms_len = 48;  // 兼容旧调用（RSA premaster 48 字节�?
     uint8_t seed[64];memcpy(seed,s.client_random,32);memcpy(seed+32,s.server_random,32);
-    fprintf(stderr, "[TLS12-DK] pms_len=%zu suite=%d use384=%d\n  cr: ", pms_len, (int)s.cipher_suite, (int)use_sha384);
-    for (int i = 0; i < 8; ++i) fprintf(stderr, "%02x", s.client_random[i]);
-    fprintf(stderr, "\n  sr: ");
-    for (int i = 0; i < 8; ++i) fprintf(stderr, "%02x", s.server_random[i]);
-    fprintf(stderr, "\n  pms: ");
-    for (size_t i = 0; i < (pms_len < 8 ? pms_len : 8); ++i) fprintf(stderr, "%02x", pre_master[i]);
-    fprintf(stderr, "\n");
     if(use_sha384) tls12_prf_sha384(pre_master,pms_len,"master secret",seed,64,s.master_secret,48);
     else tls12_prf(pre_master,pms_len,"master secret",seed,64,s.master_secret,48);
-    fprintf(stderr, "[TLS12-DK] ms: ");
-    for (int i = 0; i < 12; ++i) fprintf(stderr, "%02x", s.master_secret[i]);
-    fprintf(stderr, "\n");
-    size_t key_len = 16;
-    // RFC 5288/7905：AES-128-GCM 16 字节 key、AES-256-GCM 与 ChaCha20-Poly1305 32 字节 key
-    bool is_chacha = (s.cipher_suite == CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
-                   || s.cipher_suite == CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256);
-    bool is_aes256 = (s.cipher_suite == CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-                   || s.cipher_suite == CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-                   || s.cipher_suite == CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384);
-    if(is_chacha || is_aes256) key_len = 32;
+    // RFC 5288/7905：AES-128-GCM 16 字节 key、AES-256-GCM �?ChaCha20-Poly1305 32 字节 key
+    size_t key_len = aes_key_len(s.cipher_suite);
+    bool is_chacha = tls12_is_chacha(s.cipher_suite);
+    bool is_cbc = tls12_is_cbc(s.cipher_suite);
     // key_block 布局（RFC 5246 6.3 / RFC 5288 / RFC 7905）：
-    //   client_write_key || server_write_key || client_write_iv || server_write_iv
-    // AES-GCM（RFC 5288）：fixed_iv_length=4，key_block = c_key||s_key||c_iv(4)||s_iv(4)
-    // ChaCha20-Poly1305（RFC 7905）：fixed_iv_length=12，key_block = c_key||s_key||c_iv(12)||s_iv(12)
-    // IV 偏移 = key_len*2（AES-128: 32；AES-256/ChaCha20: 64）。
-    // ChaCha20 需要 32+32+12+12 = 88 字节，故 key_block 必须按最大尺寸申请。
-    uint8_t key_block[88];
-    size_t kb_len = is_chacha ? 88 : 72;   // GCM 最大 32+32+4+4=72
+    //   AES-CBC：c_mac||s_mac||c_key||s_key||c_iv(16)||s_iv(16)
+    //     （MAC secret 长度 = hash 长度：SHA-256 32 / SHA-384 48）
+    //   AES-GCM（RFC 5288）：c_key||s_key||c_iv(4)||s_iv(4)
+    //   ChaCha20-Poly1305（RFC 7905）：c_key(32)||s_key(32)||c_iv(12)||s_iv(12)
+    // CBC SHA-384 最大需要 48+48+32+32+16+16 = 192 字节
+    uint8_t key_block[192];
+    size_t mac_len = use_sha384 ? 48 : 32;
+    size_t kb_len = is_chacha ? 88 : (is_cbc ? 2*mac_len + 2*key_len + 32 : 72);
     uint8_t exp_seed[64];memcpy(exp_seed,s.server_random,32);memcpy(exp_seed+32,s.client_random,32);
     if(use_sha384) tls12_prf_sha384(s.master_secret,48,"key expansion",exp_seed,64,key_block,kb_len);
     else tls12_prf(s.master_secret,48,"key expansion",exp_seed,64,key_block,kb_len);
-    memcpy(s.client_write_key,key_block,key_len);
-    memcpy(s.server_write_key,key_block+key_len,key_len);
     if(is_chacha){
+        memcpy(s.client_write_key,key_block,key_len);
+        memcpy(s.server_write_key,key_block+key_len,key_len);
         // RFC 7905：fixed_iv_length=12，record_iv_length=0（nonce 隐式，无显式部分）
         memcpy(s.client_write_iv,key_block+key_len*2,12);
         memcpy(s.server_write_iv,key_block+key_len*2+12,12);
+    }else if(is_cbc){
+        // RFC 5246 6.3：key_block 先排 client/server MAC secret，
+        // 再排 client/server 加密 key，最后是 16 字节 CBC IV
+        memcpy(s.client_write_mac,key_block,mac_len);
+        memcpy(s.server_write_mac,key_block+mac_len,mac_len);
+        memcpy(s.client_write_key,key_block+2*mac_len,key_len);
+        memcpy(s.server_write_key,key_block+2*mac_len+key_len,key_len);
+        memcpy(s.client_write_iv,key_block+2*mac_len+2*key_len,16);
+        memcpy(s.server_write_iv,key_block+2*mac_len+2*key_len+16,16);
     }else{
+        memcpy(s.client_write_key,key_block,key_len);
+        memcpy(s.server_write_key,key_block+key_len,key_len);
         // RFC 5288：fixed_iv_length=4，后 8 字节为逐记录显式 nonce 占位（置零）
         memcpy(s.client_write_iv,key_block+key_len*2,4);
         memcpy(s.server_write_iv,key_block+key_len*2+4,4);
@@ -2486,9 +2656,87 @@ void tls12_derive_keys(tls_session& s, const uint8_t* pre_master, size_t pms_len
     init_cipher_ctx(s, s.client_write_key);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  TLS 1.2 完整握手 — 客户端
-// ═══════════════════════════════════════════════════════════════════════
+// 客户端 ClientHello 套件列表：基础（证书类）+ 可选 PSK（仅配置了 TLS 1.2 PSK 时）
+static std::vector<uint16_t> tls12_client_suite_list(const tls_session& s){
+    std::vector<uint16_t> out;
+    out.insert(out.end(), std::begin(TLS12_CLIENT_CIPHERS), std::end(TLS12_CLIENT_CIPHERS));
+    if (s.tls12_psk_valid)
+        out.insert(out.end(), std::begin(TLS12_CLIENT_PSK_CIPHERS), std::end(TLS12_CLIENT_PSK_CIPHERS));
+    return out;
+}
+
+// supported_groups (0x000a) 扩展：X25519 + P-256/P-384 + ffdhe2048。
+// OpenSSL 要求 ECDSA 证书的曲线必须出现在客户端通告的组里（否则 ECDHE-ECDSA
+// 报 no shared cipher），因此除临时密钥组外还要通告证书曲线组。
+static void tls12_append_supported_groups(std::vector<uint8_t>& ext){
+    static const uint16_t groups[] = { 0x001d, 0x0017, 0x0019, 0x0100 }; // X25519, P-256, P-384, ffdhe2048
+    // RFC 7919 §3 / RFC 4492 §5.1：supported_groups 扩展数据 =
+    //   NamedGroupList（uint16 长度 + 各组 2 字节）
+    size_t list_len = sizeof(groups);   // 2*count
+    size_t ext_len = 2 + list_len;      // 内部长度字段 2 字节 + 组列表
+    ext.push_back(0x00); ext.push_back(0x0a);            // 扩展类型
+    ext.push_back((uint8_t)(ext_len >> 8)); ext.push_back((uint8_t)ext_len);
+    ext.push_back((uint8_t)(list_len >> 8)); ext.push_back((uint8_t)list_len);
+    for (uint16_t g : groups) {
+        ext.push_back((uint8_t)(g >> 8));
+        ext.push_back((uint8_t)g);
+    }
+}
+
+// PSK premaster：uint16(other_len) || other || uint16(psk_len) || psk
+// 纯 PSK 时 other=nullptr：OpenSSL 4.0 在 ssl_generate_master_secret 中规定
+// "For plain PSK 'other_secret' is psklen zeroes"，即 other_len=psk_len 且
+// other 为 psk_len 个零字节（RFC 4279 原义是零长度 other_secret，但为与
+// OpenSSL 互操作必须采用 psklen 个零字节的格式）。
+static std::vector<uint8_t> tls12_psk_premaster(const uint8_t* psk, size_t psk_len,
+                                                const uint8_t* other, size_t other_len){
+    std::vector<uint8_t> pms;
+    if (other == nullptr) {
+        // 纯 PSK：other_secret = psk_len 个零字节（OpenSSL 4.0 格式）
+        pms.push_back((uint8_t)(psk_len >> 8)); pms.push_back((uint8_t)psk_len);
+        pms.insert(pms.end(), psk_len, 0);
+    } else {
+        pms.push_back((uint8_t)(other_len >> 8)); pms.push_back((uint8_t)other_len);
+        pms.insert(pms.end(), other, other + other_len);
+    }
+    pms.push_back((uint8_t)(psk_len >> 8)); pms.push_back((uint8_t)psk_len);
+    pms.insert(pms.end(), psk, psk + psk_len);
+    return pms;
+}
+
+// TLS 1.2 ServerKeyExchange 签名验证（RFC 5246 7.4.3 / RFC 4492 5.4）：
+// 签名字节 = client_random || server_random || ServerDHParams
+static bool tls12_verify_skx_signature(const tls_certificate& cert, uint16_t alg,
+                                       const uint8_t* sig, size_t sig_len,
+                                       const uint8_t* params, size_t params_len,
+                                       const tls_session& s){
+    if (alg == 0 || !sig || sig_len == 0) return false;
+    std::vector<uint8_t> signed_data;
+    signed_data.insert(signed_data.end(), s.client_random, s.client_random + 32);
+    signed_data.insert(signed_data.end(), s.server_random, s.server_random + 32);
+    signed_data.insert(signed_data.end(), params, params + params_len);
+    return cert.verify_scheme(alg, signed_data.data(), signed_data.size(), sig, sig_len);
+}
+
+// 校验 ffdhe2048 群参数（RFC 7919 §3）：p/g 必须与命名群一致，且 1 < Ys < p-1
+static bool tls12_check_ffdhe2048_params(const uint8_t* p, size_t p_len,
+                                         const uint8_t* g, size_t g_len,
+                                         const uint8_t* ys, size_t ys_len){
+    using namespace jpssl::dh;
+    if (p_len != FFDHE2048_BYTES || memcmp(p, ffdhe2048_p, FFDHE2048_BYTES) != 0) return false;
+    if (g_len != 1 || g[0] != FFDHE2048_G) return false;
+    if (ys_len != FFDHE2048_BYTES) return false;
+    rsa_bignum one = rsa_bignum::from_uint64(1);
+    rsa_bignum p_bn = ffdhe2048_bignum(ffdhe2048_p);
+    rsa_bignum p_minus_1;
+    bn_sub(p_minus_1, p_bn, one);
+    rsa_bignum y = ffdhe2048_bignum(ys);
+    return (one < y) && (y < p_minus_1);
+}
+
+// ══════════════════════════════════════════════════════════════════════�?
+//  TLS 1.2 完整握手 �?客户�?
+// ══════════════════════════════════════════════════════════════════════�?
 bool tls12_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello){
     s.ver=TLSVersion::V12;s.is_server=false;
     s.transcript_ready=false;
@@ -2498,18 +2746,19 @@ bool tls12_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
     client_hello.push_back(0);client_hello.push_back(0);client_hello.push_back(0);
     client_hello.push_back(0x03);client_hello.push_back(0x03);
     client_hello.insert(client_hello.end(),s.client_random,s.client_random+32);
-    // Cipher suites: dynamic list
-    size_t cs_count = sizeof(TLS12_CLIENT_CIPHERS) / sizeof(TLS12_CLIENT_CIPHERS[0]);
+    // Cipher suites: dynamic list（PSK 套件仅在配置了 TLS 1.2 PSK 时提供）
+    std::vector<uint16_t> cs_list = tls12_client_suite_list(s);
+    size_t cs_count = cs_list.size();
     client_hello.push_back(0); // session_id_len = 0
     client_hello.push_back((uint8_t)(cs_count*2 >> 8)); client_hello.push_back((uint8_t)(cs_count*2));
     for(size_t ci = 0; ci < cs_count; ++ci){
-        uint16_t cs = TLS12_CLIENT_CIPHERS[ci];
+        uint16_t cs = cs_list[ci];
         client_hello.push_back((uint8_t)(cs>>8)); client_hello.push_back((uint8_t)cs);
     }
     client_hello.push_back(0x01); client_hello.push_back(0x00); // compression: null
     (void)cs_count;
 
-    // extensions: SNI + signature_algorithms
+    // extensions: SNI + supported_groups + signature_algorithms
     std::vector<uint8_t> ext;
     if(!s.server_name.empty()){
         ext.push_back(0x00);ext.push_back(0x00);
@@ -2521,6 +2770,8 @@ bool tls12_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         ext.push_back(0x00);ext.push_back((uint8_t)s.server_name.size());
         for(char c:s.server_name)ext.push_back((uint8_t)c);
     }
+    // supported_groups：DHE 套件要求客户端通告 ffdhe2048（RFC 7919 §3）
+    tls12_append_supported_groups(ext);
     // signature_algorithms + signature_algorithms_cert
     {
         const std::vector<uint16_t>& algs = effective_sig_algs(s);
@@ -2536,45 +2787,320 @@ bool tls12_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
     client_hello.insert(client_hello.end(),ext.begin(),ext.end());
     size_t len=client_hello.size()-4;
     client_hello[1]=(uint8_t)(len>>16);client_hello[2]=(uint8_t)(len>>8);client_hello[3]=(uint8_t)len;
-    // ClientHello 暂不加入 transcript：此时 cipher_suite 尚未协商（服务端才会
-    // 选定），transcript 哈希算法（SHA-256/SHA-384）依赖 cipher_suite。
-    // 缓存原始字节，待 tls12_process_server_flight 解析出套件后再初始化。
+    // ClientHello 暂不加入 transcript：此�?cipher_suite 尚未协商（服务端才会
+    // 选定），transcript 哈希算法（SHA-256/SHA-384）依�?cipher_suite�?
+    // 缓存原始字节，待 tls12_process_server_flight 解析出套件后再初始化�?
     s.tls12_client_hello_cache = client_hello;
     return true;
 }
 
 bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response, size_t resp_len,
                                   const uint8_t* pre_master_secret, size_t pms_len,
-                                  std::vector<uint8_t>& client_finished){
+                                  std::vector<uint8_t>& client_finished,
+                                  std::vector<uint8_t>* client_key_exchange,
+                                  const tls_certificate_manager* cert_manager,
+                                  const tls_trust_store* trust_store){
     if(resp_len<4 || server_response[0]!=(uint8_t)HandshakeType::SERVER_HELLO)return false;
     size_t sh_len=(server_response[1]<<16)|(server_response[2]<<8)|server_response[3];
     if(4+sh_len>resp_len)return false;
     // Parse selected cipher suite from ServerHello body
-    // ServerHello body: version(2) + random(32) + session_id_len(1) + cipher_suite(2) + compression(1)
-    size_t cs_off = 4 + 2 + 32 + 1; // after header + version + random + sid_len
+    // ServerHello body: version(2) + random(32) + session_id_len(1) + session_id(sid_len)
+    //                   + cipher_suite(2) + compression(1) + extensions...
+    size_t sid_off = 4 + 2 + 32;  // after handshake header + version + random
+    if (sid_off >= resp_len) return false;
+    size_t sid_len = server_response[sid_off];
+    size_t cs_off = sid_off + 1 + sid_len;
+    if (cs_off + 2 > resp_len) return false;
     uint16_t sel_cs = (server_response[cs_off]<<8) | server_response[cs_off+1];
     s.cipher_suite = select_cipher_suite(sel_cs);
-    // transcript 哈希算法（SHA-256 vs SHA-384）取决于协商出的 cipher_suite。
-    // ClientHello 在 tls12_make_client_hello 中仅缓存、未入 transcript；
-    // 此处解析出套件后再初始化哈希上下文，并依次补入 ClientHello + ServerHello。
+    // transcript hash depends on cipher_suite; ClientHello was cached in
+    // tls12_make_client_hello and is replayed here after the suite is known.
     if (!s.tls12_client_hello_cache.empty())
         tls_transcript_update(s, s.tls12_client_hello_cache.data(), s.tls12_client_hello_cache.size());
     tls_transcript_update(s,server_response,4+sh_len);
     memcpy(s.server_random,server_response+6,32);
-    // ECDHE: compute pre-master from server's ephemeral key
-    if(tls12_is_ecdhe(s.cipher_suite)){
-        // Generate client ephemeral keypair
-        uint8_t client_eph_pub[32], client_eph_priv[32];
-        x25519_generate_keypair(client_eph_pub, client_eph_priv);
-        // Compute shared secret
-        uint8_t shared[32];
-        // Extract server's ephemeral pub from ServerKeyExchange (stored during parsing)
-        // For now, use a simple approach: the server pubkey is passed via an out-of-band mechanism
-        // In production, parse it from the SKX message
-        (void)client_eph_pub; (void)client_eph_priv; (void)shared;
+
+    // Legacy path (backward compatible): caller supplies the premaster and does
+    // not request a ClientKeyExchange; only ServerHello is parsed and the
+    // transcript stays ClientHello + ServerHello (historical behavior).
+    if (pre_master_secret && pms_len > 0 && !client_key_exchange) {
+        tls12_derive_keys(s, pre_master_secret, pms_len);
+        tls_transcript_finalize(s);
+        uint8_t verify_data[12];
+        size_t hl = tls_hash_len(s.cipher_suite);
+        if (tls_use_sha384(s.cipher_suite))
+            tls12_prf_sha384(s.master_secret,48,"client finished",s.transcript_hash,hl,verify_data,12);
+        else
+            tls12_prf(s.master_secret,48,"client finished",s.transcript_hash,hl,verify_data,12);
+        client_finished.clear();
+        client_finished.push_back((uint8_t)HandshakeType::FINISHED);
+        client_finished.push_back(0);client_finished.push_back(0);client_finished.push_back(12);
+        client_finished.insert(client_finished.end(),verify_data,verify_data+12);
+        tls_transcript_update(s,client_finished.data(),client_finished.size());
+        return true;
     }
-    tls12_derive_keys(s, pre_master_secret, pms_len);
-    // TLS 1.2 Finished: PRF(master_secret, "client finished", hash of handshake)
+
+    // Full path: parse Certificate / ServerKeyExchange / ServerHelloDone,
+    // compute the premaster per suite and build the ClientKeyExchange.
+    std::vector<uint8_t> premaster;
+    std::vector<uint8_t> cke;
+    std::vector<x509::x509_cert> cert_chain;
+    std::unique_ptr<tls_certificate> parsed_server_cert;
+    const tls_certificate* server_cert = nullptr;
+    const uint8_t* skx_sig = nullptr; size_t skx_sig_len = 0; uint16_t skx_sig_alg = 0;
+    std::vector<uint8_t> skx_params;   // ServerDHParams (for signature and group checks)
+    uint8_t server_ec_pub[96] = {0};   // ECDHE server ephemeral pubkey（X25519 32 / P-256 64 / P-384 96）
+    int server_ec_type = 0;            // 1=X25519, 2=secp256r1, 3=secp384r1
+    uint8_t server_dh_ys[256] = {0};   // DHE server ephemeral pubkey
+    bool server_dh_ok = false;
+
+    size_t off = 4 + sh_len;
+    while (off + 4 <= resp_len) {
+        uint8_t htype = server_response[off];
+        size_t hlen = ((size_t)server_response[off+1] << 16) |
+                      ((size_t)server_response[off+2] << 8) | server_response[off+3];
+        if (off + 4 + hlen > resp_len) return false;
+        const uint8_t* body = server_response + off + 4;
+        switch (htype) {
+            case (uint8_t)HandshakeType::CERTIFICATE: {
+                tls_transcript_update(s, server_response + off, 4 + hlen);
+                size_t list_len = ((size_t)body[0] << 16) | ((size_t)body[1] << 8) | body[2];
+                size_t p = 3;
+                size_t end = 3 + list_len;
+                if (end > hlen) return false;
+                const std::vector<uint16_t>& cert_algs =
+                    s.sig_algs_cert.empty() ? tls_default_signature_algorithms() : s.sig_algs_cert;
+                std::vector<x509::x509_cert> chain;
+                while (p + 3 <= end) {
+                    size_t clen = ((size_t)body[p] << 16) | ((size_t)body[p+1] << 8) | body[p+2];
+                    p += 3;
+                    if (p + clen > end) return false;
+                    auto parsed = x509::x509_cert::from_der(body + p, clen);
+                    if (!parsed) return false;
+                    uint16_t chain_scheme = x509_key_type_chain_scheme(parsed->sign_key_type);
+                    if (chain_scheme != 0 && !scheme_in_list(cert_algs, chain_scheme)) return false;
+                    chain.push_back(std::move(*parsed));
+                    p += clen;
+                }
+                if (chain.empty()) return false;
+                if (trust_store) {
+                    if (!tls13_verify_server_chain(chain, *trust_store, s.server_name)) return false;
+                    if (chain.empty() ||
+                        !(parsed_server_cert = tls_cert_from_x509_leaf(chain[0])))
+                        return false;
+                    server_cert = parsed_server_cert.get();
+                }
+                cert_chain = std::move(chain);
+                break;
+            }
+            case (uint8_t)HandshakeType::SERVER_KEY_EXCHANGE: {
+                tls_transcript_update(s, server_response + off, 4 + hlen);
+                size_t p = 0;
+                if (tls12_is_ecdhe(s.cipher_suite)) {
+                    // curve_type(1)=3 + named_curve(2) + pub_len(1) + pub + [sig]
+                    if (p + 4 > hlen) return false;
+                    uint8_t curve_type = body[p++];
+                    uint16_t named_curve = (body[p] << 8) | body[p+1]; p += 2;
+                    if (curve_type != 3) return false;
+                    uint8_t pub_len = body[p++];
+                    size_t raw_len = 0;
+                    if (named_curve == 0x001d) {        // X25519（RFC 8422 §5.1：裸 32 字节）
+                        if (pub_len != 32) return false;
+                        raw_len = 32;
+                        server_ec_type = 1;
+                    } else if (named_curve == 0x0017) { // secp256r1：uncompressed 0x04||x||y
+                        if (pub_len != 65 || body[p] != 0x04) return false;
+                        raw_len = 64;
+                        server_ec_type = 2;
+                    } else if (named_curve == 0x0019) { // secp384r1
+                        if (pub_len != 97 || body[p] != 0x04) return false;
+                        raw_len = 96;
+                        server_ec_type = 3;
+                    } else {
+                        return false; // 不支持的命名曲线
+                    }
+                    if (p + pub_len > hlen) return false;
+                    memcpy(server_ec_pub, body + p + (pub_len - raw_len), raw_len);
+                    p += pub_len;
+                    skx_params.assign(body, body + p);
+                    if (p + 4 <= hlen) {
+                        skx_sig_alg = (body[p] << 8) | body[p+1]; p += 2;
+                        skx_sig_len = (body[p] << 8) | body[p+1]; p += 2;
+                        if (p + skx_sig_len > hlen) return false;
+                        skx_sig = body + p;
+                    }
+                } else {
+                    // DHE-RSA / DHE-PSK: [psk_identity_hint] || ServerDHParams [|| signature]
+                    if (tls12_is_dhe_psk(s.cipher_suite)) {
+                        if (p + 2 > hlen) return false;
+                        uint16_t hint_len = (body[p] << 8) | body[p+1]; p += 2;
+                        if (p + hint_len > hlen) return false;
+                        p += hint_len;
+                    }
+                    // ServerDHParams: dh_p(2+len) || dh_g(2+len) || dh_Ys(2+len)
+                    const uint8_t* dp = nullptr; size_t dpl = 0;
+                    const uint8_t* dg = nullptr; size_t dgl = 0;
+                    const uint8_t* dys = nullptr; size_t dysl = 0;
+                    auto read_par = [&](const uint8_t*& ptr, size_t& pl) -> bool {
+                        if (p + 2 > hlen) return false;
+                        pl = (body[p] << 8) | body[p+1]; p += 2;
+                        if (p + pl > hlen) return false;
+                        ptr = body + p; p += pl;
+                        return true;
+                    };
+                    if (!read_par(dp, dpl) || !read_par(dg, dgl) || !read_par(dys, dysl))
+                        return false;
+                    // ffdhe2048: p(256) || g(1, =2) || Ys(256)
+                    if (dpl != 256 || dgl != 1 || dysl != 256 || *dg != 2)
+                        return false;
+                    memcpy(server_dh_ys, dys, dysl);
+                    server_dh_ok = true;
+                    skx_params.assign(body, body + p);
+                    if (tls12_is_dhe_rsa(s.cipher_suite) && p + 4 <= hlen) {
+                        skx_sig_alg = (body[p] << 8) | body[p+1]; p += 2;
+                        skx_sig_len = (body[p] << 8) | body[p+1]; p += 2;
+                        if (p + skx_sig_len > hlen) return false;
+                        skx_sig = body + p;
+                    }
+                }
+                break;
+            }
+            case (uint8_t)HandshakeType::SERVER_HELLO_DONE:
+                tls_transcript_update(s, server_response + off, 4 + hlen);
+                break;
+            case (uint8_t)HandshakeType::FINISHED:
+                // Legacy simplified server flights may trail a Server Finished;
+                // ignore it (not part of the client transcript).
+                off = resp_len;
+                continue;
+            default:
+                tls_transcript_update(s, server_response + off, 4 + hlen);
+                break;
+        }
+        off += 4 + hlen;
+    }
+
+    // Server certificate source: trust_store parsed above; else cert_manager
+    // (internal self-signed tests); else the leaf cert from the wire.
+    if (!server_cert && cert_manager) {
+        server_cert = cert_manager->get_certificate(s.server_name);
+        if (!server_cert) server_cert = cert_manager->get_default_certificate();
+    }
+    if (!server_cert && !cert_chain.empty()) {
+        if (!(parsed_server_cert = tls_cert_from_x509_leaf(cert_chain[0])))
+            return false;
+        server_cert = parsed_server_cert.get();
+    }
+
+    // Premaster computation and ClientKeyExchange construction
+    uint8_t client_ec_pub[32], client_ec_priv[32];
+    uint8_t client_dh_pub[256], client_dh_priv[32];
+    if (tls12_is_ecdhe(s.cipher_suite)) {
+        if (skx_params.empty() || !skx_sig || !server_cert) return false;
+        if (!scheme_in_list(effective_sig_algs(s), skx_sig_alg)) return false;
+        if (!tls12_verify_skx_signature(*server_cert, skx_sig_alg, skx_sig, skx_sig_len,
+                                        skx_params.data(), skx_params.size(), s))
+            return false;
+        if (server_ec_type == 1) {
+            x25519_generate_keypair(client_ec_pub, client_ec_priv);
+            uint8_t shared[32];
+            x25519_scalar_mult(shared, client_ec_priv, server_ec_pub);
+            premaster.assign(shared, shared + 32);
+            // ClientKeyExchange: 1-byte length + 32-byte pubkey (RFC 8422 §5.7)
+            cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
+            cke.push_back(0); cke.push_back(0); cke.push_back(33);
+            cke.push_back(32);
+            cke.insert(cke.end(), client_ec_pub, client_ec_pub + 32);
+        } else if (server_ec_type == 2) {
+            uint8_t pub[64], priv[32], shared[32];
+            ecdsa_p256_keygen(pub, priv);
+            if (!ecdsa_p256_ecdh(shared, priv, server_ec_pub)) return false;
+            premaster.assign(shared, shared + 32);
+            // ClientKeyExchange: 1-byte length + 0x04||x||y（RFC 4492 5.7）
+            cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
+            cke.push_back(0); cke.push_back(0); cke.push_back(66);
+            cke.push_back(65);
+            cke.push_back(0x04);
+            cke.insert(cke.end(), pub, pub + 64);
+        } else if (server_ec_type == 3) {
+            uint8_t pub[96], priv[48], shared[48];
+            ecdsa_p384_keygen(pub, priv);
+            if (!ecdsa_p384_ecdh(shared, priv, server_ec_pub)) return false;
+            premaster.assign(shared, shared + 48);
+            cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
+            cke.push_back(0); cke.push_back(0); cke.push_back(98);
+            cke.push_back(97);
+            cke.push_back(0x04);
+            cke.insert(cke.end(), pub, pub + 96);
+        } else {
+            return false;
+        }
+    } else if (tls12_is_dhe_rsa(s.cipher_suite)) {
+        if (!server_dh_ok || !skx_sig || !server_cert) return false;
+        if (!scheme_in_list(effective_sig_algs(s), skx_sig_alg)) return false;
+        if (!tls12_verify_skx_signature(*server_cert, skx_sig_alg, skx_sig, skx_sig_len,
+                                        skx_params.data(), skx_params.size(), s))
+            return false;
+        jpssl::dh::ffdhe2048_keypair(client_dh_pub, client_dh_priv);
+        uint8_t shared256[256];
+        if (!jpssl::dh::ffdhe2048_shared(shared256, client_dh_priv, server_dh_ys))
+            return false;
+        uint8_t minimal[256];
+        size_t n = jpssl::dh::ffdhe2048_shared_minimal(shared256, minimal);
+        premaster.assign(minimal, minimal + n);
+        // ClientKeyExchange: dh_Yc(2+len)
+        cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
+        cke.push_back(0); cke.push_back((uint8_t)(258 >> 8)); cke.push_back((uint8_t)258);
+        cke.push_back(0x01); cke.push_back(0x00);
+        cke.insert(cke.end(), client_dh_pub, client_dh_pub + 256);
+    } else if (tls12_is_dhe_psk(s.cipher_suite)) {
+        if (!server_dh_ok || !s.tls12_psk_valid) return false;
+        jpssl::dh::ffdhe2048_keypair(client_dh_pub, client_dh_priv);
+        uint8_t shared256[256];
+        if (!jpssl::dh::ffdhe2048_shared(shared256, client_dh_priv, server_dh_ys))
+            return false;
+        uint8_t minimal[256];
+        size_t n = jpssl::dh::ffdhe2048_shared_minimal(shared256, minimal);
+        premaster = tls12_psk_premaster(s.tls12_psk_value, s.tls12_psk_value_len,
+                                        minimal, n);
+        // ClientKeyExchange: identity(2+len) || dh_Yc(2+len)
+        size_t id_len = s.tls12_psk_identity_len;
+        size_t cke_len = 2 + id_len + 2 + 256;
+        cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
+        cke.push_back((uint8_t)(cke_len >> 16)); cke.push_back((uint8_t)(cke_len >> 8));
+        cke.push_back((uint8_t)cke_len);
+        cke.push_back((uint8_t)(id_len >> 8)); cke.push_back((uint8_t)id_len);
+        cke.insert(cke.end(), s.tls12_psk_identity, s.tls12_psk_identity + id_len);
+        cke.push_back(0x01); cke.push_back(0x00);
+        cke.insert(cke.end(), client_dh_pub, client_dh_pub + 256);
+    } else if (tls12_is_psk(s.cipher_suite)) {
+        if (!s.tls12_psk_valid) return false;
+        premaster = tls12_psk_premaster(s.tls12_psk_value, s.tls12_psk_value_len,
+                                        nullptr, 0);
+        size_t id_len = s.tls12_psk_identity_len;
+        size_t cke_len = 2 + id_len;
+        cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
+        cke.push_back((uint8_t)(cke_len >> 16)); cke.push_back((uint8_t)(cke_len >> 8));
+        cke.push_back((uint8_t)cke_len);
+        cke.push_back((uint8_t)(id_len >> 8)); cke.push_back((uint8_t)id_len);
+        cke.insert(cke.end(), s.tls12_psk_identity, s.tls12_psk_identity + id_len);
+    } else {
+        // RSA: premaster supplied by the caller
+        if (!pre_master_secret || pms_len == 0) return false;
+        premaster.assign(pre_master_secret, pre_master_secret + pms_len);
+        if (client_key_exchange && server_cert) {
+            uint8_t encrypted[256];
+            rsa_encrypt(server_cert->pub.rsa, std::span<const uint8_t>(premaster), encrypted);
+            cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
+            cke.push_back(0); cke.push_back((uint8_t)(258 >> 8)); cke.push_back((uint8_t)258);
+            cke.push_back(0x01); cke.push_back(0x00);
+            cke.insert(cke.end(), encrypted, encrypted + 256);
+        }
+    }
+
+    tls12_derive_keys(s, premaster.data(), premaster.size());
+    if (!cke.empty())
+        tls_transcript_update(s, cke.data(), cke.size());
     tls_transcript_finalize(s);
     uint8_t verify_data[12];
     size_t hl = tls_hash_len(s.cipher_suite);
@@ -2587,43 +3113,159 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
     client_finished.push_back(0);client_finished.push_back(0);client_finished.push_back(12);
     client_finished.insert(client_finished.end(),verify_data,verify_data+12);
     tls_transcript_update(s,client_finished.data(),client_finished.size());
+    if (client_key_exchange) *client_key_exchange = std::move(cke);
     return true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  TLS 1.2 完整握手 — 服务端
-// 根据证书密钥类型过滤 TLS 1.2 套件（RSA 证书只能选 ECDHE-RSA / RSA 套件）
-static uint16_t tls12_select_cipher_for_cert(const std::vector<uint16_t>& client_suites,
-                                             const tls_certificate* cert){
-    if(!cert) return 0;
-    bool is_ecdsa = (cert->sig_alg == SignatureAlgorithm::ECDSA_SECP256R1_SHA256 ||
-                     cert->sig_alg == SignatureAlgorithm::ECDSA_SECP384R1_SHA384 ||
-                     cert->sig_alg == SignatureAlgorithm::ECDSA_SECP521R1_SHA512 ||
-                     cert->sig_alg == SignatureAlgorithm::SM2_SM3);
-    static const uint16_t ECDSA_SUITES[] = {0xC02C, 0xCCA9, 0xC02B};  // ECDHE-ECDSA*
-    static const uint16_t RSA_SUITES[]    = {0xC030, 0xCCA8, 0xC02F, 0x009D, 0x009C}; // ECDHE-RSA* / RSA*
-    const uint16_t* cands = is_ecdsa ? ECDSA_SUITES : RSA_SUITES;
-    size_t n = is_ecdsa ? 3 : 5;
-    for(size_t i = 0; i < n; ++i){
-        for(uint16_t cl : client_suites)
-            if(cl == cands[i]) return cands[i];
+// ══════════════════════════════════════════════════════════════════════�?
+//  TLS 1.2 完整握手 �?服务�?
+// 客户端 supported_groups 扩展中的 FFDHE 通告（RFC 7919 §3/§4）
+struct tls12_client_ffdhe {
+    bool any_ffdhe = false;    // 客户端通告了任意 FFDHE 群（256..511）
+    bool has_ffdhe2048 = false;
+};
+
+static tls12_client_ffdhe tls12_parse_client_ffdhe(const uint8_t* ch, size_t ch_len){
+    tls12_client_ffdhe out;
+    const uint8_t* ext_data = nullptr; size_t ext_dlen = 0;
+    if (!client_hello_find_extension(ch, ch_len, 0x000a, ext_data, ext_dlen)) return out;
+    if (ext_dlen < 2) return out;
+    size_t list_len = (ext_data[0] << 8) | ext_data[1];
+    if (2 + list_len > ext_dlen) return out;
+    for (size_t i = 0; i + 2 <= list_len; i += 2) {
+        uint16_t g = (ext_data[2+i] << 8) | ext_data[2+i+1];
+        if (g >= 256 && g <= 511) {
+            out.any_ffdhe = true;
+            if (g == 256) out.has_ffdhe2048 = true;
+        }
+    }
+    return out;
+}
+
+static bool tls12_cert_is_ecdsa(const tls_certificate* cert){
+    return cert && (cert->sig_alg == SignatureAlgorithm::ECDSA_SECP256R1_SHA256 ||
+                    cert->sig_alg == SignatureAlgorithm::ECDSA_SECP384R1_SHA384 ||
+                    cert->sig_alg == SignatureAlgorithm::ECDSA_SECP521R1_SHA512 ||
+                    cert->sig_alg == SignatureAlgorithm::SM2_SM3);
+}
+
+// 服务端套件选择：按 TLS12_SERVER_CIPHERS 优先级，考虑证书类型、PSK 可用性与
+// 客户端 FFDHE 通告（RFC 7919 §4：客户端通告 FFDHE 群但未含 ffdhe2048 时不得选 DHE）
+static uint16_t tls12_select_server_suite(const std::vector<uint16_t>& client_suites,
+                                          const tls_certificate* cert,
+                                          const tls_psk_store* psk_store,
+                                          const tls12_client_ffdhe& ffdhe){
+    bool cert_ecdsa = tls12_cert_is_ecdsa(cert);
+    for (size_t si = 0; si < sizeof(TLS12_SERVER_CIPHERS)/sizeof(TLS12_SERVER_CIPHERS[0]); ++si) {
+        uint16_t srv = TLS12_SERVER_CIPHERS[si];
+        bool offered = false;
+        for (uint16_t cl : client_suites) if (cl == srv) { offered = true; break; }
+        if (!offered) continue;
+        CipherSuite cs = select_cipher_suite(srv);
+        if (tls12_is_psk(cs)) {
+            if (!psk_store || psk_store->count() == 0) continue;
+            if (tls12_is_dhe(cs) && ffdhe.any_ffdhe && !ffdhe.has_ffdhe2048) continue;
+            return srv;
+        }
+        if (!cert) continue;
+        if (tls12_is_ecdhe(cs)) {
+            bool suite_ecdsa =
+                (cs == CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 ||
+                 cs == CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 ||
+                 cs == CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256);
+            if (suite_ecdsa != cert_ecdsa) continue;
+        } else if (cert_ecdsa) {
+            continue; // ECDSA 证书不能用于 ECDHE-RSA / RSA / DHE-RSA 套件
+        }
+        if (tls12_is_dhe(cs) && ffdhe.any_ffdhe && !ffdhe.has_ffdhe2048) continue;
+        return srv;
     }
     return 0;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// TLS 1.2 服务端：生成明文 hello flight（ServerHello + Certificate + SKX + ServerHelloDone）
-// 保存服务端 ECDHE 私钥到 s.ks_priv（供 ClientKeyExchange 阶段计算共享密钥）
+// 旧版简化 API（tls12_make_server_flight / tls12_handshake_server）使用的套件选择：
+// 不含 DHE/PSK，保持历史语义（ECDHE-ECDSA > ECDHE-RSA > RSA）
+static uint16_t tls12_select_legacy_suite(const std::vector<uint16_t>& client_suites,
+                                          const tls_certificate* cert){
+    if(!cert) return 0;
+    bool is_ecdsa = tls12_cert_is_ecdsa(cert);
+    static const uint16_t ECDSA_SUITES[] = {0xC02C, 0xCCA9, 0xC02B};
+    static const uint16_t RSA_SUITES[]    = {0xC030, 0xCCA8, 0xC02F, 0x009D, 0x009C,
+                                             0x003D, 0x003C};
+    const uint16_t* cands = is_ecdsa ? ECDSA_SUITES : RSA_SUITES;
+    size_t n = is_ecdsa ? 3 : 7;
+    for(size_t i = 0; i < n; ++i)
+        for(uint16_t cl : client_suites)
+            if(cl == cands[i]) return cands[i];
+    return 0;
+}
+
+// DHE ServerDHParams（RFC 5246 7.4.3）：dh_p(2+len) || dh_g(2+len) || dh_Ys(2+len)
+static void tls12_append_ffdhe2048_params(std::vector<uint8_t>& out,
+                                          const uint8_t dh_pub[256]){
+    out.push_back(0x01); out.push_back(0x00);
+    out.insert(out.end(), jpssl::dh::ffdhe2048_p, jpssl::dh::ffdhe2048_p + 256);
+    out.push_back(0x00); out.push_back(0x01);
+    out.push_back(jpssl::dh::FFDHE2048_G);
+    out.push_back(0x01); out.push_back(0x00);
+    out.insert(out.end(), dh_pub, dh_pub + 256);
+}
+
+// DHE_RSA ServerKeyExchange：ServerDHParams + 签名（RFC 5246 7.4.3）
+static std::vector<uint8_t> tls12_make_dhe_rsa_skx(const tls_session& s,
+                                                   const tls_certificate& cert,
+                                                   uint16_t sig_alg,
+                                                   const uint8_t dh_pub[256]){
+    std::vector<uint8_t> msg;
+    std::vector<uint8_t> params;
+    tls12_append_ffdhe2048_params(params, dh_pub);
+    std::vector<uint8_t> signed_data;
+    signed_data.insert(signed_data.end(), s.client_random, s.client_random + 32);
+    signed_data.insert(signed_data.end(), s.server_random, s.server_random + 32);
+    signed_data.insert(signed_data.end(), params.begin(), params.end());
+    uint8_t sig_buf[512]; size_t sig_len = 0;
+    if (!cert.sign_scheme(sig_alg, signed_data.data(), signed_data.size(),
+                          sig_buf, sig_len))
+        return {};
+    msg.push_back((uint8_t)HandshakeType::SERVER_KEY_EXCHANGE);
+    size_t body_len = params.size() + 2 + 2 + sig_len;
+    msg.push_back((uint8_t)(body_len >> 16)); msg.push_back((uint8_t)(body_len >> 8));
+    msg.push_back((uint8_t)body_len);
+    msg.insert(msg.end(), params.begin(), params.end());
+    msg.push_back((uint8_t)(sig_alg >> 8)); msg.push_back((uint8_t)sig_alg);
+    msg.push_back((uint8_t)(sig_len >> 8)); msg.push_back((uint8_t)sig_len);
+    msg.insert(msg.end(), sig_buf, sig_buf + sig_len);
+    return msg;
+}
+
+// DHE_PSK ServerKeyExchange：空 psk_identity_hint + ServerDHParams（无签名，RFC 4279 §3）
+static std::vector<uint8_t> tls12_make_dhe_psk_skx(const uint8_t dh_pub[256]){
+    std::vector<uint8_t> msg;
+    std::vector<uint8_t> body;
+    body.push_back(0x00); body.push_back(0x00); // psk_identity_hint 空
+    tls12_append_ffdhe2048_params(body, dh_pub);
+    msg.push_back((uint8_t)HandshakeType::SERVER_KEY_EXCHANGE);
+    msg.push_back((uint8_t)(body.size() >> 16)); msg.push_back((uint8_t)(body.size() >> 8));
+    msg.push_back((uint8_t)body.size());
+    msg.insert(msg.end(), body.begin(), body.end());
+    return msg;
+}
+
+// ══════════════════════════════════════════════════════════════════════�?
+// TLS 1.2 服务端：生成明文 hello flight（ServerHello + Certificate + SKX + ServerHelloDone�?
+// 保存服务�?ECDHE 私钥�?s.ks_priv（供 ClientKeyExchange 阶段计算共享密钥�?
 bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
                                      std::vector<uint8_t>& server_response,
-                                     const tls_certificate_manager& cert_manager){
+                                     const tls_certificate_manager& cert_manager,
+                                     const tls_psk_store* psk_store){
     s.ver=TLSVersion::V12;s.is_server=true;
     s.transcript_ready=false;
     rand32(s.server_random);
     memcpy(s.client_random,client_hello+6,32);
 
-    // 解析客户端密码套件列表并选择（先解析 SNI/证书，再按证书类型过滤套件）
+    // 解析客户端密码套件列表并选择（证书类型 + PSK 可用性 + FFDHE 通告）
     auto client_suites = tls12_parse_client_cipher_suites(client_hello, ch_len);
+    tls12_client_ffdhe ffdhe = tls12_parse_client_ffdhe(client_hello, ch_len);
 
     // 解析 SNI
     size_t ext_offset=client_hello_ext_offset(client_hello,ch_len);
@@ -2634,21 +3276,26 @@ bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello,
     }
     const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
 
-    uint16_t selected_cs = tls12_select_cipher_for_cert(client_suites, cert);
+    uint16_t selected_cs = tls12_select_server_suite(client_suites, cert, psk_store, ffdhe);
     if(selected_cs == 0) return false; // no common cipher suite
     s.cipher_suite = select_cipher_suite(selected_cs);
+    bool use_psk = tls12_is_psk(s.cipher_suite);
+    bool use_dhe = tls12_is_dhe(s.cipher_suite);
+    bool use_ecdhe = tls12_is_ecdhe(s.cipher_suite);
 
-    // ⚠ transcript 哈希算法（SHA-256 vs SHA-384）取决于 cipher_suite，
-    //    必须在选定套件之后再加入 ClientHello，否则 SHA-384 套件会用
-    //    SHA-256 上下文初始化，导致 Finished verify_data 全部不匹配。
+    // transcript 哈希算法（SHA-256 vs SHA-384）取决于 cipher_suite，
+    // 必须在选定套件之后再加入 ClientHello，否则 SHA-384 套件会用
+    // SHA-256 上下文初始化，导致 Finished verify_data 全部不匹配。
     tls_transcript_update(s,client_hello,ch_len);
 
-    // ECDHE: generate ephemeral keypair（私钥保存到 session，供 CKE 阶段使用）
+    // ECDHE/DHE: generate ephemeral keypair（私钥保存到 session，供 CKE 阶段使用）
     uint8_t ecdhe_pub[32], ecdhe_priv[32];
-    bool use_ecdhe = tls12_is_ecdhe(s.cipher_suite);
     if(use_ecdhe){
         x25519_generate_keypair(ecdhe_pub, ecdhe_priv);
         memcpy(s.ks_priv, ecdhe_priv, 32);
+    }
+    if(use_dhe){
+        jpssl::dh::ffdhe2048_keypair(s.dh_pub, s.dh_priv);
     }
 
     // 解析客户端 signature_algorithms / signature_algorithms_cert
@@ -2661,7 +3308,7 @@ bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello,
     for (uint16_t a : client_sig_algs_cert)
         if (!scheme_in_list(client_sig_algs, a)) return false;  // 必须是 signature_algorithms 的子集
     uint16_t skx_sig_alg = 0;
-    if (use_ecdhe && cert) {
+    if ((use_ecdhe || tls12_is_dhe_rsa(s.cipher_suite)) && cert) {
         if (!client_sig_algs.empty())
             skx_sig_alg = select_signature_scheme(client_sig_algs, *cert, s.sig_algs, false);
         else
@@ -2673,8 +3320,8 @@ bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello,
         }
         s.selected_sig_alg = skx_sig_alg;
     }
-    // 保存 RSA 私钥：ECDHE 套件用于 SKX 签名；纯 RSA 套件（0x009C/0x009D/0x003D/0x003E）
-    // 用于 ClientKeyExchange premaster 解密。须与 use_ecdhe 无关，否则纯 RSA 套件
+    // 保存 RSA 私钥：ECDHE/DHE-RSA 套件用于 SKX 签名；纯 RSA 套件用于
+    // ClientKeyExchange premaster 解密。须与 use_ecdhe 无关，否则纯 RSA 套件
     // 在 tls12_process_client_key_exchange 中 rsa_decrypt 使用空密钥而失败。
     if (cert && (cert->sig_alg == SignatureAlgorithm::RSA_PKCS1_SHA256 ||
                  cert->sig_alg == SignatureAlgorithm::RSA_PSS_RSAE_SHA256 ||
@@ -2709,22 +3356,17 @@ bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello,
     size_t sh_len=server_response.size()-4;
     server_response[1]=(uint8_t)(sh_len>>16);server_response[2]=(uint8_t)(sh_len>>8);server_response[3]=(uint8_t)sh_len;
     tls_transcript_update(s,server_response.data(),server_response.size());
-    fprintf(stderr, "[TLS12-TX] ServerHello len=%zu\n", server_response.size());
-    fprintf(stderr, "[TLS12-SH] hex:");
-    for (size_t i = 0; i < server_response.size(); ++i) fprintf(stderr, "%02x", server_response[i]);
-    fprintf(stderr, "\n");
 
-    // ── Certificate ──
-    if(!cert) return false;
-    std::vector<uint8_t> cert_msg = tls12_make_certificate(*cert);
-    tls_transcript_update(s, cert_msg.data(), cert_msg.size());
-    fprintf(stderr, "[TLS12-TX] Certificate len=%zu\n", cert_msg.size());
-    fprintf(stderr, "[TLS12-CERT] hex:");
-    for (size_t ii = 0; ii < cert_msg.size(); ++ii) fprintf(stderr, "%02x", cert_msg[ii]);
-    fprintf(stderr, "\n");
-    server_response.insert(server_response.end(), cert_msg.begin(), cert_msg.end());
+    // ── Certificate（PSK 套件省略，RFC 4279 §2/§3）──
+    std::vector<uint8_t> cert_msg;
+    if(!use_psk){
+        if(!cert) return false;
+        cert_msg = tls12_make_certificate(*cert);
+        tls_transcript_update(s, cert_msg.data(), cert_msg.size());
+        server_response.insert(server_response.end(), cert_msg.begin(), cert_msg.end());
+    }
 
-    // ── ServerKeyExchange (ECDHE) ──
+    // ── ServerKeyExchange（ECDHE / DHE_RSA / DHE_PSK）──
     if(use_ecdhe && cert){
         std::vector<uint8_t> skx_msg;
         skx_msg.push_back((uint8_t)HandshakeType::SERVER_KEY_EXCHANGE);
@@ -2744,43 +3386,55 @@ bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello,
             skx_msg.push_back(0x00); skx_msg.push_back(0x1d); // X25519
             skx_msg.push_back(32);
             skx_msg.insert(skx_msg.end(), ecdhe_pub, ecdhe_pub+32);
-            fprintf(stderr, "[TLS12-SKX] sig_alg=0x%04x\n", skx_sig_alg);
             skx_msg.push_back((uint8_t)(skx_sig_alg>>8)); skx_msg.push_back((uint8_t)skx_sig_alg);
             skx_msg.push_back((uint8_t)(sig_len>>8)); skx_msg.push_back((uint8_t)sig_len);
             skx_msg.insert(skx_msg.end(), sig_buf, sig_buf+sig_len);
-            fprintf(stderr, "[TLS12-SKX-FULL] hex:");
-            for (size_t ii = 0; ii < skx_msg.size(); ++ii) fprintf(stderr, "%02x", skx_msg[ii]);
-            fprintf(stderr, "\n");
         }
         if(skx_msg.size() > 4){
             tls_transcript_update(s, skx_msg.data(), skx_msg.size());
-            fprintf(stderr, "[TLS12-TX] ServerKeyExchange len=%zu\n", skx_msg.size());
             server_response.insert(server_response.end(), skx_msg.begin(), skx_msg.end());
         }
+    } else if (tls12_is_dhe_rsa(s.cipher_suite) && cert) {
+        std::vector<uint8_t> skx_msg = tls12_make_dhe_rsa_skx(s, *cert, skx_sig_alg, s.dh_pub);
+        if(skx_msg.size() <= 4) return false;
+        tls_transcript_update(s, skx_msg.data(), skx_msg.size());
+        server_response.insert(server_response.end(), skx_msg.begin(), skx_msg.end());
+    } else if (tls12_is_dhe_psk(s.cipher_suite)) {
+        std::vector<uint8_t> skx_msg = tls12_make_dhe_psk_skx(s.dh_pub);
+        tls_transcript_update(s, skx_msg.data(), skx_msg.size());
+        server_response.insert(server_response.end(), skx_msg.begin(), skx_msg.end());
     }
 
     // ── ServerHelloDone ──
     std::vector<uint8_t> shd = tls12_make_server_hello_done();
     tls_transcript_update(s, shd.data(), shd.size());
-    fprintf(stderr, "[TLS12-TX] ServerHelloDone len=%zu\n", shd.size());
     server_response.insert(server_response.end(), shd.begin(), shd.end());
     return true;
 }
-
-// ═══════════════════════════════════════════════════════════════════════
 bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
                                std::vector<uint8_t>& server_response,
                                const uint8_t* encrypted_pms, size_t epms_len,
                                uint8_t pre_master_secret[48],
-                               const tls_certificate_manager& cert_manager){
+                               const tls_certificate_manager& cert_manager,
+                               const tls_psk_store* psk_store){
     s.ver=TLSVersion::V12;s.is_server=true;
     s.transcript_ready=false;
     rand32(s.server_random);
     memcpy(s.client_random,client_hello+6,32);
 
-    // 解析客户端密码套件列表并选择
+    // 解析客户端密码套件列表并选择（旧版简化 API：不含 DHE/PSK）
     auto client_suites = tls12_parse_client_cipher_suites(client_hello, ch_len);
-    uint16_t selected_cs = tls12_select_best_cipher_suite(client_suites);
+    (void)psk_store;
+
+    // 解析 SNI
+    size_t ext_offset=client_hello_ext_offset(client_hello,ch_len);
+    if(ext_offset+2<=ch_len){
+        uint16_t ext_len_total=(client_hello[ext_offset]<<8)|client_hello[ext_offset+1];
+        if(ext_offset+2+ext_len_total<=ch_len)
+            s.server_name=tls_parse_server_name(client_hello+ext_offset+2,ext_len_total);
+    }
+    const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
+    uint16_t selected_cs = tls12_select_legacy_suite(client_suites, cert);
     if(selected_cs == 0) return false; // no common cipher suite
     s.cipher_suite = select_cipher_suite(selected_cs);
 
@@ -2795,16 +3449,7 @@ bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         x25519_generate_keypair(ecdhe_pub, ecdhe_priv);
     }
 
-    // 解析 SNI
-    size_t ext_offset=client_hello_ext_offset(client_hello,ch_len);
-    if(ext_offset+2<=ch_len){
-        uint16_t ext_len_total=(client_hello[ext_offset]<<8)|client_hello[ext_offset+1];
-        if(ext_offset+2+ext_len_total<=ch_len)
-            s.server_name=tls_parse_server_name(client_hello+ext_offset+2,ext_len_total);
-    }
-    const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
-
-    // 解析客户端 signature_algorithms / signature_algorithms_cert（RFC 8446，TLS 1.2 亦适用）
+    // 解析客户�?signature_algorithms / signature_algorithms_cert（RFC 8446，TLS 1.2 亦适用�?
     std::vector<uint16_t> client_sig_algs, client_sig_algs_cert;
     const uint8_t* ext_data = nullptr; size_t ext_dlen = 0;
     if (client_hello_find_extension(client_hello, ch_len, 0x000d, ext_data, ext_dlen))
@@ -2812,13 +3457,13 @@ bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     if (client_hello_find_extension(client_hello, ch_len, 0x0032, ext_data, ext_dlen))
         parse_sig_alg_list(ext_data, ext_dlen, client_sig_algs_cert);
     for (uint16_t a : client_sig_algs_cert)
-        if (!scheme_in_list(client_sig_algs, a)) return false;  // 必须是 signature_algorithms 的子集
+        if (!scheme_in_list(client_sig_algs, a)) return false;  // 必须�?signature_algorithms 的子�?
     uint16_t skx_sig_alg = 0;
     if (use_ecdhe && cert) {
         if (!client_sig_algs.empty())
             skx_sig_alg = select_signature_scheme(client_sig_algs, *cert, s.sig_algs, false);
         else
-            skx_sig_alg = (uint16_t)cert->sig_alg;   // TLS 1.2 未携带扩展时的缺省行为
+            skx_sig_alg = (uint16_t)cert->sig_alg;   // TLS 1.2 未携带扩展时的缺省行�?
         if (skx_sig_alg == 0) return false;
         if (!client_sig_algs_cert.empty()) {
             uint16_t chain_scheme = cert_chain_signature_scheme(*cert);
@@ -2894,7 +3539,7 @@ bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     }
     tls12_derive_keys(s,pre_master_secret);
 
-    // Server Finished（PRF/transcript 哈希随套件：SHA-256 或 SHA-384）
+    // Server Finished（PRF/transcript 哈希随套件：SHA-256 �?SHA-384�?
     tls_transcript_finalize(s);
     uint8_t verify_data[12];
     size_t hl = tls_hash_len(s.cipher_suite);
@@ -2924,9 +3569,9 @@ bool tls12_process_client_finished(tls_session& s, const uint8_t* data, size_t l
     return memcmp(expected,data+4,12)==0;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  TLS 1.2 简化版 API（兼容旧接口）
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
+//  TLS 1.2 简化版 API（兼容旧接口�?
+// ══════════════════════════════════════════════════════════════════════�?
 bool tls12_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,
                              const uint8_t* server_response, size_t resp_len,
                              const uint8_t* pre_master_secret, size_t pms_len){
@@ -2936,17 +3581,20 @@ bool tls12_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,
     client_hello.push_back(0);client_hello.push_back(0);client_hello.push_back(0);
     client_hello.push_back(0x03);client_hello.push_back(0x03);
     client_hello.insert(client_hello.end(),s.client_random,s.client_random+32);
-    // Cipher suites: multiple
-    size_t cs_n = sizeof(TLS12_CLIENT_CIPHERS) / sizeof(TLS12_CLIENT_CIPHERS[0]);
+    // Cipher suites: dynamic list（PSK 套件仅在配置了 TLS 1.2 PSK 时提供）
+    std::vector<uint16_t> cs_list = tls12_client_suite_list(s);
+    size_t cs_n = cs_list.size();
     client_hello.push_back(0);
     client_hello.push_back((uint8_t)(cs_n*2>>8)); client_hello.push_back((uint8_t)(cs_n*2));
     for(size_t i=0; i<cs_n; ++i){
-        uint16_t c = TLS12_CLIENT_CIPHERS[i];
+        uint16_t c = cs_list[i];
         client_hello.push_back((uint8_t)(c>>8)); client_hello.push_back((uint8_t)c);
     }
     client_hello.push_back(0x01); client_hello.push_back(0x00);
-    // signature_algorithms + signature_algorithms_cert
+    // supported_groups：DHE 套件要求客户端通告 ffdhe2048（RFC 7919 §3）
     std::vector<uint8_t> ext;
+    tls12_append_supported_groups(ext);
+    // signature_algorithms + signature_algorithms_cert
     {
         const std::vector<uint16_t>& algs = effective_sig_algs(s);
         std::vector<uint16_t> cert_algs =
@@ -3005,7 +3653,7 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
     }
     const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
 
-    // 解析客户端 signature_algorithms / signature_algorithms_cert
+    // 解析客户�?signature_algorithms / signature_algorithms_cert
     std::vector<uint16_t> client_sig_algs, client_sig_algs_cert;
     const uint8_t* ext_data = nullptr; size_t ext_dlen = 0;
     if (client_hello_find_extension(client_hello, ch_len, 0x000d, ext_data, ext_dlen))
@@ -3094,19 +3742,19 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
     return true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  记录层加密
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
+//  记录层加�?
+// ══════════════════════════════════════════════════════════════════════�?
 static void tls_encrypt_record(tls_session& s, ContentType ct,
                                const uint8_t* data, size_t len,
                                std::vector<uint8_t>& out);
 
 std::vector<uint8_t> tls_encrypt(tls_session& s, ContentType ct, const uint8_t* data, size_t len){
-    // 大消息自动分片：len > TLS_MAX_RECORD_PLAINTEXT 时拆分为多条 record，
-    // 拼接后一次性返回（对端可用 tls_decrypt / tls_connection::recv 合并还原）。
+    // 大消息自动分片：len > TLS_MAX_RECORD_PLAINTEXT 时拆分为多条 record�?
+    // 拼接后一次性返回（对端可用 tls_decrypt / tls_connection::recv 合并还原）�?
     std::vector<uint8_t> out;
-    // 预预留：每条 record ≈ 5 字节头 + 2 内容类型 + 16 tag（TLS 1.2 另有 8 显式 nonce），
-    // 取 len + records*32 上界，避免输出向量反复扩容拷贝
+    // 预预留：每条 record �?5 字节�?+ 2 内容类型 + 16 tag（TLS 1.2 另有 8 显式 nonce），
+    // �?len + records*32 上界，避免输出向量反复扩容拷�?
     size_t records = (len + TLS_MAX_RECORD_PLAINTEXT - 1) / TLS_MAX_RECORD_PLAINTEXT;
     out.reserve(len + records * 32);
     size_t off = 0;
@@ -3119,7 +3767,7 @@ std::vector<uint8_t> tls_encrypt(tls_session& s, ContentType ct, const uint8_t* 
     return out;
 }
 
-// 加密单条 record（len 必须 <= TLS_MAX_RECORD_PLAINTEXT）
+// 加密单条 record（len 必须 <= TLS_MAX_RECORD_PLAINTEXT�?
 static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* data, size_t len,
                                std::vector<uint8_t>& out){
     bool is_svr=s.is_server;
@@ -3137,19 +3785,18 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
         for(int i=0;i<8;++i)aad[7-i]=(uint8_t)(seq>>(i*8));
         aad[8]=(uint8_t)ct;
         aad[9]=0x03;aad[10]=0x03;
-        // RFC 5246 6.2.3.3：TLS 1.2 AEAD 明文 = 纯 content（content type 在 record 头明文传输）
-        // AAD = seq(8) || type(1) || version(2) || length(2)，length 为明文长度 len
+        // RFC 5246 6.2.3.3：TLS 1.2 AEAD 明文 = �?content（content type �?record 头明文传输）
+        // AAD = seq(8) || type(1) || version(2) || length(2)，length 为明文长�?len
         size_t inner_len=len;
         aad[11]=(uint8_t)(inner_len>>8);aad[12]=(uint8_t)inner_len;
-        bool is_chacha_tls12 = (s.cipher_suite == CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
-                             || s.cipher_suite == CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256);
+        bool is_chacha_tls12 = tls12_is_chacha(s.cipher_suite);
+        bool is_cbc = tls12_is_cbc(s.cipher_suite);
         if(is_chacha_tls12){
-            // ChaCha20-Poly1305 in TLS 1.2（RFC 7905）：fixed_iv_length=12，record_iv_length=0。
-            // nonce = client/server_write_IV(12) XOR 序列号（前 4 字节 0x00 + 8 字节大端序列号），
-            // 记录中不携带显式 nonce —— 与 AES-GCM（8 字节显式 nonce）结构不同。
+            // ChaCha20-Poly1305 in TLS 1.2（RFC 7905）：fixed_iv_length=12，record_iv_length=0�?            // nonce = client/server_write_IV(12) XOR 序列号（�?4 字节 0x00 + 8 字节大端序列号）�?
+            // 记录中不携带显式 nonce —�?�?AES-GCM�? 字节显式 nonce）结构不同�?
             uint8_t cha_nonce[12];
             memcpy(cha_nonce, write_iv, 12);
-            for (int i = 0; i < 8; ++i) cha_nonce[4+i] ^= explicit_nonce[i]; // explicit_nonce 携带序列号
+            for (int i = 0; i < 8; ++i) cha_nonce[4+i] ^= explicit_nonce[i]; // explicit_nonce 携带序列�?
             out.push_back((uint8_t)ct);
             out.push_back(0x03);out.push_back(0x03);
             size_t inner_len=len;
@@ -3161,8 +3808,53 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
             chacha20_poly1305_encrypt_inplace(write_key, cha_nonce, out.data()+body,
                                               inner_len, std::span<const uint8_t>(aad, 13),
                                               out.data()+body+inner_len);
+        }else if(is_cbc){
+            // RFC 5246 6.2.3.2 CBC suite:
+            //   MAC = HMAC(mac_secret, seq(8) || type(1) || ver(2) || length(2) || content)
+            //   length = content length only (RFC 5246 6.2.3.1), MAC/padding excluded
+            //   plaintext = content || MAC || padding(N x N) || padding_length(N)
+            //   record = header || explicit_IV(16) || AES-CBC(plaintext)
+            size_t MAC_LEN = tls_use_sha384(s.cipher_suite) ? 48 : 32;
+            const uint8_t* mac_key = is_svr ? s.server_write_mac : s.client_write_mac;
+            aad[11] = (uint8_t)(len >> 8); aad[12] = (uint8_t)len;
+            std::vector<uint8_t> mac_input(13 + len);
+            memcpy(mac_input.data(), aad, 13);
+            memcpy(mac_input.data() + 13, data, len);
+            uint8_t mac[48];
+            if (tls_use_sha384(s.cipher_suite))
+                hmac_sha384(mac_key, MAC_LEN, mac_input.data(), mac_input.size(), mac);
+            else
+                hmac_sha256(mac_key, MAC_LEN, mac_input.data(), mac_input.size(), mac);
+            // explicit IV: random 16 bytes per record (TLS 1.1+)
+            uint8_t explicit_iv[16];
+            uint8_t rnd32[32];
+            rand32(rnd32);
+            memcpy(explicit_iv, rnd32, 16);
+            // TLS 1.2 padding: pad_len bytes of value pad_len plus a final pad_len byte,
+            // so that content || MAC || padding is a multiple of the block size
+            size_t mac_total = len + MAC_LEN;
+            size_t pad_len = (16 - ((mac_total + 1) % 16)) % 16;
+            std::vector<uint8_t> plaintext;
+            plaintext.reserve(mac_total + pad_len + 1);
+            plaintext.insert(plaintext.end(), data, data + len);
+            plaintext.insert(plaintext.end(), mac, mac + MAC_LEN);
+            plaintext.insert(plaintext.end(), pad_len, (uint8_t)pad_len);
+            plaintext.push_back((uint8_t)pad_len);
+            aes_context ctx;
+            aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
+            std::vector<uint8_t> ciphertext;
+            if(plaintext.size() % 16 != 0) return;
+            ciphertext.resize(plaintext.size());
+            tls_cbc_encrypt_blocks(ctx, explicit_iv, plaintext.data(),
+                                   plaintext.size() / 16, ciphertext.data());
+            out.push_back((uint8_t)ct);
+            out.push_back(0x03); out.push_back(0x03);
+            size_t rlen = 16 + ciphertext.size();
+            out.push_back((uint8_t)(rlen >> 8)); out.push_back((uint8_t)rlen);
+            out.insert(out.end(), explicit_iv, explicit_iv + 16);
+            out.insert(out.end(), ciphertext.begin(), ciphertext.end());
+
         }else{
-            // GCM 零拷贝：直接构建记录缓冲并就地加密（无 inner/ciphertext 中间向量）
             aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
             out.push_back((uint8_t)ct);
             out.push_back(0x03);out.push_back(0x03);
@@ -3184,20 +3876,19 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
     uint64_t seq=is_svr?s.server_seq:s.client_seq;
     for(int i=0;i<8;++i)nonce[4+i]^=(uint8_t)(seq>>(56-i*8));
     if(is_svr)++s.server_seq;else ++s.client_seq;
+    size_t tag_len=tls_aead_tag_len(s.cipher_suite);
     switch(s.cipher_suite){
         case CipherSuite::TLS_AES_128_GCM_SHA256:
         case CipherSuite::TLS_AES_256_GCM_SHA384: {
-            // GCM 零拷贝：直接构建记录缓冲并就地加密（无 inner/ciphertext 中间向量）
             aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
             size_t inner_len=len+1;  // content || type
-            size_t rlen=inner_len+16;
+            size_t rlen=inner_len+tag_len;
             out.push_back(0x17);out.push_back(0x03);out.push_back(0x03);
             out.push_back((uint8_t)(rlen>>8));out.push_back((uint8_t)rlen);
             size_t body=out.size();
-            out.resize(body+inner_len+16);
+            out.resize(body+inner_len+tag_len);
             std::memcpy(out.data()+body, data, len);
             out[body+len]=(uint8_t)ct;
-            // RFC 8446 5.2：TLS 1.3 AEAD AAD = record 头 5 字节
             uint8_t aad[5]={0x17,0x03,0x03,(uint8_t)(rlen>>8),(uint8_t)rlen};
             aes_gcm_encrypt_inplace(ctx, nonce, 12, out.data()+body, inner_len,
                                     std::span<const uint8_t>(aad,5),
@@ -3205,18 +3896,16 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
             return;
         }
         default: {
-            // 零拷贝：直接构建记录缓冲（inner 帧 + tag 占位）后就地加密
             size_t inner_len=len+1;  // content || type
-            size_t rlen=inner_len+16;
+            size_t rlen=inner_len+tag_len;
             out.push_back(0x17);out.push_back(0x03);out.push_back(0x03);
             out.push_back((uint8_t)(rlen>>8));out.push_back((uint8_t)rlen);
             size_t body=out.size();
-            out.resize(body+inner_len+16);
+            out.resize(body+inner_len+tag_len);
             std::memcpy(out.data()+body, data, len);
             out[body+len]=(uint8_t)ct;
             uint8_t* inner=out.data()+body;
             uint8_t* tag=out.data()+body+inner_len;
-            // RFC 8446 5.2：AAD = record 头 5 字节
             uint8_t aad[5]={0x17,0x03,0x03,(uint8_t)(rlen>>8),(uint8_t)rlen};
             std::span<const uint8_t> aad_span(aad,5);
             switch(s.cipher_suite){
@@ -3224,10 +3913,11 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
                     chacha20_poly1305_encrypt_inplace(write_key, nonce, inner, inner_len,
                                                       aad_span, tag);
                     break;
-                case CipherSuite::TLS_AES_128_CCM_SHA256: {
+                case CipherSuite::TLS_AES_128_CCM_SHA256:
+                case CipherSuite::TLS_AES_128_CCM_8_SHA256: {
                     aes_context ctx;aes_ctx_init(ctx, write_key, aes_key_len(s.cipher_suite));
                     aes_ccm_encrypt_inplace(ctx, nonce, 12, inner, inner_len,
-                                            aad_span, tag, 16);
+                                            aad_span, tag, tag_len);
                     break;
                 }
                 case CipherSuite::TLS_SM4_GCM_SM3: {
@@ -3249,7 +3939,7 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
     return;
 }
 
-// 解密单条 record（record 缓冲区恰好为一条：5 字节头 + payload）
+// decrypt a single record (record buffer is exactly one record: 5-byte header + payload)
 static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record_len,
                             ContentType& ct, std::vector<uint8_t>& out){
     bool is_svr=s.is_server;
@@ -3258,48 +3948,82 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
         size_t rlen=(record[3]<<8)|record[4];
         const uint8_t* read_iv=is_svr?s.client_write_iv:s.server_write_iv;
         const uint8_t* read_key=is_svr?s.client_write_key:s.server_write_key;
-        bool is_chacha_tls12 = (s.cipher_suite == CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
-                             || s.cipher_suite == CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256);
-        // RFC 7905：ChaCha20-Poly1305 记录无显式 nonce（record_iv_length=0），
-        // payload = ciphertext || tag(16)，与 AES-GCM（8 字节显式 nonce）结构不同。
-        const uint8_t* ciphertext = is_chacha_tls12 ? record+5 : record+13;
-        size_t ct_len = is_chacha_tls12 ? rlen-16 : rlen-24;
+        bool is_chacha_tls12 = tls12_is_chacha(s.cipher_suite);
+        bool is_cbc = tls12_is_cbc(s.cipher_suite);
+        // RFC 7905: ChaCha20-Poly1305 records carry no explicit nonce (record_iv_length=0),
+        // payload = ciphertext || tag(16), unlike AES-GCM which uses an 8-byte explicit nonce
+        const uint8_t* ciphertext = is_chacha_tls12 ? record+5 : (is_cbc ? record+21 : record+13);
+        size_t ct_len = is_chacha_tls12 ? rlen-16 : (is_cbc ? rlen-16 : rlen-24);
         const uint8_t* tag = ciphertext + ct_len;
-        if(5+rlen!=record_len||ct_len<1)return false;
+        if(5+rlen!=record_len)return false;
+        if(is_cbc){
+            if(ct_len<16 || (ct_len % 16) != 0) return false;
+        }else if(ct_len<1){
+            return false;
+        }
         uint64_t seq=is_svr?s.client_seq:s.server_seq;
         uint8_t aad[13];
         for(int i=0;i<8;++i)aad[7-i]=(uint8_t)(seq>>(i*8));
         aad[8]=record[0];
         aad[9]=0x03;aad[10]=0x03;
-        aad[11]=(uint8_t)(ct_len>>8);aad[12]=(uint8_t)ct_len;
+        aad[11]=(uint8_t)(ct_len>>8);
+        aad[12]=(uint8_t)ct_len;
         if(is_svr)++s.client_seq;else ++s.server_seq;
         std::vector<uint8_t> inner;
         if(is_chacha_tls12){
-            // nonce = write_IV(12) XOR 序列号（RFC 7905 4.1）
+            // nonce = write_IV(12) XOR sequence number (RFC 7905 4.1)
             uint8_t cha_nonce[12];
             memcpy(cha_nonce, read_iv, 12);
             for (int i = 0; i < 8; ++i) cha_nonce[4+i] ^= (uint8_t)(seq >> (56 - i*8));
             if(!chacha20_poly1305_decrypt(read_key, cha_nonce,
                     std::span<const uint8_t>(ciphertext,ct_len),
                     std::span<const uint8_t>(aad,13), tag, inner)) return false;
+        }else if(is_cbc){
+            // RFC 5246 6.2.3.2: explicit IV(16) || AES-CBC(content || MAC || padding)
+            const uint8_t* explicit_iv = record + 5;
+            aes_context ctx;
+            aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
+            if(ct_len < 16 || (ct_len % 16) != 0) return false;
+            std::vector<uint8_t> raw(ct_len);
+            tls_cbc_decrypt_blocks(ctx, explicit_iv, ciphertext, ct_len / 16, raw.data());
+            size_t mac_len = tls_use_sha384(s.cipher_suite) ? 48 : 32;
+            const uint8_t* mac_key = is_svr ? s.client_write_mac : s.server_write_mac;
+            uint8_t pad_n = raw.back();
+            // TLS 1.2 padding: pad_n bytes of value pad_n plus a final pad_n byte;
+            // at least 1 content byte must remain after MAC + padding removal
+            if(pad_n > 15 || raw.size() < (size_t)pad_n + 1 + mac_len + 1) return false;
+            size_t inner_len = raw.size() - pad_n - 1 - mac_len;
+            // RFC 5246 6.2.3.1: MAC length field = content length (excl. MAC/padding)
+            aad[11] = (uint8_t)(inner_len >> 8); aad[12] = (uint8_t)inner_len;
+            std::vector<uint8_t> mac_input(13 + inner_len);
+            memcpy(mac_input.data(), aad, 13);
+            memcpy(mac_input.data() + 13, raw.data(), inner_len);
+            uint8_t mac[48];
+            if (tls_use_sha384(s.cipher_suite))
+                hmac_sha384(mac_key, mac_len, mac_input.data(), mac_input.size(), mac);
+            else
+                hmac_sha256(mac_key, mac_len, mac_input.data(), mac_input.size(), mac);
+            if(std::memcmp(mac, raw.data() + inner_len, mac_len) != 0) return false;
+            inner.assign(raw.begin(), raw.begin() + inner_len);
         }else{
             uint8_t nonce[12];
             memcpy(nonce,read_iv,4);
-            memcpy(nonce+4,record+5,8);  // GCM 显式 nonce
+            memcpy(nonce+4,record+5,8);  // GCM explicit nonce
             aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
             if(!aes_gcm_decrypt_auto(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(aad,13),tag,16,inner))
                 return false;
         }
         if(inner.empty())return false;
-        // RFC 5246：content type 在 record 头明文传输，AEAD 明文为纯 content
+        // RFC 5246: content type is in the record header; AEAD plaintext is pure content
         ct=(ContentType)record[0];
         out.swap(inner);
         return true;
     }
     size_t rlen=(record[3]<<8)|record[4];
-    if(5+rlen!=record_len||rlen<16)return false;
+    size_t tag_len=tls_aead_tag_len(s.cipher_suite);
+    if(5+rlen!=record_len||rlen<tag_len)return false;
     const uint8_t* ciphertext=record+5;
-    size_t ct_len=rlen-16;
+    size_t ct_len=rlen-tag_len;
     const uint8_t* tag=record+5+ct_len;
     const uint8_t* read_iv=is_svr?s.client_write_iv:s.server_write_iv;
     const uint8_t* read_key=is_svr?s.client_write_key:s.server_write_key;
@@ -3309,7 +4033,7 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
     if(is_svr)++s.client_seq;else ++s.server_seq;
     std::vector<uint8_t> inner;
     bool ok = false;
-    // RFC 8446 5.2：TLS 1.3 AEAD AAD = record 头 5 字节
+    // RFC 8446 5.2：TLS 1.3 AEAD AAD = record �?5 字节
     std::span<const uint8_t> aad_span(record,5);
     switch(s.cipher_suite){
         case CipherSuite::TLS_AES_128_GCM_SHA256:
@@ -3323,11 +4047,12 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
                                            std::span<const uint8_t>(ciphertext,ct_len),
                                            aad_span, tag, inner);
             break;
-        case CipherSuite::TLS_AES_128_CCM_SHA256: {
+        case CipherSuite::TLS_AES_128_CCM_SHA256:
+        case CipherSuite::TLS_AES_128_CCM_8_SHA256: {
             aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
             ok = aes_ccm_decrypt(ctx, nonce, 12,
                                  std::span<const uint8_t>(ciphertext,ct_len),
-                                 aad_span, tag, 16, inner);
+                                 aad_span, tag, tag_len, inner);
             break;
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
@@ -3347,7 +4072,7 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
     }
     if(!ok) return false;
     if(inner.empty())return false;
-    // RFC 8446 5.2：type 在末尾
+    // RFC 8446 5.2：type 在末�?
     ct=(ContentType)inner.back();
     out.assign(inner.begin(),inner.end()-1);
     return true;
@@ -3355,16 +4080,16 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
 
 bool tls_decrypt(tls_session& s, const uint8_t* record, size_t record_len,
                  ContentType& ct, std::vector<uint8_t>& out){
-    // 大消息合并：逐条解析 record，明文追加到 out（单条 record 同样支持）
+    // 大消息合并：逐条解析 record，明文追加到 out（单�?record 同样支持�?
     out.clear();
-    out.reserve(record_len);  // 明文总长 ≤ 密文总长，预预留避免反复扩容
+    out.reserve(record_len);  // 明文总长 �?密文总长，预预留避免反复扩容
     size_t off = 0;
     bool any = false;
     ContentType first_ct = ContentType::APPLICATION_DATA;
     while (off < record_len) {
-        if (record_len - off < 5) return false;  // 尾部残留不完整 record
+        if (record_len - off < 5) return false;  // 尾部残留不完�?record
         size_t rlen = ((size_t)record[off + 3] << 8) | record[off + 4];
-        if (rlen < 16 || 5 + rlen > record_len - off) return false;
+        if (rlen < tls_aead_tag_len(s.cipher_suite) || 5 + rlen > record_len - off) return false;
         ContentType rec_ct;
         std::vector<uint8_t> plain;
         if (!tls_decrypt_one(s, record + off, 5 + rlen, rec_ct, plain)) return false;
@@ -3379,9 +4104,9 @@ bool tls_decrypt(tls_session& s, const uint8_t* record, size_t record_len,
 
 
 
-// ═══════════════════════════════════════════════════════════════════════
-//  TLS 1.3 0-RTT — PSK, Early Data, NewSessionTicket
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
+//  TLS 1.3 0-RTT �?PSK, Early Data, NewSessionTicket
+// ══════════════════════════════════════════════════════════════════════�?
 
 static void tls13_derive_resumption_secret(tls_session& s, uint8_t out[48]){
     size_t hl=tls_hash_len(s.cipher_suite);
@@ -3452,9 +4177,9 @@ static void tls13_compute_binder(tls_session& s, const uint8_t* psk,
         hmac_sha256(binder_key,hl,ch_hash,hl,binder);
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  NewSessionTicket
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 
 bool tls13_make_new_session_ticket(tls_session& s, std::vector<uint8_t>& ticket_msg,
                                    uint32_t ticket_lifetime){
@@ -3517,9 +4242,9 @@ bool tls13_make_new_session_ticket(tls_session& s, std::vector<uint8_t>& ticket_
     return true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  PSK storage (client side)
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 
 bool tls13_store_psk(tls_session& s, const uint8_t* ticket_msg, size_t ticket_len){
     if(ticket_len<8) return false;
@@ -3558,9 +4283,9 @@ bool tls13_store_psk(tls_session& s, const uint8_t* ticket_msg, size_t ticket_le
     return true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  PSK ClientHello
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 
 bool tls13_make_psk_client_hello(tls_session& s, std::vector<uint8_t>& client_hello){
     if(!s.psk_valid) return false;
@@ -3678,9 +4403,9 @@ bool tls13_make_psk_client_hello(tls_session& s, std::vector<uint8_t>& client_he
     return true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  Server: process PSK ClientHello
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 
 bool tls13_process_psk_client_hello(tls_session& s, const uint8_t* ch, size_t ch_len,
                                     bool& accept_early_data){
@@ -3747,9 +4472,9 @@ bool tls13_process_psk_client_hello(tls_session& s, const uint8_t* ch, size_t ch
     return false;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  Early data encrypt/decrypt
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 
 std::vector<uint8_t> tls13_encrypt_early_data(tls_session& s,
                                               const uint8_t* data, size_t len){
@@ -3764,8 +4489,9 @@ std::vector<uint8_t> tls13_encrypt_early_data(tls_session& s,
 
     std::vector<uint8_t> ciphertext;
     uint8_t tag[16];
-    // RFC 8446 5.2：AAD = record 头 5 字节（early data record 同样适用）
-    uint8_t aad[5]={0x17,0x03,0x03,(uint8_t)((inner.size()+16)>>8),(uint8_t)(inner.size()+16)};
+    size_t tag_len=tls_aead_tag_len(s.cipher_suite);
+    // RFC 8446 5.2：AAD = record �?5 字节（early data record 同样适用�?
+    uint8_t aad[5]={0x17,0x03,0x03,(uint8_t)((inner.size()+tag_len)>>8),(uint8_t)(inner.size()+tag_len)};
     std::span<const uint8_t> aad_span(aad,5);
     // Inline AEAD dispatch
     switch(s.cipher_suite){
@@ -3779,10 +4505,11 @@ std::vector<uint8_t> tls13_encrypt_early_data(tls_session& s,
         case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
             chacha20_poly1305_encrypt(s.client_early_write_key, nonce, inner, aad_span, ciphertext, tag);
             break;
-        case CipherSuite::TLS_AES_128_CCM_SHA256: {
+        case CipherSuite::TLS_AES_128_CCM_SHA256:
+        case CipherSuite::TLS_AES_128_CCM_8_SHA256: {
             aes_context ctx;
             aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
-            aes_ccm_encrypt(ctx, nonce, 12, inner, aad_span, ciphertext, tag, 16);
+            aes_ccm_encrypt(ctx, nonce, 12, inner, aad_span, ciphertext, tag, tag_len);
             break;
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
@@ -3800,10 +4527,10 @@ std::vector<uint8_t> tls13_encrypt_early_data(tls_session& s,
     std::vector<uint8_t> record;
     record.push_back(0x17);
     record.push_back(0x03); record.push_back(0x03);
-    size_t rlen = ciphertext.size() + 16;
+    size_t rlen = ciphertext.size() + tag_len;
     record.push_back((uint8_t)(rlen>>8)); record.push_back((uint8_t)(rlen));
     record.insert(record.end(), ciphertext.begin(), ciphertext.end());
-    record.insert(record.end(), tag, tag+16);
+    record.insert(record.end(), tag, tag+tag_len);
     return record;
 }
 
@@ -3812,9 +4539,10 @@ bool tls13_decrypt_early_data(tls_session& s, const uint8_t* record, size_t reco
     if(!s.early_data_accepted) return false;
     if(record_len < 5) return false;
     size_t rlen = (record[3]<<8)|record[4];
-    if(5+rlen != record_len || rlen < 16) return false;
+    size_t tag_len=tls_aead_tag_len(s.cipher_suite);
+    if(5+rlen != record_len || rlen < tag_len) return false;
     const uint8_t* ciphertext = record+5;
-    size_t ct_len = rlen - 16;
+    size_t ct_len = rlen - tag_len;
     const uint8_t* tag = record+5+ct_len;
 
     uint8_t nonce[12];
@@ -3839,11 +4567,12 @@ bool tls13_decrypt_early_data(tls_session& s, const uint8_t* record, size_t reco
                                            std::span<const uint8_t>(ciphertext,ct_len),
                                            aad_span, tag, inner);
             break;
-        case CipherSuite::TLS_AES_128_CCM_SHA256: {
+        case CipherSuite::TLS_AES_128_CCM_SHA256:
+        case CipherSuite::TLS_AES_128_CCM_8_SHA256: {
             aes_context ctx;
             aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
             ok = aes_ccm_decrypt(ctx, nonce, 12, std::span<const uint8_t>(ciphertext,ct_len),
-                                 aad_span, tag, 16, inner);
+                                 aad_span, tag, tag_len, inner);
             break;
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
@@ -3867,9 +4596,9 @@ bool tls13_decrypt_early_data(tls_session& s, const uint8_t* record, size_t reco
     return true;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 //  EndOfEarlyData
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 
 std::vector<uint8_t> tls13_make_end_of_early_data(){
     std::vector<uint8_t> msg;
@@ -3885,7 +4614,7 @@ bool tls13_process_end_of_early_data(tls_session& s, const uint8_t* data, size_t
     return true;
 }
 
-// ═══ X.509 v3 Integration ═══
+// ══�?X.509 v3 Integration ══�?
 using namespace jpssl::x509;
 
 x509::KeyType tls_sig_alg_to_key_type(SignatureAlgorithm sa) {
@@ -4260,10 +4989,11 @@ bool tls_quic_process_client_finished(tls_session& s, const uint8_t* data, size_
     s.quic_mode = true;
     return tls13_process_client_finished(s, data, len);
 }
+// ══════════════════════════════════════════════════════════════════════�?
 //  TLS 1.2 消息构造辅助（服务端握手）
-// ═══════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════�?
 
-// ChangeCipherSpec 记录（type=20, payload={0x01}），明文发送
+// ChangeCipherSpec 记录（type=20, payload={0x01}），明文发�?
 std::vector<uint8_t> tls_make_change_cipher_spec() {
     std::vector<uint8_t> m;
     m.push_back(20);            // ContentType::CHANGE_CIPHER_SPEC
@@ -4273,7 +5003,7 @@ std::vector<uint8_t> tls_make_change_cipher_spec() {
     return m;
 }
 
-// ServerHelloDone 消息（type=14, 空 body）
+// ServerHelloDone 消息（type=14, �?body�?
 std::vector<uint8_t> tls12_make_server_hello_done() {
     std::vector<uint8_t> m;
     m.push_back((uint8_t)HandshakeType::SERVER_HELLO_DONE);
@@ -4281,7 +5011,7 @@ std::vector<uint8_t> tls12_make_server_hello_done() {
     return m;
 }
 
-// 生成 Finished 明文消息（verify_data 12 字节，RFC 5246 7.4.9）
+// 生成 Finished 明文消息（verify_data 12 字节，RFC 5246 7.4.9�?
 std::vector<uint8_t> tls12_make_finished(tls_session& s, bool for_server) {
     tls_transcript_finalize(s);
     uint8_t verify_data[12];
@@ -4298,7 +5028,7 @@ std::vector<uint8_t> tls12_make_finished(tls_session& s, bool for_server) {
     return m;
 }
 
-// 验证 Finished 消息（对比 verify_data 12 字节）
+// 验证 Finished 消息（对�?verify_data 12 字节�?
 bool tls12_verify_finished(tls_session& s, const uint8_t* data, size_t len, bool for_server) {
     if (len < 16 || data[0] != (uint8_t)HandshakeType::FINISHED) return false;
     tls_transcript_finalize(s);
@@ -4309,27 +5039,18 @@ bool tls12_verify_finished(tls_session& s, const uint8_t* data, size_t len, bool
         tls12_prf_sha384(s.master_secret, 48, label, s.transcript_hash, hl, expected, 12);
     else
         tls12_prf(s.master_secret, 48, label, s.transcript_hash, hl, expected, 12);
-    fprintf(stderr, "[TLS12-VF] suite=%d hl=%zu label=%s\n  ms:", (int)s.cipher_suite, hl, label);
-    for (int i = 0; i < 12; ++i) fprintf(stderr, "%02x", s.master_secret[i]);
-    fprintf(stderr, "\n  th:");
-    for (size_t i = 0; i < hl; ++i) fprintf(stderr, "%02x", s.transcript_hash[i]);
-    fprintf(stderr, "\n  got: ");
-    for (int i = 0; i < 12; ++i) fprintf(stderr, "%02x", data[4 + i]);
-    fprintf(stderr, "\n  exp: ");
-    for (int i = 0; i < 12; ++i) fprintf(stderr, "%02x", expected[i]);
-    fprintf(stderr, "\n");
     return memcmp(expected, data + 4, 12) == 0;
 }
 
-// 服务端处理 ClientKeyExchange：
-// - ECDHE: 解析客户端临时公钥 → x25519(server_priv, client_pub) → 32 字节共享密钥作为 premaster
-// - RSA:   rsa_decrypt(server_priv, encrypted_pms) → 48 字节 premaster
-// 随后 derive keys，生成 CCS 记录 + 加密的 Finished 记录（追加到 server_ccs_finished）
+// 服务端处�?ClientKeyExchange�?
+// - ECDHE: 解析客户端临时公�?�?x25519(server_priv, client_pub) �?32 字节共享密钥作为 premaster
+// - RSA:   rsa_decrypt(server_priv, encrypted_pms) �?48 字节 premaster
+// 随后 derive keys，生�?CCS 记录 + 加密�?Finished 记录（追加到 server_ccs_finished�?
 bool tls12_process_client_key_exchange(tls_session& s, const uint8_t* encrypted_pms, size_t epms_len,
-                                        std::vector<uint8_t>& server_ccs_finished) {
+                                        std::vector<uint8_t>& server_ccs_finished,
+                                        const tls_psk_store* psk_store) {
     (void)server_ccs_finished;
-    uint8_t pre_master[48] = {0};
-    size_t pms_len = 0;
+    std::vector<uint8_t> pre_master;
 
     if (tls12_is_ecdhe(s.cipher_suite)) {
         // ClientKeyExchange 结构（ECDHE，RFC 4492 5.7）：
@@ -4339,13 +5060,59 @@ bool tls12_process_client_key_exchange(tls_session& s, const uint8_t* encrypted_
         if (pub_len != 32 || 1 + pub_len > epms_len) return false;
         const uint8_t* client_pub = encrypted_pms + 1;
         // 服务端临时私钥保存在 s.ks_priv（tls12_make_server_flight 生成时写入）
-        fprintf(stderr, "[TLS12-CKE] epms_len=%zu hex:", epms_len);
-        for (size_t ii = 0; ii < epms_len; ++ii) fprintf(stderr, "%02x", encrypted_pms[ii]);
-        fprintf(stderr, "\n");
         uint8_t shared[32];
         x25519_scalar_mult(shared, s.ks_priv, client_pub);
-        memcpy(pre_master, shared, 32);
-        pms_len = 32;
+        pre_master.assign(shared, shared + 32);
+    } else if (tls12_is_dhe_rsa(s.cipher_suite)) {
+        // ClientKeyExchange（DHE，RFC 5246 7.4.7.2）：2 字节长度 + dh_Yc
+        if (!encrypted_pms || epms_len < 2) return false;
+        size_t pub_len = (encrypted_pms[0] << 8) | encrypted_pms[1];
+        if (2 + pub_len > epms_len || pub_len != jpssl::dh::FFDHE2048_BYTES) return false;
+        const uint8_t* client_pub = encrypted_pms + 2;
+        uint8_t shared256[256];
+        if (!jpssl::dh::ffdhe2048_shared(shared256, s.dh_priv, client_pub))
+            return false; // RFC 7919 §4：1 < dh_Yc < dh_p-1
+        uint8_t minimal[256];
+        size_t n = jpssl::dh::ffdhe2048_shared_minimal(shared256, minimal);
+        pre_master.assign(minimal, minimal + n);
+    } else if (tls12_is_psk(s.cipher_suite)) {
+        // ClientKeyExchange（PSK，RFC 4279 §2）：2 字节长度 + psk_identity
+        if (!encrypted_pms || epms_len < 2) return false;
+        size_t id_len = (encrypted_pms[0] << 8) | encrypted_pms[1];
+        if (2 + id_len > epms_len) return false;
+        // 查表得到 PSK 值
+        std::vector<uint8_t> psk;
+        if (psk_store) {
+            std::string ident((const char*)encrypted_pms + 2, id_len);
+            if (!psk_store->lookup(ident, psk)) return false; // 未知身份
+        } else if (s.tls12_psk_valid) {
+            psk.assign(s.tls12_psk_value, s.tls12_psk_value + s.tls12_psk_value_len);
+        } else {
+            return false;
+        }
+        if (psk.size() > sizeof(s.tls12_psk_value)) return false;
+        memcpy(s.tls12_psk_value, psk.data(), psk.size());
+        s.tls12_psk_value_len = psk.size();
+        s.tls12_psk_valid = true;
+        if (tls12_is_dhe_psk(s.cipher_suite)) {
+            // ClientKeyExchange（DHE_PSK，RFC 4279 §3）：
+            //   identity(2+len) || dh_Yc(2+len)
+            size_t off = 2 + id_len;
+            if (off + 2 > epms_len) return false;
+            size_t pub_len = (encrypted_pms[off] << 8) | encrypted_pms[off+1]; off += 2;
+            if (off + pub_len > epms_len || pub_len != jpssl::dh::FFDHE2048_BYTES)
+                return false;
+            const uint8_t* client_pub = encrypted_pms + off;
+            uint8_t shared256[256];
+            if (!jpssl::dh::ffdhe2048_shared(shared256, s.dh_priv, client_pub))
+                return false; // RFC 7919 §4：1 < dh_Yc < dh_p-1
+            uint8_t minimal[256];
+            size_t n = jpssl::dh::ffdhe2048_shared_minimal(shared256, minimal);
+            pre_master = tls12_psk_premaster(psk.data(), psk.size(), minimal, n);
+        } else {
+            // 纯 PSK：other_secret = psk_len 个零字节（OpenSSL 4.0 格式）
+            pre_master = tls12_psk_premaster(psk.data(), psk.size(), nullptr, 0);
+        }
     } else {
         // 纯 RSA 密钥交换（RFC 5246 7.4.7.1）：2 字节长度 + 加密 premaster
         // s.rsa_key 由握手流程注入（tls12_make_server_flight 填充）。
@@ -4355,12 +5122,12 @@ bool tls12_process_client_key_exchange(tls_session& s, const uint8_t* encrypted_
         std::vector<uint8_t> pt;
         if (!rsa_decrypt(s.rsa_key, encrypted_pms + 2, pt)) return false;
         size_t n = pt.size() < 48 ? pt.size() : 48;
-        memcpy(pre_master, pt.data(), n);
-        pms_len = n;
+        pre_master.assign(pt.data(), pt.data() + n);
     }
 
     // derive master secret 与 key block
-    tls12_derive_keys(s, pre_master, pms_len);
+    if (pre_master.empty()) return false;
+    tls12_derive_keys(s, pre_master.data(), pre_master.size());
     return true;
 }
 

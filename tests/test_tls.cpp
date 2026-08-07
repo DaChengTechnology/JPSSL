@@ -10,6 +10,7 @@
 #include "ecdsa.hpp"
 #include "rsa.hpp"
 #include "x25519.hpp"
+#include "dh.hpp"
 #include <vector>
 #include <string>
 #include <memory>
@@ -538,6 +539,7 @@ static const char* cs_name(CipherSuite cs) {
         case CipherSuite::TLS_AES_256_GCM_SHA384:       return "AES256-GCM-SHA384";
         case CipherSuite::TLS_CHACHA20_POLY1305_SHA256: return "CHACHA20-POLY1305-SHA256";
         case CipherSuite::TLS_AES_128_CCM_SHA256:       return "AES128-CCM-SHA256";
+        case CipherSuite::TLS_AES_128_CCM_8_SHA256:     return "AES128-CCM8-SHA256";
         case CipherSuite::TLS_SM4_GCM_SM3:              return "SM4-GCM-SM3";
         case CipherSuite::TLS_SM4_CCM_SM3:              return "SM4-CCM-SM3";
         default: return "?";
@@ -669,6 +671,7 @@ void test_tls13_0rtt_matrix() {
         CipherSuite::TLS_AES_256_GCM_SHA384,
         CipherSuite::TLS_CHACHA20_POLY1305_SHA256,
         CipherSuite::TLS_AES_128_CCM_SHA256,
+        CipherSuite::TLS_AES_128_CCM_8_SHA256,
         CipherSuite::TLS_SM4_GCM_SM3,
         CipherSuite::TLS_SM4_CCM_SM3,
     };
@@ -1626,6 +1629,283 @@ void test_tls13_client_x509_verify_reject() {
 }
 
 // ========================================================================
+//  TLS 1.2 DHE (RFC 7919 ffdhe2048) / PSK (RFC 4279/5487) 测试
+// ========================================================================
+
+// ffdhe2048 DH 模块：密钥对一致性 + 越界公钥拒绝
+void test_dh_ffdhe2048() {
+    uint8_t a_pub[256], a_priv[32], b_pub[256], b_priv[32];
+    jpssl::dh::ffdhe2048_keypair(a_pub, a_priv);
+    jpssl::dh::ffdhe2048_keypair(b_pub, b_priv);
+    uint8_t s1[256], s2[256];
+    TEST("ffdhe2048 shared A->B", jpssl::dh::ffdhe2048_shared(s1, a_priv, b_pub));
+    TEST("ffdhe2048 shared B->A", jpssl::dh::ffdhe2048_shared(s2, b_priv, a_pub));
+    TEST("ffdhe2048 shared equal", memcmp(s1, s2, 256) == 0);
+
+    uint8_t bad[256];
+    memset(bad, 0, sizeof(bad));
+    TEST("ffdhe2048 reject Y=0", !jpssl::dh::ffdhe2048_shared(s1, a_priv, bad));
+    memset(bad, 0xFF, sizeof(bad)); // 全 0xFF > p，越界
+    TEST("ffdhe2048 reject Y>=p", !jpssl::dh::ffdhe2048_shared(s1, a_priv, bad));
+    memcpy(bad, jpssl::dh::ffdhe2048_p, 256);
+    TEST("ffdhe2048 reject Y=p", !jpssl::dh::ffdhe2048_shared(s1, a_priv, bad));
+
+    // minimal 编码：剥离前导零
+    uint8_t z[256] = {0};
+    z[255] = 0x2A;
+    uint8_t minimal[256];
+    size_t n = jpssl::dh::ffdhe2048_shared_minimal(z, minimal);
+    TEST("ffdhe2048 minimal len", n == 1 && minimal[0] == 0x2A);
+}
+
+// 构造仅含指定套件的 TLS 1.2 ClientHello（DHE/PSK 定向测试用）
+static std::vector<uint8_t> make_tls12_ch_single(const tls_session& s, uint16_t suite,
+                                                 bool add_ffdhe_group,
+                                                 bool add_sig_algs) {
+    std::vector<uint8_t> ch;
+    ch.push_back((uint8_t)HandshakeType::CLIENT_HELLO);
+    ch.push_back(0); ch.push_back(0); ch.push_back(0);
+    ch.push_back(0x03); ch.push_back(0x03);
+    ch.insert(ch.end(), s.client_random, s.client_random + 32);
+    ch.push_back(0); // session_id_len
+    ch.push_back(0); ch.push_back(2); // 1 个套件
+    ch.push_back((uint8_t)(suite >> 8)); ch.push_back((uint8_t)suite);
+    ch.push_back(1); ch.push_back(0); // compression: null
+    std::vector<uint8_t> ext;
+    if (add_ffdhe_group) {
+        ext.push_back(0x00); ext.push_back(0x0a); // supported_groups
+        ext.push_back(0x00); ext.push_back(0x02);
+        ext.push_back(0x01); ext.push_back(0x00); // ffdhe2048
+    }
+    if (add_sig_algs) {
+        std::vector<uint16_t> algs = tls_default_signature_algorithms();
+        size_t list_len = algs.size() * 2;
+        ext.push_back(0x00); ext.push_back(0x0d); // signature_algorithms
+        ext.push_back((uint8_t)((2 + list_len) >> 8)); ext.push_back((uint8_t)(2 + list_len));
+        ext.push_back((uint8_t)(list_len >> 8)); ext.push_back((uint8_t)list_len);
+        for (uint16_t a : algs) {
+            ext.push_back((uint8_t)(a >> 8)); ext.push_back((uint8_t)a);
+        }
+    }
+    uint16_t ext_total = (uint16_t)ext.size();
+    ch.push_back((uint8_t)(ext_total >> 8)); ch.push_back((uint8_t)ext_total);
+    ch.insert(ch.end(), ext.begin(), ext.end());
+    size_t len = ch.size() - 4;
+    ch[1] = (uint8_t)(len >> 16); ch[2] = (uint8_t)(len >> 8); ch[3] = (uint8_t)len;
+    return ch;
+}
+
+static void fill_random(uint8_t* p, size_t n) {
+    for (size_t i = 0; i < n; ++i) p[i] = (uint8_t)(std::rand() & 0xFF);
+}
+
+// TLS 1.2 DHE-RSA 完整握手（服务端 tls12_make_server_hello_flight + 客户端完整路径）
+void test_tls12_dhe_rsa_handshake() {
+    tls_certificate_manager cert_mgr;
+    auto server_cert = std::make_unique<tls_certificate>();
+    server_cert->subject_name = "localhost";
+    server_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
+    rsa_keygen(server_cert->pub.rsa, server_cert->priv.rsa);
+    cert_mgr.add_certificate("localhost", std::move(server_cert));
+
+    tls_session client;
+    client.server_name = "localhost";
+    fill_random(client.client_random, 32);
+    auto ch = make_tls12_ch_single(client, 0x009E, /*ffdhe=*/true, /*sig_algs=*/true);
+    client.tls12_client_hello_cache = ch;
+
+    tls_session server;
+    std::vector<uint8_t> hello_flight;
+    TEST("DHE-RSA server hello flight",
+         tls12_make_server_hello_flight(server, ch.data(), ch.size(), hello_flight, cert_mgr));
+    TEST("DHE-RSA suite negotiated",
+         server.cipher_suite == CipherSuite::TLS_DHE_RSA_WITH_AES_128_GCM_SHA256);
+
+    std::vector<uint8_t> cke, client_finished;
+    TEST("DHE-RSA client process flight",
+         tls12_process_server_flight(client, hello_flight.data(), hello_flight.size(),
+                                     nullptr, 0, client_finished, &cke, &cert_mgr));
+    TEST("DHE-RSA CKE produced", !cke.empty());
+
+    // 服务端：CKE 入 transcript 后处理并验证客户端 Finished
+    tls_transcript_update(server, cke.data(), cke.size());
+    std::vector<uint8_t> dummy;
+    TEST("DHE-RSA server process CKE",
+         tls12_process_client_key_exchange(server, cke.data() + 4, cke.size() - 4, dummy));
+    TEST("DHE-RSA master secret match",
+         memcmp(client.master_secret, server.master_secret, 48) == 0);
+    TEST("DHE-RSA server verify client finished",
+         tls12_verify_finished(server, client_finished.data(), client_finished.size(), false));
+
+    // 服务端 Finished：客户端验证
+    tls_transcript_update(server, client_finished.data(), client_finished.size());
+    std::vector<uint8_t> sf = tls12_make_finished(server, /*for_server=*/true);
+    TEST("DHE-RSA client verify server finished",
+         tls12_verify_finished(client, sf.data(), sf.size(), true));
+
+    // 记录层往返
+    const uint8_t app[] = "DHE-RSA application data";
+    auto enc = tls_encrypt(client, ContentType::APPLICATION_DATA, app, sizeof(app) - 1);
+    ContentType ct;
+    std::vector<uint8_t> dec;
+    TEST("DHE-RSA encrypt", !enc.empty());
+    TEST("DHE-RSA decrypt", tls_decrypt(server, enc.data(), enc.size(), ct, dec));
+    TEST("DHE-RSA roundtrip", dec.size() == sizeof(app) - 1 &&
+         memcmp(dec.data(), app, sizeof(app) - 1) == 0);
+}
+
+// TLS 1.2 PSK 完整握手（纯 PSK，无证书）
+void test_tls12_psk_handshake() {
+    static const uint8_t kPsk[] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
+                                   0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,0x10};
+    static const char kIdent[] = "jpssl-test-identity";
+
+    tls_psk_store psk_store;
+    psk_store.add(kIdent, std::vector<uint8_t>(kPsk, kPsk + sizeof(kPsk)));
+
+    tls_session client;
+    client.tls12_psk_valid = true;
+    memcpy(client.tls12_psk_identity, kIdent, sizeof(kIdent) - 1);
+    client.tls12_psk_identity_len = sizeof(kIdent) - 1;
+    memcpy(client.tls12_psk_value, kPsk, sizeof(kPsk));
+    client.tls12_psk_value_len = sizeof(kPsk);
+    fill_random(client.client_random, 32);
+    auto ch = make_tls12_ch_single(client, 0x00AE, /*ffdhe=*/false, /*sig_algs=*/false);
+    client.tls12_client_hello_cache = ch;
+
+    // 服务端：无证书，仅 PSK 存储
+    tls_certificate_manager cert_mgr;
+    tls_session server;
+    std::vector<uint8_t> hello_flight;
+    TEST("PSK server hello flight",
+         tls12_make_server_hello_flight(server, ch.data(), ch.size(), hello_flight,
+                                        cert_mgr, &psk_store));
+    TEST("PSK suite negotiated",
+         server.cipher_suite == CipherSuite::TLS_PSK_WITH_AES_128_CBC_SHA256);
+
+    std::vector<uint8_t> cke, client_finished;
+    TEST("PSK client process flight",
+         tls12_process_server_flight(client, hello_flight.data(), hello_flight.size(),
+                                     nullptr, 0, client_finished, &cke));
+    TEST("PSK CKE produced", !cke.empty());
+
+    tls_transcript_update(server, cke.data(), cke.size());
+    std::vector<uint8_t> dummy;
+    TEST("PSK server process CKE",
+         tls12_process_client_key_exchange(server, cke.data() + 4, cke.size() - 4,
+                                           dummy, &psk_store));
+    TEST("PSK master secret match",
+         memcmp(client.master_secret, server.master_secret, 48) == 0);
+    TEST("PSK server verify client finished",
+         tls12_verify_finished(server, client_finished.data(), client_finished.size(), false));
+
+    tls_transcript_update(server, client_finished.data(), client_finished.size());
+    std::vector<uint8_t> sf = tls12_make_finished(server, /*for_server=*/true);
+    TEST("PSK client verify server finished",
+         tls12_verify_finished(client, sf.data(), sf.size(), true));
+
+    const uint8_t app[] = "PSK application data";
+    auto enc = tls_encrypt(client, ContentType::APPLICATION_DATA, app, sizeof(app) - 1);
+    ContentType ct;
+    std::vector<uint8_t> dec;
+    TEST("PSK encrypt", !enc.empty());
+    TEST("PSK decrypt", tls_decrypt(server, enc.data(), enc.size(), ct, dec));
+    TEST("PSK roundtrip", dec.size() == sizeof(app) - 1 &&
+         memcmp(dec.data(), app, sizeof(app) - 1) == 0);
+}
+
+// TLS 1.2 DHE-PSK 完整握手（RFC 4279 §3）
+void test_tls12_dhe_psk_handshake() {
+    static const uint8_t kPsk[] = {0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88};
+    static const char kIdent[] = "dhe-psk-identity";
+
+    tls_psk_store psk_store;
+    psk_store.add(kIdent, std::vector<uint8_t>(kPsk, kPsk + sizeof(kPsk)));
+
+    tls_session client;
+    client.tls12_psk_valid = true;
+    memcpy(client.tls12_psk_identity, kIdent, sizeof(kIdent) - 1);
+    client.tls12_psk_identity_len = sizeof(kIdent) - 1;
+    memcpy(client.tls12_psk_value, kPsk, sizeof(kPsk));
+    client.tls12_psk_value_len = sizeof(kPsk);
+    fill_random(client.client_random, 32);
+    auto ch = make_tls12_ch_single(client, 0x00B2, /*ffdhe=*/true, /*sig_algs=*/false);
+    client.tls12_client_hello_cache = ch;
+
+    tls_certificate_manager cert_mgr;
+    tls_session server;
+    std::vector<uint8_t> hello_flight;
+    TEST("DHE-PSK server hello flight",
+         tls12_make_server_hello_flight(server, ch.data(), ch.size(), hello_flight,
+                                        cert_mgr, &psk_store));
+    TEST("DHE-PSK suite negotiated",
+         server.cipher_suite == CipherSuite::TLS_DHE_PSK_WITH_AES_128_CBC_SHA256);
+
+    std::vector<uint8_t> cke, client_finished;
+    TEST("DHE-PSK client process flight",
+         tls12_process_server_flight(client, hello_flight.data(), hello_flight.size(),
+                                     nullptr, 0, client_finished, &cke));
+    TEST("DHE-PSK CKE produced", !cke.empty());
+
+    tls_transcript_update(server, cke.data(), cke.size());
+    std::vector<uint8_t> dummy;
+    TEST("DHE-PSK server process CKE",
+         tls12_process_client_key_exchange(server, cke.data() + 4, cke.size() - 4,
+                                           dummy, &psk_store));
+    TEST("DHE-PSK master secret match",
+         memcmp(client.master_secret, server.master_secret, 48) == 0);
+    TEST("DHE-PSK server verify client finished",
+         tls12_verify_finished(server, client_finished.data(), client_finished.size(), false));
+
+    tls_transcript_update(server, client_finished.data(), client_finished.size());
+    std::vector<uint8_t> sf = tls12_make_finished(server, /*for_server=*/true);
+    TEST("DHE-PSK client verify server finished",
+         tls12_verify_finished(client, sf.data(), sf.size(), true));
+
+    const uint8_t app[] = "DHE-PSK application data";
+    auto enc = tls_encrypt(client, ContentType::APPLICATION_DATA, app, sizeof(app) - 1);
+    ContentType ct;
+    std::vector<uint8_t> dec;
+    TEST("DHE-PSK encrypt", !enc.empty());
+    TEST("DHE-PSK decrypt", tls_decrypt(server, enc.data(), enc.size(), ct, dec));
+    TEST("DHE-PSK roundtrip", dec.size() == sizeof(app) - 1 &&
+         memcmp(dec.data(), app, sizeof(app) - 1) == 0);
+}
+
+// 未知 PSK 身份必须被服务端拒绝
+void test_tls12_psk_unknown_identity() {
+    static const uint8_t kPsk[] = {0xAA,0xBB};
+    static const char kIdent[] = "known-identity";
+    tls_psk_store psk_store;
+    psk_store.add(kIdent, std::vector<uint8_t>(kPsk, kPsk + sizeof(kPsk)));
+
+    tls_session client;
+    client.tls12_psk_valid = true;
+    memcpy(client.tls12_psk_identity, "unknown-identity", 16);
+    client.tls12_psk_identity_len = 16;
+    memcpy(client.tls12_psk_value, kPsk, sizeof(kPsk));
+    client.tls12_psk_value_len = sizeof(kPsk);
+    fill_random(client.client_random, 32);
+    auto ch = make_tls12_ch_single(client, 0x00AE, false, false);
+    client.tls12_client_hello_cache = ch;
+
+    tls_certificate_manager cert_mgr;
+    tls_session server;
+    std::vector<uint8_t> hello_flight;
+    TEST("PSK unknown identity hello flight",
+         tls12_make_server_hello_flight(server, ch.data(), ch.size(), hello_flight,
+                                        cert_mgr, &psk_store));
+    std::vector<uint8_t> cke, client_finished;
+    TEST("PSK unknown identity client process",
+         tls12_process_server_flight(client, hello_flight.data(), hello_flight.size(),
+                                     nullptr, 0, client_finished, &cke));
+    std::vector<uint8_t> dummy;
+    TEST("PSK unknown identity rejected by server",
+         !tls12_process_client_key_exchange(server, cke.data() + 4, cke.size() - 4,
+                                            dummy, &psk_store));
+}
+
+// ========================================================================
 //  入口
 // ========================================================================
 
@@ -1665,6 +1945,11 @@ int main(int argc, char** argv) {
     RUN_TEST(test_tls13_robustness_malformed);
     RUN_TEST(test_tls13_robustness_hostname);
     RUN_TEST(test_tls13_robustness_expired_cert);
+    RUN_TEST(test_dh_ffdhe2048);
+    RUN_TEST(test_tls12_dhe_rsa_handshake);
+    RUN_TEST(test_tls12_psk_handshake);
+    RUN_TEST(test_tls12_dhe_psk_handshake);
+    RUN_TEST(test_tls12_psk_unknown_identity);
 
     return test_summary();
 }
