@@ -225,7 +225,8 @@ void test_dtls12_record_format() {
     TEST("record version fefd", enc[1] == 0xfe && enc[2] == 0xfd);
     TEST("record epoch 1", enc[3] == 0 && enc[4] == 1);
     uint16_t rlen = (uint16_t)((enc[11] << 8) | enc[12]);
-    TEST("record length = pt + tag", rlen == 4 + 16);
+    // AES-GCM 璁板綍 = explicit_nonce(8) || ciphertext || tag (TLS 1.2 / RFC 5288)
+    TEST("record length = explicit_nonce + pt + tag", rlen == 4 + 8 + 16);
     TEST("record total size matches", enc.size() == 13 + rlen);
 
     // 篡改密文 → 认证失败（静默丢弃）

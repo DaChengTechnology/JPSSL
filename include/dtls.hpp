@@ -119,6 +119,8 @@ struct dtls_session {
 
     // 分片重组
     std::vector<uint8_t> reassembly_buf;
+    std::vector<uint8_t> reassembly_received;   ///< 姣忓瓧鑺傛槸鍚﹀凡鏀跺埌锛堥槻姝㈡暟鎹腑鍚?0 瀛楄妭鏃惰鍒?/p>
+    size_t reassembly_remaining = 0;            ///< 灏氭湭鏀跺埌鐨勫瓧鑺傛暟
     uint16_t reassembly_msg_seq = 0;
     uint32_t reassembly_total_len = 0;
 
@@ -208,6 +210,9 @@ public:
     void set_version(DTLSVersion v) { ver_ = v; }
     /// 服务端：是否要求 cookie 交换。
     void set_require_cookie(bool v) { require_cookie_ = v; }
+    /// 设置握手总超时（毫秒，默认 30000）。
+    /// connect()/server_handshake() 超时未完成握手时返回 false。
+    void set_handshake_timeout_ms(int ms) { handshake_timeout_ms_ = ms; }
     /// 配置密钥交换组与密码套件（连接前设置）。
     void set_cipher_suite(tls::CipherSuite cs) { cipher_suite_ = cs; }
     void set_key_share_group(tls::NamedGroup g) { ks_group_ = g; }
@@ -216,6 +221,8 @@ public:
 
     bool handshake_done() const { return done_; }
     dtls_session& session() { return s_; }
+    /// 最近一次握手/收发失败原因（调试用）。
+    const std::string& last_error() const { return last_error_; }
 
     /// 已绑定/连接的本地端口（bind(0) 后用于告知客户端连接地址）。
     uint16_t local_port() const;
@@ -230,6 +237,8 @@ private:
     tls::NamedGroup ks_group_ = tls::NamedGroup::X25519;
     std::string server_name_;
     bool done_ = false;
+    int handshake_timeout_ms_ = 30000;
+    std::string last_error_;
 
 #ifdef _WIN32
     void* sock_ = nullptr;   // SOCKET

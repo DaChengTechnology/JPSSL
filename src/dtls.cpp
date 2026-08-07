@@ -297,6 +297,17 @@ static void dtls12_header(uint8_t hdr[13], uint8_t type, uint16_t epoch,
     hdr[11] = (uint8_t)(len >> 8); hdr[12] = (uint8_t)len;
 }
 
+// RFC 6347 §4.1.2.1：AEAD additional_data =
+//   seq_num_epoch(2) || seq_num(6) || type(1) || version(2) || length(2)
+static void dtls12_ad(uint8_t ad[13], uint8_t type, uint16_t epoch, uint64_t seq,
+                      uint16_t len) {
+    ad[0] = (uint8_t)(epoch >> 8); ad[1] = (uint8_t)epoch;
+    for (int i = 0; i < 6; ++i) ad[2 + i] = (uint8_t)(seq >> (40 - 8 * i));
+    ad[8] = type;
+    ad[9] = 0xfe; ad[10] = 0xfd;
+    ad[11] = (uint8_t)(len >> 8); ad[12] = (uint8_t)len;
+}
+
 static std::vector<uint8_t> plaintext_record(uint8_t type, uint16_t epoch,
                                              uint64_t seq, const uint8_t* payload, size_t len) {
     std::vector<uint8_t> rec;
@@ -314,10 +325,6 @@ static void dtls12_nonce(const uint8_t* iv, size_t iv_len, uint16_t epoch, uint6
         memcpy(nonce, iv, 12);
         for (int i = 0; i < 8; ++i)
             nonce[4 + i] ^= (uint8_t)((i < 2) ? (epoch >> (8 * (1 - i))) : (seq >> (8 * (7 - i))));
-    } else {
-        memcpy(nonce, iv, 4);
-        nonce[4] = (uint8_t)(epoch >> 8); nonce[5] = (uint8_t)epoch;
-        for (int i = 0; i < 6; ++i) nonce[6 + i] = (uint8_t)(seq >> (40 - 8 * i));
     }
 }
 
@@ -325,18 +332,31 @@ static std::vector<uint8_t> dtls12_protect(dtls_session& s, uint8_t type,
                                            const uint8_t* data, size_t len) {
     uint16_t epoch = s.send_epoch;
     uint64_t seq = s.send_seq++;
-    uint8_t hdr[13];
-    dtls12_header(hdr, type, epoch, seq, (uint16_t)(len + 16));
     const uint8_t* iv = s.is_server ? s.server_write_iv : s.client_write_iv;
-    uint8_t nonce[12];
-    dtls12_nonce(iv, s.iv_len, epoch, seq, nonce);
-    uint8_t ad[13];
-    dtls12_header(ad, type, epoch, seq, (uint16_t)len);
     const uint8_t* key = s.is_server ? s.server_write_key : s.client_write_key;
+    // AES-GCM (RFC 5288，DTLS "exactly as TLS 1.2" per RFC 6347 4.1.2.4):
+    // record = explicit_nonce(8) || ciphertext || tag，nonce = fixed_iv(4) || explicit(8)。
+    // ChaCha20-Poly1305 (RFC 7905)：无显式 nonce，nonce = fixed_iv(12) XOR epoch||seq。
+    bool gcm = (s.iv_len == 4);
+    uint8_t nonce[12];
+    uint8_t explicit_nonce[8] = {};
+    if (gcm) {
+        rand_bytes(explicit_nonce, 8);
+        memcpy(nonce, iv, 4);
+        memcpy(nonce + 4, explicit_nonce, 8);
+    } else {
+        dtls12_nonce(iv, s.iv_len, epoch, seq, nonce);
+    }
+    uint8_t ad[13];
+    dtls12_ad(ad, type, epoch, seq, (uint16_t)len);  // AAD length = plaintext length
     std::vector<uint8_t> ct; uint8_t tag[16];
     aead_encrypt(s.cipher_suite, key, s.key_len, nonce, ad, 13, data, len, ct, tag);
+    uint16_t wire_len = (uint16_t)((gcm ? 8 : 0) + len + 16);
+    uint8_t hdr[13];
+    dtls12_header(hdr, type, epoch, seq, wire_len);
     std::vector<uint8_t> rec;
     rec.insert(rec.end(), hdr, hdr + 13);
+    if (gcm) rec.insert(rec.end(), explicit_nonce, explicit_nonce + 8);
     rec.insert(rec.end(), ct.begin(), ct.end());
     rec.insert(rec.end(), tag, tag + 16);
     return rec;
@@ -359,17 +379,24 @@ static bool dtls12_parse_header(const uint8_t* rec, size_t len,
 static bool dtls12_unprotect_record(dtls_session& s, uint8_t type, uint16_t epoch, uint64_t seq,
                                     const uint8_t* payload, size_t payload_len,
                                     std::vector<uint8_t>& out) {
-    if (payload_len < 16) return false;
-    size_t ct_len = payload_len - 16;
-    const uint8_t* ct = payload;
-    const uint8_t* tag = payload + ct_len;
+    bool gcm = (s.iv_len == 4);
+    if (payload_len < 16 + (gcm ? 8 : 0)) return false;
+    size_t ct_len = payload_len - 16 - (gcm ? 8 : 0);
+    const uint8_t* ct = payload + (gcm ? 8 : 0);
+    const uint8_t* tag = ct + ct_len;
     const uint8_t* iv = s.is_server ? s.client_write_iv : s.server_write_iv;
     uint8_t nonce[12];
-    dtls12_nonce(iv, s.iv_len, epoch, seq, nonce);
+    if (gcm) {
+        memcpy(nonce, iv, 4);
+        memcpy(nonce + 4, payload, 8);
+    } else {
+        dtls12_nonce(iv, s.iv_len, epoch, seq, nonce);
+    }
     uint8_t ad[13];
-    dtls12_header(ad, type, epoch, seq, (uint16_t)ct_len);
+    dtls12_ad(ad, type, epoch, seq, (uint16_t)ct_len);  // AAD length = plaintext length
     const uint8_t* key = s.is_server ? s.client_write_key : s.server_write_key;
-    return aead_decrypt(s.cipher_suite, key, s.key_len, nonce, ad, 13, ct, ct_len, tag, out);
+    bool ok = aead_decrypt(s.cipher_suite, key, s.key_len, nonce, ad, 13, ct, ct_len, tag, out);
+    return ok;
 }
 
 // ---- DTLS 1.3 record layer (RFC 9147 4.1) --------------------------------
@@ -600,17 +627,34 @@ static std::vector<uint8_t> build_ch12_body(dtls_session& s, const std::vector<u
     }
     {
         ext.push_back(0x00); ext.push_back(0x0a);
-        put16(ext, 6);
-        put16(ext, 4);
-        put16(ext, (uint16_t)NamedGroup::X25519);
-        if (s.ks_group == NamedGroup::secp256r1) put16(ext, (uint16_t)NamedGroup::secp256r1);
-        else put16(ext, (uint16_t)NamedGroup::X25519);
+        std::vector<uint16_t> groups;
+        if (s.ks_group == NamedGroup::secp256r1) {
+            groups.push_back((uint16_t)NamedGroup::secp256r1);
+            groups.push_back((uint16_t)NamedGroup::X25519);
+        } else {
+            groups.push_back((uint16_t)NamedGroup::X25519);
+            groups.push_back((uint16_t)NamedGroup::secp256r1);
+        }
+        put16(ext, (uint16_t)(2 + groups.size() * 2));
+        put16(ext, (uint16_t)(groups.size() * 2));
+        for (uint16_t g : groups) put16(ext, g);
         ext.push_back(0x00); ext.push_back(0x0b);
         ext.push_back(0x00); ext.push_back(0x02);
         ext.push_back(0x01); ext.push_back(0x00);
     }
     {
+        // renegotiation_info (RFC 5746)：初次握手 renegotiated_connection 为空
+        ext.push_back(0xff); ext.push_back(0x01);
+        ext.push_back(0x00); ext.push_back(0x01);
+        ext.push_back(0x00);
+    }
+    {
         std::vector<uint16_t> algs = s.sig_algs.empty() ? jpssl::tls::tls_default_signature_algorithms() : s.sig_algs;
+        // SM2-SM3 (RFC 8998) 是 TLS 1.3 的签名方案；DTLS 1.2 客户端不应发送，
+        // OpenSSL 4.0 不认识该 code point 时会跳过整个交集。
+        algs.erase(std::remove_if(algs.begin(), algs.end(),
+                    [](uint16_t a) { return a == (uint16_t)SignatureAlgorithm::SM2_SM3; }),
+                   algs.end());
         ext.push_back(0x00); ext.push_back(0x0d);
         put16(ext, (uint16_t)(2 + algs.size() * 2));
         put16(ext, (uint16_t)(algs.size() * 2));
@@ -711,6 +755,16 @@ static std::vector<uint8_t> build_sh_body(dtls_session& s, bool dtls13) {
         // ServerHello key_share = 单个 KeyShareEntry（无向量长度）
         put16(ext, (uint16_t)ks.size());
         ext.insert(ext.end(), ks.begin(), ks.end());
+        put16(b, (uint16_t)ext.size());
+        b.insert(b.end(), ext.begin(), ext.end());
+    } else {
+        // DTLS 1.2 ServerHello 扩展：renegotiation_info (RFC 5746 / RFC 6347)，
+        // renegotiated_connection 长度为 0（本次握手未重协商）。
+        // OpenSSL 客户端默认拒绝无此扩展的 DTLS 1.2 ServerHello。
+        std::vector<uint8_t> ext;
+        ext.push_back(0xff); ext.push_back(0x01);   // renegotiation_info
+        ext.push_back(0x00); ext.push_back(0x01);   // 扩展长度
+        ext.push_back(0x00);                        // renegotiated_connection len=0
         put16(b, (uint16_t)ext.size());
         b.insert(b.end(), ext.begin(), ext.end());
     }
@@ -1176,17 +1230,24 @@ static bool collect_handshake(dtls_session& s, const std::vector<uint8_t>& bytes
                 s.reassembly_msg_seq = mseq;
                 s.reassembly_total_len = total;
                 s.reassembly_buf.assign(total, 0);
+                s.reassembly_received.assign(total, 0);
+                s.reassembly_remaining = total;
             }
             if (s.reassembly_msg_seq == mseq && s.reassembly_total_len == total &&
                 foff + flen <= total) {
-                memcpy(s.reassembly_buf.data() + foff, frag, flen);
-                bool complete = true;
-                for (uint32_t i = 0; i < total; ++i)
-                    if (s.reassembly_buf[i] == 0) { complete = false; break; }
-                if (complete) {
+                for (uint32_t i = 0; i < flen; ++i) {
+                    if (!s.reassembly_received[foff + i]) {
+                        s.reassembly_buf[foff + i] = frag[i];
+                        s.reassembly_received[foff + i] = 1;
+                        --s.reassembly_remaining;
+                    }
+                }
+                if (s.reassembly_remaining == 0) {
                     if (!process(s, mtype, mseq, s.reassembly_buf)) return false;
                     s.recv_msg_seq++;
                     s.reassembly_buf.clear();
+                    s.reassembly_received.clear();
+                    s.reassembly_remaining = 0;
                 }
             }
             off += 12 + flen;
@@ -1570,7 +1631,8 @@ static dtls_step_result server_step(dtls_session& s, const dtls_handshake_input&
                 }
                 if (!cookie_ok) {
                     std::vector<uint8_t> expect = make_cookie(s, body.data() + 2);
-                    std::vector<uint8_t> hvr_body = build_hvr_body((uint16_t)DTLSVersion::V12, expect);
+                    // RFC 6347 4.2.1：HelloVerifyRequest 的 server_version 用 DTLS 1.0 (0xfeff)
+                    std::vector<uint8_t> hvr_body = build_hvr_body(0xfeff, expect);
                     auto framed = frame_handshake(s, 3, hvr_body, 0, (uint32_t)hvr_body.size());
                     s.send_msg_seq++;
                     response = plaintext_record(22, 0, s.send_seq++, framed.data(), framed.size());
@@ -1904,6 +1966,13 @@ uint16_t dtls_connection::local_port() const {
     return ntohs(sa.sin_port);
 }
 
+// 剩余握手预算（毫秒）；<=0 表示已超时
+static int hs_remaining(const std::chrono::steady_clock::time_point& t0, int budget_ms) {
+    auto el = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - t0).count();
+    return budget_ms - (int)el;
+}
+
 bool dtls_connection::connect(const char* host, uint16_t port,
                               const tls::tls_trust_store* trust_store) {
     dtls_socket_init();
@@ -1937,29 +2006,47 @@ bool dtls_connection::connect(const char* host, uint16_t port,
     in.trust_store = trust_store;
 
     auto step = dtls_handshake_step(s_, in);
-    if (!step.ok) { close(); return false; }
-    if (!step.out.empty() && !sock_send(fd, step.out.data(), step.out.size())) { close(); return false; }
+    if (!step.ok) { last_error_ = step.error; close(); return false; }
+    if (!step.out.empty()) {
+        if (!sock_send(fd, step.out.data(), step.out.size())) { close(); return false; }
+    }
 
     int timeout_ms = 500;
     int retries = 0;
     std::vector<uint8_t> buf(65536);
+    auto hs_t0 = std::chrono::steady_clock::now();
     while (!step.done) {
-        if (!sock_wait_readable(fd, timeout_ms)) {
-            if (retries++ >= 8) { close(); return false; }
+        int wait_ms = timeout_ms;
+        int remain = hs_remaining(hs_t0, handshake_timeout_ms_);
+        if (remain <= 0) { last_error_ = "handshake timeout"; close(); return false; }
+        if (wait_ms > remain) wait_ms = remain;
+        if (!sock_wait_readable(fd, wait_ms)) {
+            if (retries++ >= 8) { last_error_ = "handshake retries exhausted"; close(); return false; }
             timeout_ms *= 2;
             if (!s_.last_sent.empty() && !sock_send(fd, s_.last_sent.data(), s_.last_sent.size()))
                 { close(); return false; }
             continue;
         }
         int n = sock_recv(fd, buf.data(), (int)buf.size());
-        if (n <= 0) { close(); return false; }
+        if (n <= 0) {
+#ifdef _WIN32
+            char eb[64]; snprintf(eb, sizeof(eb), "recv failed (wsa=%d)", WSAGetLastError());
+            last_error_ = eb;
+#else
+            char eb[64]; snprintf(eb, sizeof(eb), "recv failed (errno=%d)", errno);
+            last_error_ = eb;
+#endif
+            close(); return false;
+        }
         dtls_handshake_input in2;
         in2.datagram = buf.data(); in2.datagram_len = (size_t)n;
         in2.trust_store = trust_store;
         step = dtls_handshake_step(s_, in2);
-        if (!step.ok) { close(); return false; }
-        if (!step.out.empty() && !sock_send(fd, step.out.data(), step.out.size()))
-            { close(); return false; }
+        if (!step.ok) { last_error_ = step.error; close(); return false; }
+        if (!step.out.empty()) {
+            if (!sock_send(fd, step.out.data(), step.out.size()))
+                { close(); return false; }
+        }
         timeout_ms = 500; retries = 0;
     }
     done_ = true;
@@ -1997,9 +2084,14 @@ bool dtls_connection::server_handshake(tls::tls_certificate_manager& cert_mgr) {
     bool done = false;
     bool peer_set = false;
     int timeout_ms = 500, retries = 0;
+    auto hs_t0 = std::chrono::steady_clock::now();
     while (!done) {
-        if (!sock_wait_readable(fd, timeout_ms)) {
-            if (retries++ >= 8) { close(); return false; }
+        int wait_ms = timeout_ms;
+        int remain = hs_remaining(hs_t0, handshake_timeout_ms_);
+        if (remain <= 0) { last_error_ = "handshake timeout"; close(); return false; }
+        if (wait_ms > remain) wait_ms = remain;
+        if (!sock_wait_readable(fd, wait_ms)) {
+            if (retries++ >= 8) { last_error_ = "handshake retries exhausted"; close(); return false; }
             timeout_ms *= 2;
             if (!s_.last_sent.empty() && !sock_send(fd, s_.last_sent.data(), s_.last_sent.size()))
                 { close(); return false; }
@@ -2011,20 +2103,35 @@ bool dtls_connection::server_handshake(tls::tls_certificate_manager& cert_mgr) {
             sockaddr_in src{};
             n = sock_recvfrom(fd, buf.data(), (int)buf.size(), &src);
             if (n > 0) {
-                if (::connect(fd, (sockaddr*)&src, sizeof(src)) != 0) { close(); return false; }
+                if (::connect(fd, (sockaddr*)&src, sizeof(src)) != 0) {
+                    last_error_ = "peer connect failed"; close(); return false;
+                }
                 peer_set = true;
             }
         } else {
             n = sock_recv(fd, buf.data(), (int)buf.size());
         }
-        if (n <= 0) { close(); return false; }
+        if (n <= 0) {
+#ifdef _WIN32
+            char eb[64]; snprintf(eb, sizeof(eb), "recv failed (wsa=%d)", WSAGetLastError());
+            last_error_ = eb;
+#else
+            char eb[64]; snprintf(eb, sizeof(eb), "recv failed (errno=%d)", errno);
+            last_error_ = eb;
+#endif
+            close(); return false;
+        }
         dtls_handshake_input in;
         in.datagram = buf.data(); in.datagram_len = (size_t)n;
         in.cert_manager = &cert_mgr;
         auto step = dtls_handshake_step(s_, in);
-        if (!step.ok) { close(); return false; }
-        if (!step.out.empty() && !sock_send(fd, step.out.data(), step.out.size()))
-            { close(); return false; }
+        if (!step.ok) {
+            last_error_ = "step: " + step.error; close(); return false;
+        }
+        if (!step.out.empty()) {
+            if (!sock_send(fd, step.out.data(), step.out.size()))
+                { close(); return false; }
+        }
         done = step.done;
         timeout_ms = 500; retries = 0;
     }
