@@ -15,6 +15,9 @@
  * 平台：Windows (Winsock)。
  */
 #include "test_utils.hpp"
+// QUIC wire version numbers (RFC 9000 section 15 / RFC 9369 section 3.1)
+constexpr uint32_t QUIC_VERSION_V1 = 0x00000001u;
+constexpr uint32_t QUIC_VERSION_V2 = 0x6b3343cfu;
 #include "tls.hpp"
 #include "tls_quic.hpp"
 #include "ecdsa.hpp"
@@ -198,7 +201,8 @@ static bool quic_aead_open(CipherSuite cs, const quic_packet_keys& k, uint64_t p
 }
 
 // 构建长包头数据包（Initial / Handshake），pn_len 固定 4
-static void quic_build_long(uint8_t ptype, const std::vector<uint8_t>& dcid,
+static void quic_build_long(uint8_t ptype, uint32_t version,
+                            const std::vector<uint8_t>& dcid,
                             const std::vector<uint8_t>& scid,
                             const std::vector<uint8_t>* token,
                             uint64_t pn, const std::vector<uint8_t>& frames,
@@ -208,7 +212,10 @@ static void quic_build_long(uint8_t ptype, const std::vector<uint8_t>& dcid,
     const uint8_t pn_len = 4;
     // RFC 9000 §17.2：长包头 = Header Form(1) + Fixed Bit(1) + Type(2) + Reserved(2) + PNL(2)
     hdr.push_back((uint8_t)(0xc0 | (ptype << 4) | (pn_len - 1)));
-    hdr.push_back(0); hdr.push_back(0); hdr.push_back(0); hdr.push_back(1); // QUIC v1
+    hdr.push_back((uint8_t)(version >> 24));
+    hdr.push_back((uint8_t)(version >> 16));
+    hdr.push_back((uint8_t)(version >> 8));
+    hdr.push_back((uint8_t)version);
     hdr.push_back((uint8_t)dcid.size());
     hdr.insert(hdr.end(), dcid.begin(), dcid.end());
     hdr.push_back((uint8_t)scid.size());
@@ -354,6 +361,34 @@ static bool quic_parse_packet(const uint8_t* data, size_t len, size_t& consumed,
         return false;
     out.payload = std::move(pt);
     consumed = pkt_end;
+    return true;
+}
+
+// Parse a Version Negotiation packet (RFC 9000 section 17.2.1): long header,
+// version field 0, then DCID/SCID, then supported versions (4 bytes each).
+static bool quic_parse_vn(const uint8_t* data, size_t len,
+                          std::vector<uint32_t>& versions) {
+    if (len < 7 || (data[0] & 0x80) == 0) return false;
+    uint32_t version = ((uint32_t)data[1] << 24) | ((uint32_t)data[2] << 16) |
+                       ((uint32_t)data[3] << 8) | data[4];
+    if (version != 0) return false;
+    size_t o = 5;
+    if (o >= len) return false;
+    size_t dlen = data[o++];
+    if (o + dlen >= len) return false;
+    o += dlen;
+    if (o >= len) return false;
+    size_t slen = data[o++];
+    if (o + slen > len) return false;
+    o += slen;
+    if ((len - o) % 4 != 0 || len - o == 0) return false;
+    versions.clear();
+    while (o + 4 <= len) {
+        uint32_t v = ((uint32_t)data[o] << 24) | ((uint32_t)data[o + 1] << 16) |
+                     ((uint32_t)data[o + 2] << 8) | data[o + 3];
+        versions.push_back(v);
+        o += 4;
+    }
     return true;
 }
 
@@ -870,7 +905,9 @@ static bool parse_server_hello(const uint8_t* sh, size_t len,
 }
 
 static bool jpssl_client_to_ossl_server(uint16_t server_port,
-                                        std::string& reply, std::string& why) {
+                                        std::string& reply, std::string& why,
+                                        bool v2_first = false,
+                                        std::vector<uint32_t>* vn_versions = nullptr) {
     jp_sock_t cfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (cfd == (jp_sock_t)-1) { why = "socket fail"; return false; }
 
@@ -895,9 +932,19 @@ static bool jpssl_client_to_ossl_server(uint16_t server_port,
     std::vector<uint8_t> ch;
     if (!tls_quic_make_client_hello(s, ch)) { why = "CH fail"; sock_close(cfd); return false; }
 
+    // QUICv2 detection mode: first Initial uses RFC 9369 v2 salt and labels
+    bool v2_initial = false;
     quic_initial_keys ik;
-    if (!tls_quic_derive_initial_secrets(QuicVersion::V1, client_dcid.data(),
-                                         client_dcid.size(), ik)) {
+    if (v2_first) {
+        if (!tls_quic_derive_initial_secrets(QuicVersion::V2, client_dcid.data(),
+                                             client_dcid.size(), ik)) {
+            why = "v2 initial keys fail";
+            sock_close(cfd);
+            return false;
+        }
+        v2_initial = true;
+    } else if (!tls_quic_derive_initial_secrets(QuicVersion::V1, client_dcid.data(),
+                                                client_dcid.size(), ik)) {
         why = "initial keys fail";
         sock_close(cfd);
         return false;
@@ -915,8 +962,49 @@ static bool jpssl_client_to_ossl_server(uint16_t server_port,
     size_t pad = 1182 > frames.size() + 16 + 4 ? 1182 - frames.size() - 16 - 4 : 0;
     quic_frame_padding(frames, pad);
     std::vector<uint8_t> pkt;
-    quic_build_long(0, client_dcid, client_scid, nullptr, 0, frames,
+    quic_build_long(0, v2_initial ? QUIC_VERSION_V2 : QUIC_VERSION_V1,
+                    client_dcid, client_scid, nullptr, 0, frames,
                     CipherSuite::TLS_AES_128_GCM_SHA256, ik.client, pkt);
+
+    // OpenSSL 4.0 supports only QUIC v1; a >=1200 byte v2 Initial gets a
+    // Version Negotiation reply (RFC 9000 section 6.1). Validate the VN,
+    // then fall back to v1 per RFC 9000 section 6.1 and continue the handshake.
+    if (v2_initial) {
+        auto vn_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        auto vn_next = std::chrono::steady_clock::now();
+        bool vn_seen = false;
+        std::vector<uint32_t> vn_list;
+        while (!vn_seen && std::chrono::steady_clock::now() < vn_deadline) {
+            if (std::chrono::steady_clock::now() >= vn_next) {
+                sendto(cfd, (const char*)pkt.data(), (int)pkt.size(), 0,
+                       (sockaddr*)&srv, (int)sizeof(srv));
+                vn_next = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+            }
+            uint8_t dat[2048];
+            int n = udp_recv_timeout(cfd, dat, sizeof(dat), 200);
+            if (n <= 0) continue;
+            if (quic_parse_vn(dat, (size_t)n, vn_list)) {
+                vn_seen = true;
+                break;
+            }
+        }
+        if (!vn_seen) {
+            why = "no VN from OpenSSL 4.0";
+            sock_close(cfd);
+            return false;
+        }
+        if (vn_versions) *vn_versions = vn_list;
+        if (!tls_quic_derive_initial_secrets(QuicVersion::V1, client_dcid.data(),
+                                             client_dcid.size(), ik)) {
+            why = "v1 fallback keys fail";
+            sock_close(cfd);
+            return false;
+        }
+        quic_build_long(0, QUIC_VERSION_V1,
+                        client_dcid, client_scid, nullptr, 0, frames,
+                        CipherSuite::TLS_AES_128_GCM_SHA256, ik.client, pkt);
+        v2_initial = false;
+    }
 
     // 接收服务器 flight（期间每 200ms 重传 Initial）
     std::vector<uint8_t> sh_bytes, hs_bytes;
@@ -1019,8 +1107,8 @@ static bool jpssl_client_to_ossl_server(uint16_t server_port,
     std::vector<uint8_t> hs_frames;
     quic_frame_crypto(hs_frames, cf, 0);
     quic_frame_ack(hs_frames, server_init_pn, 0);
-    quic_build_long(2, server_scid, client_scid, nullptr, 0, hs_frames,
-                    neg_cs, client_hs, pkt);
+    quic_build_long(2, QUIC_VERSION_V1, server_scid, client_scid, nullptr, 0,
+                    hs_frames, neg_cs, client_hs, pkt);
     sendto(cfd, (const char*)pkt.data(), (int)pkt.size(), 0,
            (sockaddr*)&srv, (int)sizeof(srv));
 
@@ -1203,13 +1291,14 @@ static bool jpssl_server_from_ossl_client(uint16_t port, std::string& got,
     size_t pad = 1182 > init_frames.size() + 16 + 4 ? 1182 - init_frames.size() - 16 - 4 : 0;
     quic_frame_padding(init_frames, pad);
     std::vector<uint8_t> init_pkt, hs_pkt;
-    quic_build_long(0, client_scid, server_scid, nullptr, 0, init_frames,
-                    CipherSuite::TLS_AES_128_GCM_SHA256, ik.server, init_pkt);
+    quic_build_long(0, QUIC_VERSION_V1, client_scid, server_scid, nullptr, 0,
+                    init_frames, CipherSuite::TLS_AES_128_GCM_SHA256,
+                    ik.server, init_pkt);
     std::vector<uint8_t> hs_frames;
     quic_frame_crypto(hs_frames, hs_part, 0);
     quic_frame_ack(hs_frames, client_init_pn, 0);
-    quic_build_long(2, client_scid, server_scid, nullptr, 0, hs_frames,
-                    s.cipher_suite, server_hs, hs_pkt);
+    quic_build_long(2, QUIC_VERSION_V1, client_scid, server_scid, nullptr, 0,
+                    hs_frames, s.cipher_suite, server_hs, hs_pkt);
 
     sendto(sfd, (const char*)init_pkt.data(), (int)init_pkt.size(), 0,
            (sockaddr*)&cli, (int)sizeof(cli));
@@ -1346,8 +1435,32 @@ void test_quic_ossl_direction_b() {
                   << " client_got=" << cres.got << std::endl;
 }
 
+// QUICv2 <-> OpenSSL 4.0 interop detection:
+//   OpenSSL 4.0 only supports QUIC v1, so a v2 data path cannot interoperate.
+//   This test verifies that (1) a jpssl v2 Initial triggers an RFC 9000
+//   section 6.1 Version Negotiation reply listing only v1, and (2) the client
+//   falls back to v1 per RFC 9000 section 6.1 and completes handshake + data.
+void test_quic_ossl_v2_detect() {
+    uint16_t port = alloc_udp_port();
+    TEST("v2: port allocated", port != 0);
+    if (port == 0) return;
+    ossl_server_result sres;
+    std::thread srv([&] { run_ossl_quic_server(port, sres); });
+    std::string got, why;
+    std::vector<uint32_t> vn;
+    bool ok = jpssl_client_to_ossl_server(port, got, why, true, &vn);
+    srv.join();
+    bool vn_ok = ok && vn.size() == 1 && vn[0] == QUIC_VERSION_V1;
+    TEST("v2: OpenSSL 4.0 replies VN listing only v1 to a v2 Initial", vn_ok);
+    TEST("v2: v1 fallback completes handshake and data with OpenSSL 4.0",
+         ok && got == "pong-from-ossl" && sres.ok && sres.got == "ping-from-jpssl");
+    if (!ok)
+        std::cout << "  [v2] why=" << why << " srv_why=" << sres.why
+                  << " srv_got=" << sres.got << std::endl;
+}
+
 int main() {
-    std::cout << "Running jpssl QUIC v1 <-> OpenSSL QUIC interop tests\n" << std::endl;
+    std::cout << "Running jpssl QUIC v1/v2 <-> OpenSSL QUIC interop tests\n" << std::endl;
 #ifdef _WIN32
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -1355,6 +1468,7 @@ int main() {
     RUN_TEST(test_quic_ossl_self);
     RUN_TEST(test_quic_ossl_direction_a);
     RUN_TEST(test_quic_ossl_direction_b);
+    RUN_TEST(test_quic_ossl_v2_detect);
 #ifdef _WIN32
     WSACleanup();
 #endif
