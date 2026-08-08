@@ -139,7 +139,7 @@ public enum JPSsl {
                 return out
             }
             public static func streaming(variant: Int) -> StreamingHasher {
-                let ctx = jp_sha3_ctx_new(variant)!
+                let ctx = jp_sha3_ctx_new(Int32(variant))!
                 let n = variant == 0 ? 32 : (variant == 1 ? 48 : 64)
                 return StreamingHasher(
                     update: { d in d.withUnsafeBytes { jp_sha3_update(ctx, $0.bindMemory(to: UInt8.self).baseAddress, d.count) } },
@@ -224,27 +224,24 @@ public enum JPSsl {
         public static func hkdfSHA256(salt: [UInt8], ikm: [UInt8], info: [UInt8], outputLength: Int) -> [UInt8]? {
             var prk = [UInt8](repeating: 0, count: 32)
             var okm = [UInt8](repeating: 0, count: outputLength)
-            let e1 = salt.withUnsafeBytes { jp_hkdf_extract_sha256($0.bindMemory(to: UInt8.self).baseAddress, salt.count,
-                                                                    ikm.withUnsafeBytes { $0.bindMemory(to: UInt8.self).baseAddress }, ikm.count, &prk) }
-            guard e1 != 0 else { return nil }
+            salt.withUnsafeBytes { jp_hkdf_extract_sha256($0.bindMemory(to: UInt8.self).baseAddress, salt.count,
+                                                          ikm.withUnsafeBytes { $0.bindMemory(to: UInt8.self).baseAddress }, ikm.count, &prk) }
             info.withUnsafeBytes { jp_hkdf_expand_sha256(prk, 32, $0.bindMemory(to: UInt8.self).baseAddress, info.count, &okm, outputLength) }
             return okm
         }
         public static func hkdfSHA384(salt: [UInt8], ikm: [UInt8], info: [UInt8], outputLength: Int) -> [UInt8]? {
             var prk = [UInt8](repeating: 0, count: 48)
             var okm = [UInt8](repeating: 0, count: outputLength)
-            let e1 = salt.withUnsafeBytes { jp_hkdf_extract_sha384($0.bindMemory(to: UInt8.self).baseAddress, salt.count,
-                                                                   ikm.withUnsafeBytes { $0.bindMemory(to: UInt8.self).baseAddress }, ikm.count, &prk) }
-            guard e1 != 0 else { return nil }
+            salt.withUnsafeBytes { jp_hkdf_extract_sha384($0.bindMemory(to: UInt8.self).baseAddress, salt.count,
+                                                          ikm.withUnsafeBytes { $0.bindMemory(to: UInt8.self).baseAddress }, ikm.count, &prk) }
             info.withUnsafeBytes { jp_hkdf_expand_sha384(prk, 48, $0.bindMemory(to: UInt8.self).baseAddress, info.count, &okm, outputLength) }
             return okm
         }
         public static func hkdfSM3(salt: [UInt8], ikm: [UInt8], info: [UInt8], outputLength: Int) -> [UInt8]? {
             var prk = [UInt8](repeating: 0, count: 32)
             var okm = [UInt8](repeating: 0, count: outputLength)
-            let e1 = salt.withUnsafeBytes { jp_hkdf_extract_sm3($0.bindMemory(to: UInt8.self).baseAddress, salt.count,
-                                                               ikm.withUnsafeBytes { $0.bindMemory(to: UInt8.self).baseAddress }, ikm.count, &prk) }
-            guard e1 != 0 else { return nil }
+            salt.withUnsafeBytes { jp_hkdf_extract_sm3($0.bindMemory(to: UInt8.self).baseAddress, salt.count,
+                                                       ikm.withUnsafeBytes { $0.bindMemory(to: UInt8.self).baseAddress }, ikm.count, &prk) }
             info.withUnsafeBytes { jp_hkdf_expand_sm3(prk, 32, $0.bindMemory(to: UInt8.self).baseAddress, info.count, &okm, outputLength) }
             return okm
         }
@@ -253,7 +250,7 @@ public enum JPSsl {
     // MARK: - AES
 
     public final class AES {
-        let ctx: UnsafeMutablePointer<jp_aes_ctx>
+        let ctx: OpaquePointer
 
         public init?(key: [UInt8]) {
             guard let c = key.withUnsafeBytes({ jp_aes_init($0.bindMemory(to: UInt8.self).baseAddress, key.count) }) else { return nil }
@@ -428,7 +425,7 @@ public enum JPSsl {
     // MARK: - SM4
 
     public final class SM4 {
-        let ctx: UnsafeMutablePointer<jp_sm4_ctx>
+        let ctx: OpaquePointer
 
         public init?(key: [UInt8]) {
             guard let c = key.withUnsafeBytes({ jp_sm4_init($0.bindMemory(to: UInt8.self).baseAddress) }) else { return nil }
@@ -923,7 +920,7 @@ public enum JPSsl {
     // MARK: - X.509
 
     public final class X509Certificate {
-        let ptr: UnsafeMutablePointer<jp_x509_cert>
+        let ptr: OpaquePointer
 
         public init?(der: [UInt8]) {
             guard let c = der.withUnsafeBytes({ jp_x509_cert_from_der($0.bindMemory(to: UInt8.self).baseAddress, der.count) }) else { return nil }
@@ -965,7 +962,7 @@ public enum JPSsl {
     // MARK: - TLS
 
     public final class TLSConnection {
-        let ptr: UnsafeMutablePointer<jp_tls_conn>
+        let ptr: OpaquePointer
 
         public init() {
             self.ptr = jp_tls_conn_new()!
@@ -1030,11 +1027,11 @@ private func structBytes<T>(_ v: inout T) -> [UInt8] {
 /// 把字节数组按字节填充进 C 结构体并调用闭包；字节不足返回 0。
 /// 以原始字节存储 + 绑定指针，避免对导入的 C 结构体做 T() 默认初始化。
 @inline(__always)
-private func withStruct<T>(_ bytes: [UInt8], _ expectedSize: Int, _ body: (UnsafeMutablePointer<T>) -> Int32) -> Int32 {
-    guard bytes.count >= expectedSize else { return 0 }
+private func withStruct<T>(_ bytes: [UInt8], _ expectedSize: Int, _ body: (UnsafeMutablePointer<T>) -> Void) {
+    guard bytes.count >= expectedSize else { return }
     var storage = [UInt8](repeating: 0, count: expectedSize)
     storage.replaceSubrange(0..<expectedSize, with: bytes.prefix(expectedSize))
-    return storage.withUnsafeMutableBytes { raw in
+    storage.withUnsafeMutableBytes { raw in
         body(raw.bindMemory(to: T.self).baseAddress!)
     }
 }
