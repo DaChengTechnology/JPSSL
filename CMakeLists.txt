@@ -548,7 +548,7 @@ if(NOT JPSSL_AS_SUBPROJECT AND JP_ENABLE_MUSA AND NOT WIN32 AND NOT JP_OHOS)
     # GPU 测试函数由 #ifdef JP_MUSA 守卫，须对 main.cpp 可见
     target_compile_definitions(jpssl-test PRIVATE JP_MUSA)
     target_link_libraries(jpssl-test jpssl_cpu jpssl_musa ${MUSA_LIBRARIES})
-elseif(NOT JPSSL_AS_SUBPROJECT AND NOT JP_OHOS)
+elseif(NOT JPSSL_AS_SUBPROJECT AND NOT JP_OHOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
     add_executable(jpssl-test src/main.cpp)
     target_include_directories(jpssl-test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -559,7 +559,7 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════
 #  命令行工具（鸿蒙 NDK 不构建可执行文件，跳过）
 # ═══════════════════════════════════════════════════════════════════════
-if(NOT JPSSL_AS_SUBPROJECT AND NOT JP_OHOS)
+if(NOT JPSSL_AS_SUBPROJECT AND NOT JP_OHOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
     add_executable(jpssl-cert src/cmd/jpssl_cert.cpp)
     add_executable(jpssl-crypt src/cmd/jpssl_crypt.cpp)
     target_include_directories(jpssl-cert PRIVATE
@@ -587,7 +587,7 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════
 #  单元测试 (CTest) / 示例 —— 子项目模式（JPSSL_AS_SUBPROJECT=ON）下跳过
 # ═══════════════════════════════════════════════════════════════════════
-if(NOT JPSSL_AS_SUBPROJECT AND NOT JP_OHOS)
+if(NOT JPSSL_AS_SUBPROJECT AND NOT JP_OHOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
     add_subdirectory(tests)
     add_subdirectory(examples)
 endif()

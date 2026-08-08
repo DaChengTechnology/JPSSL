@@ -9,6 +9,7 @@ jobs:
   build-test:
     name: Build & test (x64 MSVC)
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,11 +50,12 @@ jobs:
 
       # 排除计时敏感的 bench_*（在单独 job 中只构建、不运行，避免 CI 负载下的偶发失败）
       - name: Run tests
-        run: ctest --test-dir build --output-on-failure -E bench
+        run: ctest --test-dir build --output-on-failure -E bench --timeout 120
 
   bench:
     name: Build benchmarks (x64 MSVC)
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
