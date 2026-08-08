@@ -12,6 +12,7 @@
 #include "tls_socket.hpp"
 #include "ecdsa.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -248,6 +249,8 @@ static void test_nonblocking() {
         bool accepted_nonblocking = false;
         bool got_hello = false;
         bool sent = false;
+        std::atomic<bool> check_done{false};
+        std::atomic<bool> client_done{false};
     } sr;
     std::thread server_thread([&] {
         tls_connection conn;
@@ -256,9 +259,21 @@ static void test_nonblocking() {
         if (!listener.accept(conn, server_mgr, &e)) return;
         sr.accepted_nonblocking = conn.is_nonblocking(); // 应继承非阻塞
         std::vector<uint8_t> plain;
-        if (conn.recv(plain, &e) && plain.size() >= 1) sr.got_hello = true;
+        for (int i = 0; i < 100; ++i) {
+            if (conn.recv(plain, &e)) break;
+            if (!conn.would_block()) break;
+            if (!conn.wait_readable(200)) break;
+        }
+        if (!plain.empty()) sr.got_hello = true;
+        // Wait until the client finished its would-block probe before replying.
+        while (!sr.check_done.load(std::memory_order_relaxed))
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         const char okp[] = "reply";
         sr.sent = conn.send((const uint8_t*)okp, sizeof(okp) - 1, &e);
+        // Keep the connection open until the client read the reply; otherwise a
+        // fast loopback may see RST and lose the reply data.
+        while (!sr.client_done.load(std::memory_order_relaxed))
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
     });
 
     // 客户端：connect 前开启非阻塞（TCP 连接 + 握手走有界等待路径）
@@ -271,16 +286,19 @@ static void test_nonblocking() {
     TEST("nb client send", client.send((const uint8_t*)hello, sizeof(hello) - 1, &err));
 
     // 服务端尚未回包：直接 recv 应 would-block（非阻塞、不关闭）
+    // Server waits on check_done before replying: recv must report would-block.
     {
-        std::vector<uint8_t> resp;
+        std::vector<uint8_t> resp0;
         std::string e2;
-        bool r = client.recv(resp, &e2);
+        bool r = client.recv(resp0, &e2);
         TEST("nb recv would-block (no data yet)", !r && client.would_block());
     }
+    sr.check_done = true;
 
-    // 事件循环：等待可读后重试，直到拿到回包
     std::vector<uint8_t> resp;
     bool got = false;
+
+    // 事件循环：等待可读后重试，直到拿到回包
     for (int i = 0; i < 100 && !got; ++i) {
         std::string e2;
         if (client.recv(resp, &e2)) { got = true; break; }
@@ -289,6 +307,7 @@ static void test_nonblocking() {
     }
     TEST("nb recv after wait_readable", got &&
          std::string((const char*)resp.data(), resp.size()) == "reply");
+    sr.client_done = true;
     client.close();
     server_thread.join();
     TEST("nb server accepted(nonblocking inherited)", sr.accepted_nonblocking);
