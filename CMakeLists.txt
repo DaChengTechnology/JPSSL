@@ -134,6 +134,7 @@ set(CPU_SOURCES
     src/tls13_server.cpp
     src/tls12_client.cpp
     src/tls13_client.cpp
+    src/tls_quic.cpp
     src/dtls.cpp
     src/x509.cpp
     src/ed25519.cpp

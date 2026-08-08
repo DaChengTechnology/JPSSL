@@ -100,7 +100,8 @@ static std::vector<uint8_t> tls13_make_cert_verify(const tls_certificate& cert, 
 // ══════════════════════════════════════════════════════════════════════�?
 // alpn_selected 非空时携�?ALPN 扩展（RFC 7301：服务端只选择一个协议）�?
 static std::vector<uint8_t> tls13_make_encrypted_extensions(
-    const std::string& alpn_selected) {
+    const std::string& alpn_selected,
+    const std::vector<uint8_t>* quic_transport_params = nullptr) {
     std::vector<uint8_t> msg;
     std::vector<uint8_t> ext;
     if (!alpn_selected.empty()) {
@@ -112,6 +113,13 @@ static std::vector<uint8_t> tls13_make_encrypted_extensions(
         ext.push_back((uint8_t)list_len);
         ext.push_back((uint8_t)alpn_selected.size());
         ext.insert(ext.end(), alpn_selected.begin(), alpn_selected.end());
+    }
+    // QUIC (RFC 9001 §8.2)：EncryptedExtensions 必须携带 quic_transport_parameters
+    if (quic_transport_params) {
+        ext.push_back(0x00);ext.push_back(0x39);
+        ext.push_back((uint8_t)(quic_transport_params->size() >> 8));
+        ext.push_back((uint8_t)quic_transport_params->size());
+        ext.insert(ext.end(), quic_transport_params->begin(), quic_transport_params->end());
     }
     uint16_t ext_total = (uint16_t)ext.size();
     msg.push_back((uint8_t)HandshakeType::ENCRYPTED_EXTENSIONS);
@@ -406,8 +414,23 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     tls13_derive_handshake_keys(s,shared_secret,shared_len);
     init_cipher_ctx(s, s.server_write_key);
 
+    // QUIC (RFC 9001 §8.2)：解析客户端 transport parameters（必须存在）
+    std::vector<uint8_t> server_tp;
+    const std::vector<uint8_t>* tp_ptr = nullptr;
+    if (s.quic_mode) {
+        const uint8_t* tp_data = nullptr;
+        size_t tp_len = 0;
+        if (!client_hello_find_extension(client_hello, ch_len, 0x0039, tp_data, tp_len))
+            return false;
+        if (!quic_transport_parameters::decode(tp_data, tp_len, s.quic_peer_transport_params))
+            return false;
+        s.quic_peer_params_valid = true;
+        server_tp = s.quic_transport_params.encode();
+        tp_ptr = &server_tp;
+    }
+
     // 构建 EncryptedExtensions
-    auto ee=tls13_make_encrypted_extensions(s.alpn_selected);
+    auto ee=tls13_make_encrypted_extensions(s.alpn_selected, tp_ptr);
     tls_transcript_update(s,ee.data(),ee.size());
 
     // 构建 Certificate
@@ -422,15 +445,23 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     auto sf=tls13_make_finished(s,true);
     tls_transcript_update(s,sf.data(),sf.size());
 
-    // 加密所有握手消�?
-    std::vector<uint8_t> hs_buf;
-    hs_buf.insert(hs_buf.end(),ee.begin(),ee.end());
-    hs_buf.insert(hs_buf.end(),cert_msg.begin(),cert_msg.end());
-    hs_buf.insert(hs_buf.end(),cv.begin(),cv.end());
-    hs_buf.insert(hs_buf.end(),sf.begin(),sf.end());
+    if (s.quic_mode) {
+        // QUIC：握手消息以原始字节交付（QUIC CRYPTO 帧承载），不使用 TLS 记录层
+        server_flight.insert(server_flight.end(),ee.begin(),ee.end());
+        server_flight.insert(server_flight.end(),cert_msg.begin(),cert_msg.end());
+        server_flight.insert(server_flight.end(),cv.begin(),cv.end());
+        server_flight.insert(server_flight.end(),sf.begin(),sf.end());
+    } else {
+        // 加密所有握手消�?
+        std::vector<uint8_t> hs_buf;
+        hs_buf.insert(hs_buf.end(),ee.begin(),ee.end());
+        hs_buf.insert(hs_buf.end(),cert_msg.begin(),cert_msg.end());
+        hs_buf.insert(hs_buf.end(),cv.begin(),cv.end());
+        hs_buf.insert(hs_buf.end(),sf.begin(),sf.end());
 
-    auto encrypted=tls_encrypt_handshake(s,hs_buf.data(),hs_buf.size());
-    server_flight.insert(server_flight.end(),encrypted.begin(),encrypted.end());
+        auto encrypted=tls_encrypt_handshake(s,hs_buf.data(),hs_buf.size());
+        server_flight.insert(server_flight.end(),encrypted.begin(),encrypted.end());
+    }
 
     // 注意：应用密钥延迟到 tls13_process_client_finished 成功后派�?
     return true;
@@ -438,7 +469,12 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
 
 bool tls13_process_client_finished(tls_session& s, const uint8_t* data, size_t len){
     std::vector<uint8_t> hs;
-    if(!tls13_decrypt_handshake(s,data,len,hs))return false;
+    if (s.quic_mode) {
+        // QUIC：Finished 以原始握手消息字节交付（CRYPTO 帧承载），无记录层
+        hs.assign(data, data + len);
+    } else if(!tls13_decrypt_handshake(s,data,len,hs)) {
+        return false;
+    }
     if(!tls13_verify_finished(s,hs.data(),hs.size(),false))return false;
 
     // 握手完成，派生应用密钥（�?transcript 更新前）

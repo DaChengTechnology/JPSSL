@@ -245,6 +245,14 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         }
     }
 
+    // QUIC (RFC 9001 §8.2)：ClientHello 必须携带 quic_transport_parameters 扩展
+    if (s.quic_mode) {
+        std::vector<uint8_t> tp = s.quic_transport_params.encode();
+        ext.push_back(0x00);ext.push_back(0x39);
+        ext.push_back((uint8_t)(tp.size() >> 8));ext.push_back((uint8_t)tp.size());
+        ext.insert(ext.end(), tp.begin(), tp.end());
+    }
+
     uint16_t ext_len_total=ext.size();
     client_hello.push_back((uint8_t)(ext_len_total>>8));client_hello.push_back((uint8_t)ext_len_total);
     client_hello.insert(client_hello.end(),ext.begin(),ext.end());
@@ -377,7 +385,7 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
     // 解析加密的握手消�?
     std::vector<uint8_t> hs_msgs;
     while(offset<len){
-        if(data[offset]==0x17 || data[offset]==0x16){
+        if(!s.quic_mode && (data[offset]==0x17 || data[offset]==0x16)){
             size_t rlen=(data[offset+3]<<8)|data[offset+4];
             if(offset+5+rlen>len)return false;
             std::vector<uint8_t> hs;
@@ -386,9 +394,9 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
             offset+=5+rlen;
         }else{
             size_t hs_len=(data[offset+1]<<16)|(data[offset+2]<<8)|data[offset+3];
-            if(offset+4+hs_len>len)return false;
-            hs_msgs.insert(hs_msgs.end(),data+offset,data+offset+4+hs_len);
-            offset+=4+hs_len;
+            if (offset + 4 > len || hs_len > len - offset - 4) return false;
+            hs_msgs.insert(hs_msgs.end(), data + offset, data + offset + 4 + hs_len);
+            offset += 4 + hs_len;
         }
     }
 
@@ -422,11 +430,19 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
                                 if (etype == 0x0010) {
                                     auto list = tls_parse_alpn_list(hmsg + off + 4, elen);
                                     if (list.size() == 1) s.alpn_selected = list[0];
+                                } else if (s.quic_mode && etype == 0x0039) {
+                                    // QUIC (RFC 9001 §8.2)：解析服务端 transport parameters
+                                    if (!quic_transport_parameters::decode(hmsg + off + 4, elen,
+                                                                           s.quic_peer_transport_params))
+                                        return false;
+                                    s.quic_peer_params_valid = true;
                                 }
                                 off += 4 + elen;
                             }
                         }
                     }
+                    // QUIC：EncryptedExtensions 必须携带 quic_transport_parameters（RFC 9001 §8.2）
+                    if (s.quic_mode && !s.quic_peer_params_valid) return false;
                     if (!s.alpn_protos.empty() && !s.alpn_selected.empty()) {
                         bool ok = false;
                         for (const auto& p : s.alpn_protos)
@@ -502,9 +518,12 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
     // 生成 Client Finished
     client_finished=tls13_make_finished(s,false);
 
-    // 加密 Client Finished（使用握手密钥）
-    auto encrypted=tls_encrypt_handshake(s,client_finished.data(),client_finished.size());
-    client_finished=encrypted;
+    if (!s.quic_mode) {
+        // 加密 Client Finished（使用握手密钥）
+        auto encrypted=tls_encrypt_handshake(s,client_finished.data(),client_finished.size());
+        client_finished=encrypted;
+    }
+    // QUIC 模式：client_finished 为原始握手消息字节，直接交由 CRYPTO 帧发送
 
     // 派生应用密钥（在 transcript 更新前，与简化版保持一致）
     tls13_derive_application_keys(s);

@@ -12,6 +12,7 @@
 
 #include "test_utils.hpp"
 #include "tls.hpp"
+#include "tls_quic.hpp"
 #include "ecdsa.hpp"
 #include "ed25519.hpp"
 #include "x448.hpp"
