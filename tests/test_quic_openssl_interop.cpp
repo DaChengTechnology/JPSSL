@@ -211,7 +211,18 @@ static void quic_build_long(uint8_t ptype, uint32_t version,
     std::vector<uint8_t> hdr;
     const uint8_t pn_len = 4;
     // RFC 9000 §17.2：长包头 = Header Form(1) + Fixed Bit(1) + Type(2) + Reserved(2) + PNL(2)
-    hdr.push_back((uint8_t)(0xc0 | (ptype << 4) | (pn_len - 1)));
+    // RFC 9369 §3.2：v2 重映射长包头类型位
+    // (Initial=0b01 / 0-RTT=0b10 / Handshake=0b11 / Retry=0b00)
+    uint8_t type_bits = ptype;
+    if (version == QUIC_VERSION_V2) {
+        switch (ptype) {
+            case 0: type_bits = 1; break;
+            case 1: type_bits = 2; break;
+            case 2: type_bits = 3; break;
+            default: type_bits = 0; break;
+        }
+    }
+    hdr.push_back((uint8_t)(0xc0 | (type_bits << 4) | (pn_len - 1)));
     hdr.push_back((uint8_t)(version >> 24));
     hdr.push_back((uint8_t)(version >> 16));
     hdr.push_back((uint8_t)(version >> 8));
