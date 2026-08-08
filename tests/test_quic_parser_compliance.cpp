@@ -201,7 +201,12 @@ bool make_client_hello(QuicVersion ver, const std::vector<uint8_t>& scid,
 int run_tool(const std::string& tool, const std::string& args, std::string& output) {
     const char* outfile = "quic_parser_tool_out.txt";
     // cmd.exe /c 会剥掉首尾引号：整条命令再包一层引号，保留工具路径的引号
+#ifdef _WIN32
     std::string cmd = "\"\"" + tool + "\" " + args + " > \"" + outfile + "\" 2>&1\"";
+#else
+    // POSIX sh: the whole command must not carry the extra outer quotes
+    std::string cmd = "\"" + tool + "\" " + args + " > \"" + outfile + "\" 2>&1";
+#endif
     int rc = std::system(cmd.c_str());
     std::ifstream f(outfile);
     output.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());

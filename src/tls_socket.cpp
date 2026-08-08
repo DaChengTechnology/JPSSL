@@ -270,7 +270,14 @@ bool tls_co_executor::run_once(int timeout_ms) {
     std::vector<std::coroutine_handle<>> ready;
     for (size_t i = waiters_.size(); i-- > 0;) {
         short want = (short)(waiters_[i].for_write ? POLLOUT : POLLIN);
+#ifdef _WIN32
         if (pfds[i].revents & want) {
+#else
+        // POLLERR/POLLHUP/POLLNVAL 也必须恢复协程：否则 poll 一直返回错误事件
+        // 而 waiter 永不匹配，run() 会无限循环（Linux 上 test_tls_socket 卡死）。
+        if ((pfds[i].revents & want) ||
+            (pfds[i].revents & (POLLERR | POLLHUP | POLLNVAL))) {
+#endif
             ready.push_back(waiters_[i].h);
             waiters_.erase(waiters_.begin() + i);
         }

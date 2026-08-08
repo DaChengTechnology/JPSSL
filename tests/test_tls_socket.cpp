@@ -620,6 +620,8 @@ static void test_udp_roundtrip() {
     listener.close();
 }
 int main() {
+    // stdout 默认全缓冲，CI 超时被杀时输出会丢失；改为无缓冲便于定位卡住的段落
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::string err;
     TEST("socket init", tls_socket_init(&err));
     test_socket_roundtrip();

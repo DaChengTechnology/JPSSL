@@ -40,7 +40,7 @@ namespace {
 // P-256 ADX 汇编快速路径是否可用（ensure256 时初始化）
 static bool g_p256_adx_ok = false;
 
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__APPLE__)
 // NIST P-256 ARMv8 汇编（移植自 OpenSSL ecp_nistz256-armv8.pl，Apache-2.0）：
 //   ecp_nistz256_mul_mont        r = a*b*R^-1 mod p
 //   ecp_nistz256_sqr_mont        r = a*a*R^-1 mod p
@@ -328,7 +328,7 @@ static void mont_mul(bn<N>* r, const bn<N>* a, const bn<N>* b, const mod_ctx<N>&
         jpssl_p256_ord_mul_adx((uint64_t*)r->v, (const uint64_t*)a->v, (const uint64_t*)b->v);
         return;
     }
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) && !defined(__APPLE__)
     if (N == 4 && M.special == 1 && g_p256_arm_ok) {
         ecp_nistz256_mul_mont((uint64_t*)r->v, (const uint64_t*)a->v,
                               (const uint64_t*)b->v);
@@ -352,7 +352,7 @@ static void mont_mul(bn<N>* r, const bn<N>* a, const bn<N>* b, const mod_ctx<N>&
 
 template <int N>
 static void mont_sqr(bn<N>* r, const bn<N>* a, const mod_ctx<N>& M) {
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__APPLE__)
     if (N == 4 && M.special == 1 && g_p256_arm_ok) {
         ecp_nistz256_sqr_mont((uint64_t*)r->v, (const uint64_t*)a->v);
         return;
@@ -418,7 +418,7 @@ static void mod_inv(bn<N>* r, const bn<N>* a, const mod_ctx<N>& M) {
         jpssl_p256_inv_adx((uint64_t*)r->v, (const uint64_t*)a->v);
         return;
     }
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) && !defined(__APPLE__)
     // P-256 素数域 Fermat 求逆（加法链，OpenSSL ecp_nistz256_mod_inverse）
     if (N == 4 && M.special == 1 && g_p256_arm_ok) {
         uint64_t p2[4], p4[4], p8[4], p16[4], p32[4], res[4];
@@ -520,7 +520,7 @@ static void jac_dbl(jac_point<N>* R, const jac_point<N>* P, const mod_ctx<N>& M)
         jpssl_p256_dbl((uint64_t*)R, (const uint64_t*)P);
         return;
     }
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) && !defined(__APPLE__)
     // 哨兵（无穷远，Z=0）由 C++ 路径保持稳定；汇编 point_double 不处理 Z=0
     if (N == 4 && M.special == 1 && g_p256_arm_ok && !bn_is_zero(&P->Z)) {
         ecp_nistz256_point_double((uint64_t*)R, (const uint64_t*)P);
@@ -571,7 +571,7 @@ static void pt_madd(jac_point<N>* R, const jac_point<N>* P,
         jpssl_p256_madd((uint64_t*)R, (const uint64_t*)P, (const uint64_t*)Q);
         return;
     }
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) && !defined(__APPLE__)
     // Q 为仿射（Z=1）或无穷远（Z=0）；P 非无穷远且 Q 非无穷远时用汇编
     // （OpenSSL point_add_affine 内部处理 in1/in2 无穷远，但不处理 H==0，
     // 后者概率 ~2^-256，与 x86 ADX 路径一致；表构建期间经 g_pt_madd_asm 关闭）
@@ -728,7 +728,7 @@ static void build_odd_table(aff_point<N> out[8], const aff_point<N>* Q,
     R.X = Q->X; R.Y = Q->Y; R.Z = M.one;
     jac_point<N> Qj = R;
     jac_point<N> pts[8];
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__APPLE__)
     const bool saved_pt_madd_asm = g_pt_madd_asm;
     g_pt_madd_asm = false;
 #endif
@@ -739,7 +739,7 @@ static void build_odd_table(aff_point<N> out[8], const aff_point<N>* Q,
             pt_madd(&R, &R, &Qj, M);
         }
     }
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__APPLE__)
     g_pt_madd_asm = saved_pt_madd_asm;
 #endif
     batch_affine(pts, out, 8, M);
@@ -871,7 +871,7 @@ static void comb_fixed_window(jac_point<N>* R, const bn<N>* k,
     }
 }
 
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__APPLE__)
 // ── NIST P-256 固定点标量乘（OpenSSL nistz256 结构）──
 static inline uint32_t booth_recode_w7(uint32_t in) {
     uint32_t s = ~((in >> 7) - 1);
@@ -954,7 +954,7 @@ static void build_g_tables(ecdsa_curve<N>* c) {
     R.X = G.X; R.Y = G.Y; R.Z = c->MP.one;
     jac_point<N> Gj = R;
     jac_point<N> pts[15];
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__APPLE__)
     const bool saved_pt_madd_asm = g_pt_madd_asm;
     g_pt_madd_asm = false;
 #endif
@@ -962,7 +962,7 @@ static void build_g_tables(ecdsa_curve<N>* c) {
         pts[i] = R;
         pt_madd(&R, &R, &Gj, c->MP);
     }
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__APPLE__)
     g_pt_madd_asm = saved_pt_madd_asm;
 #endif
     batch_affine(pts, c->g_full, 15, c->MP);
@@ -1034,7 +1034,7 @@ static void ensure256() {
         C256.MN.special = 2;  // P-256 群阶走 ord 特殊形式归约
 #if defined(_MSC_VER) && defined(_M_X64)
         g_p256_adx_ok = cpu_has_adx();
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) && !defined(__APPLE__)
         g_p256_arm_ok = true;
 #endif
         c256_ready = true;
@@ -1284,7 +1284,7 @@ static bool ecdh_batch_impl(uint8_t* shared, const uint8_t* priv, const uint8_t*
             jac_point<N> R;
             R.X = Q.X; R.Y = Q.Y; R.Z = C.MP.one;
             jac_point<N> Qj = R;
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__APPLE__)
             const bool saved_pt_madd_asm = g_pt_madd_asm;
             g_pt_madd_asm = false;  // 同点相加（首轮 H==0）走 C++
 #endif
@@ -1295,7 +1295,7 @@ static bool ecdh_batch_impl(uint8_t* shared, const uint8_t* priv, const uint8_t*
                     pt_madd(&R, &R, &Qj, C.MP);
                 }
             }
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__APPLE__)
             g_pt_madd_asm = saved_pt_madd_asm;
 #endif
         }
@@ -1343,7 +1343,7 @@ void ecdsa_p256_keygen(uint8_t pub[64], uint8_t priv[32]) {
     rand_scalar<4, 32>(&d, &C256.order, false);
     bn_to_be<4, 32>(&d, priv);
     jac_point<4> Q;
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__APPLE__)
     nistz256_scalar_mul_G(&Q, &d);
 #else
     build_comb_table();
@@ -1375,7 +1375,7 @@ void ecdsa_p256_sign(const uint8_t priv[32], const uint8_t* msg,
     bn<4> Rx, r, s, k, r_m, k_m, k_inv_m, rd_m, ed_m, s_m, r_plain;
     do {
         rand_scalar<4, 32>(&k, &C256.order, false);
-#if defined(__aarch64__)
+#if defined(__aarch64__) && !defined(__APPLE__)
         nistz256_scalar_mul_G(&R, &k);
 #else
         comb_fixed_window(&R, &k, g_comb, C256.MP, 64);

@@ -22,11 +22,13 @@
 #include "ecdsa.hpp"
 #include "rsa.hpp"
 #include "sm2.hpp"
+#include "dh.hpp"
 
 #include <openssl/ssl.h>
 #include <openssl/opensslv.h>
 #include <openssl/evp.h>
 #include <openssl/ec.h>
+#include <openssl/bn.h>
 #include <openssl/x509.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
@@ -271,6 +273,38 @@ struct tls12_suite_entry {
     bool need_ecdsa_cert;
     bool use_psk;
 };
+
+// OpenSSL TLS 1.2 DHE needs explicit DH params on the server: OpenSSL 3.x treats
+// ffdhe named groups as TLS 1.3-only, so TLS 1.2 DHE ciphers are disabled unless
+// tmp_dh is configured (otherwise "no shared cipher").
+static EVP_PKEY* ossl_make_ffdhe2048_key() {
+    using jpssl::dh::ffdhe2048_p;
+    using jpssl::dh::FFDHE2048_BYTES;
+    BIGNUM* p = BN_bin2bn(ffdhe2048_p, FFDHE2048_BYTES, nullptr);
+    BIGNUM* g = BN_new();
+    if (!p || !g || !BN_set_word(g, 2)) {
+        if (p) BN_free(p);
+        if (g) BN_free(g);
+        return nullptr;
+    }
+    DH* dh = DH_new();
+    if (!dh || DH_set0_pqg(dh, p, nullptr, g) != 1 || DH_generate_key(dh) != 1) {
+        if (dh) {
+            DH_free(dh);
+        } else {
+            BN_free(p);
+            BN_free(g);
+        }
+        return nullptr;
+    }
+    EVP_PKEY* key = EVP_PKEY_new();
+    if (!key || EVP_PKEY_assign_DH(key, dh) != 1) {
+        if (key) EVP_PKEY_free(key);
+        DH_free(dh);
+        return nullptr;
+    }
+    return key;
+}
 
 static const tls12_suite_entry kTLS12Suites[] = {
     { CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
@@ -573,6 +607,18 @@ static bool interop_tls12_ossl_server_jpssl_client(const tls12_suite_entry& e,
             memcpy(psk, kPskValue, sizeof(kPskValue));
             return (unsigned int)sizeof(kPskValue);
         });
+    }
+
+    if (suite_uses_dhe(e.cs)) {
+        EVP_PKEY* dhkey = ossl_make_ffdhe2048_key();
+        if (!dhkey) {
+            SSL_CTX_free(ctx);
+            if (x509) X509_free(x509);
+            if (pkey) EVP_PKEY_free(pkey);
+            why = "ossl ffdhe2048 keygen failed";
+            return false;
+        }
+        SSL_CTX_set0_tmp_dh_pkey(ctx, dhkey); // takes ownership
     }
 
     jp_sock_t lfd = ::socket(AF_INET, SOCK_STREAM, 0);

@@ -232,7 +232,10 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     endif()
     # NIST P-256 ARMv8 汇编（域乘/平方/点运算，移植自 OpenSSL nistz256，
     # 仅用基础 ARMv8 标量指令，不依赖 NEON/crypto 扩展）
-    list(APPEND CPU_SOURCES src/ecp_nistz256_arm.S)
+    # Apple (iOS/macOS): assembler rejects GNU ADR/ADRP relocations; use C++ path
+    if(NOT APPLE)
+        list(APPEND CPU_SOURCES src/ecp_nistz256_arm.S)
+    endif()
 endif()
 
 # ── iOS ────────────────────────────────────────────────────────────────
