@@ -580,7 +580,7 @@ bool tls_certificate::sign_scheme(uint16_t scheme, const uint8_t* data, size_t d
         case SignatureAlgorithm::SM2_SM3: {
             // RFC 8998/OpenSSL 实测：TLS 1.3 CertificateVerify �?SM2 签名
             // 采用 DER 编码�?0 45 02 21 ... 02 20 ...），而非�?64 字节 r||s�?            
-uint8_t raw[64], der[160];
+            uint8_t raw[64], der[160];
             sm2_sign(priv.sm2, data, data_len, raw, za);
             size_t dl = sizeof(der);
             if (!ecdsa_sign_to_der(raw, sizeof(raw), der, sizeof(der), dl)) return false;

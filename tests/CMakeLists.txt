@@ -102,6 +102,25 @@ target_include_directories(test_quic_openssl_interop PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_quic_openssl_interop PRIVATE jpssl_cpu OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
+# wolfSSL DTLS 1.2/1.3 interop compliance test (requires JP_WOLFSSL_PREFIX / JP_WOLFSSL_CERT_DIR)
+set(JP_WOLFSSL_PREFIX "" CACHE PATH "wolfSSL install prefix (enables wolfSSL DTLS interop tests)")
+set(JP_WOLFSSL_CERT_DIR "" CACHE PATH "wolfSSL source certs dir (server-cert.pem/server-key.pem/ca-cert.pem)")
+
+if(JP_WOLFSSL_PREFIX)
+    find_package(wolfssl CONFIG PATHS ${JP_WOLFSSL_PREFIX}/lib/cmake/wolfssl NO_DEFAULT_PATH)
+    if(wolfssl_FOUND)
+        message(STATUS "tests: build wolfSSL DTLS interop test (wolfssl::wolfssl)")
+        add_executable(test_dtls_wolfssl_interop test_dtls_wolfssl_interop.cpp)
+        target_include_directories(test_dtls_wolfssl_interop PRIVATE ${INCLUDE_DIR})
+        target_link_libraries(test_dtls_wolfssl_interop PRIVATE jpssl_cpu wolfssl::wolfssl)
+        target_compile_definitions(test_dtls_wolfssl_interop PRIVATE
+            JP_WOLFSSL_CERT_DIR="${JP_WOLFSSL_CERT_DIR}")
+        add_test(NAME test_dtls_wolfssl_interop COMMAND test_dtls_wolfssl_interop)
+    else()
+        message(WARNING "tests: JP_WOLFSSL_PREFIX set but wolfssl-config.cmake not found; skipping")
+    endif()
+endif()
+
 # ---- QUIC v1/v2 合规性检测（quic-parser，Rust 独立实现） ----
 find_program(CARGO_EXECUTABLE cargo)
 if(CARGO_EXECUTABLE)

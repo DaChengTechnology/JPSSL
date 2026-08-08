@@ -766,6 +766,26 @@ bool sig_to_raw(const std::vector<uint8_t>& sig, size_t field_len,
     return ecdsa_der_sig_to_raw(sig, field_len, raw);
 }
 
+// RFC 5280 requires ECDSA/SM2 cert signatures to be DER ECDSA-Sig-Value;
+// wrap fixed-length raw r||s into DER SEQUENCE { INTEGER r, INTEGER s }.
+std::vector<uint8_t> ecdsa_raw_sig_to_der(const uint8_t* raw, size_t field_len) {
+    auto to_int = [](const uint8_t* p, size_t n) {
+        std::vector<uint8_t> v(p, p + n);
+        size_t i = 0;
+        while (i + 1 < v.size() && v[i] == 0) ++i;
+        v.erase(v.begin(), v.begin() + i);
+        if (v.empty()) v.push_back(0);
+        if (v[0] & 0x80) v.insert(v.begin(), 0);
+        return v;
+    };
+    std::vector<uint8_t> body;
+    std::vector<uint8_t> r_der = der::encode_integer(to_int(raw, field_len));
+    std::vector<uint8_t> s_der = der::encode_integer(to_int(raw + field_len, field_len));
+    body.insert(body.end(), r_der.begin(), r_der.end());
+    body.insert(body.end(), s_der.begin(), s_der.end());
+    return der::encode_sequence(body);
+}
+
 } // anonymous namespace
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -904,13 +924,22 @@ x509_cert x509_builder::build_and_sign(KeyType sign_key_type,
         case KeyType::Ed448:
             ed448_sign(sign_priv_data, tbs_data, tbs_len, sig_buf); sig_len = 114; break;
         case KeyType::ECDSA_P256: {
-            ecdsa_p256_sign(sign_priv_data, tbs_data, tbs_len, sig_buf); sig_len = 64; break;
+            ecdsa_p256_sign(sign_priv_data, tbs_data, tbs_len, sig_buf); sig_len = 64;
+            auto ds = ecdsa_raw_sig_to_der(sig_buf, 32);
+            memcpy(sig_buf, ds.data(), ds.size()); sig_len = (size_t)ds.size();
+            break;
         }
         case KeyType::ECDSA_P384: {
-            ecdsa_p384_sign(sign_priv_data, tbs_data, tbs_len, sig_buf); sig_len = 96; break;
+            ecdsa_p384_sign(sign_priv_data, tbs_data, tbs_len, sig_buf); sig_len = 96;
+            auto ds = ecdsa_raw_sig_to_der(sig_buf, 48);
+            memcpy(sig_buf, ds.data(), ds.size()); sig_len = (size_t)ds.size();
+            break;
         }
         case KeyType::ECDSA_P521: {
-            ecdsa_p521_sign(sign_priv_data, tbs_data, tbs_len, sig_buf); sig_len = 132; break;
+            ecdsa_p521_sign(sign_priv_data, tbs_data, tbs_len, sig_buf); sig_len = 132;
+            auto ds = ecdsa_raw_sig_to_der(sig_buf, 66);
+            memcpy(sig_buf, ds.data(), ds.size()); sig_len = (size_t)ds.size();
+            break;
         }
         case KeyType::SM2: {
             // SM2 证书签名：e = SM3(ZA || M)，ZA 基于用户 ID（空 ID，与 OpenSSL
@@ -923,7 +952,10 @@ x509_cert x509_builder::build_and_sign(KeyType sign_key_type,
             sm2_pub_from_priv(sign_priv_data, ca_pub);
             uint8_t za[32];
             sm2_compute_za(nullptr, 0, ca_pub, ca_pub + 32, za);
-            sm2_sign(sign_priv_data, tbs_data, tbs_len, sig_buf, za); sig_len = 64; break;
+            sm2_sign(sign_priv_data, tbs_data, tbs_len, sig_buf, za); sig_len = 64;
+            auto ds = ecdsa_raw_sig_to_der(sig_buf, 32);
+            memcpy(sig_buf, ds.data(), ds.size()); sig_len = (size_t)ds.size();
+            break;
         }
     }
 

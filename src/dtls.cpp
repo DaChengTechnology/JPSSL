@@ -205,13 +205,21 @@ static void dtls12_derive_keys(dtls_session& s, const uint8_t* premaster, size_t
 static void dtls13_derive_handshake(dtls_session& s, const uint8_t* shared_secret, size_t shared_len) {
     bool sha384 = suite_use_sha384(s.cipher_suite);
     size_t hl = suite_hash_len(s.cipher_suite);
-    uint8_t zero[48] = {}, early_secret[48];
+    uint8_t zero[48] = {}, early_secret[48], empty_hash[48];
     if (sha384) {
+        sha512_ctx ctx; sha384_init(&ctx); sha512_final(&ctx, empty_hash);
         hkdf_extract_sha384(zero, 48, zero, 48, early_secret);
-        hkdf_extract_sha384(early_secret, 48, shared_secret, shared_len, s.handshake_secret);
+        // RFC 8446 7.1（RFC 9147 5.9 沿用）：Handshake Secret =
+        // HKDF-Extract(Derive-Secret(Early Secret, "derived", Hash("")), ECDHE)
+        uint8_t derived[48];
+        expand_label13(early_secret, "derived", empty_hash, hl, derived, hl, true);
+        hkdf_extract_sha384(derived, 48, shared_secret, shared_len, s.handshake_secret);
     } else {
+        sha256_ctx ctx; sha256_init(&ctx); sha256_final(&ctx, empty_hash);
         hkdf_extract(zero, 32, zero, 32, early_secret);
-        hkdf_extract(early_secret, 32, shared_secret, shared_len, s.handshake_secret);
+        uint8_t derived[32];
+        expand_label13(early_secret, "derived", empty_hash, hl, derived, hl, false);
+        hkdf_extract(derived, 32, shared_secret, shared_len, s.handshake_secret);
     }
     transcript_compute(s);
     if (sha384) {
@@ -227,9 +235,18 @@ static void dtls13_derive_handshake(dtls_session& s, const uint8_t* shared_secre
 static void dtls13_derive_application(dtls_session& s) {
     bool sha384 = suite_use_sha384(s.cipher_suite);
     size_t hl = suite_hash_len(s.cipher_suite);
-    uint8_t zero[48] = {};
-    if (sha384) hkdf_extract_sha384(s.handshake_secret, 48, zero, 48, s.master_secret);
-    else hkdf_extract(s.handshake_secret, 32, zero, 32, s.master_secret);
+    uint8_t zero[48] = {}, empty_hash[48];
+    if (sha384) {
+        sha512_ctx ctx; sha384_init(&ctx); sha512_final(&ctx, empty_hash);
+        uint8_t derived[48];
+        expand_label13(s.handshake_secret, "derived", empty_hash, hl, derived, hl, true);
+        hkdf_extract_sha384(derived, 48, zero, 48, s.master_secret);
+    } else {
+        sha256_ctx ctx; sha256_init(&ctx); sha256_final(&ctx, empty_hash);
+        uint8_t derived[32];
+        expand_label13(s.handshake_secret, "derived", empty_hash, hl, derived, hl, false);
+        hkdf_extract(derived, 32, zero, 32, s.master_secret);
+    }
     transcript_compute(s);
     if (sha384) {
         expand_label13(s.master_secret, "c ap traffic", s.transcript_hash, hl, s.client_app_traffic, hl, true);
@@ -507,7 +524,9 @@ static bool dtls13_unprotect(dtls_session& s, const uint8_t* rec, size_t len,
     const uint8_t* ct = rec + off;
     size_t ct_len = (size_t)wire_len - 16;
     const uint8_t* tag = ct + ct_len;
-    if (ct_len < 16) return false;
+    // RFC 9147 只要求 wire_len >= tag 长度（16）；wolfSSL 不强制把明文填充到 16 字节，
+    // 因此密文（不含 tag）可以小于 16。
+    if (ct_len == 0) return false;
 
     int ok = 0;
     const uint8_t* traffic = dtls13_recv_traffic(s, epoch_bits, ok);
@@ -713,7 +732,9 @@ static std::vector<uint8_t> build_ch13_body(dtls_session& s, const std::vector<u
             put16(shares, (uint16_t)NamedGroup::X448); put16(shares, 56);
             shares.insert(shares.end(), s.ks_pub, s.ks_pub + 56);
         } else if (s.ks_group == NamedGroup::secp256r1) {
-            put16(shares, (uint16_t)NamedGroup::secp256r1); put16(shares, 64);
+            // RFC 8446 4.2.8.2: secp256r1 key_exchange 是 65 字节未压缩点 (0x04 || X || Y)
+            put16(shares, (uint16_t)NamedGroup::secp256r1); put16(shares, 65);
+            shares.push_back(0x04);
             shares.insert(shares.end(), s.ks_pub, s.ks_pub + 64);
         } else {
             put16(shares, (uint16_t)NamedGroup::X25519); put16(shares, 32);
@@ -738,15 +759,19 @@ static std::vector<uint8_t> build_sh_body(dtls_session& s, bool dtls13) {
     if (dtls13) {
         std::vector<uint8_t> ext;
         ext.push_back(0x00); ext.push_back(0x2b);
-        ext.push_back(0x00); ext.push_back(0x03);
-        ext.push_back(0x02); ext.push_back(0xfe); ext.push_back(0xfc);
+        // RFC 8446 4.2.1: ServerHello 中 supported_versions 是单个 ProtocolVersion（2 字节），
+        // 不带客户端向量格式的长度字节。
+        ext.push_back(0x00); ext.push_back(0x02);
+        ext.push_back(0xfe); ext.push_back(0xfc);
         ext.push_back(0x00); ext.push_back(0x33);
         std::vector<uint8_t> ks;
         if (s.ks_group == NamedGroup::X448) {
             put16(ks, (uint16_t)NamedGroup::X448); put16(ks, 56);
             ks.insert(ks.end(), s.ks_pub, s.ks_pub + 56);
         } else if (s.ks_group == NamedGroup::secp256r1) {
-            put16(ks, (uint16_t)NamedGroup::secp256r1); put16(ks, 64);
+            // RFC 8446 4.2.8.2: secp256r1 key_exchange 是 65 字节未压缩点 (0x04 || X || Y)
+            put16(ks, (uint16_t)NamedGroup::secp256r1); put16(ks, 65);
+            ks.push_back(0x04);
             ks.insert(ks.end(), s.ks_pub, s.ks_pub + 64);
         } else {
             put16(ks, (uint16_t)NamedGroup::X25519); put16(ks, 32);
@@ -922,8 +947,10 @@ static std::vector<uint8_t> build_ee_body(dtls_session& s) {
 static std::vector<uint8_t> build_cv_body13(dtls_session& s, const tls_certificate& cert) {
     std::vector<uint8_t> content;
     const char* ctx = s.is_server ? "TLS 1.3, server CertificateVerify" : "TLS 1.3, client CertificateVerify";
+    // RFC 8446 4.4.3: 64×0x20 || context string || 0x00 || transcript_hash
+    content.insert(content.end(), 64, 0x20);
     content.insert(content.end(), ctx, ctx + strlen(ctx));
-    content.insert(content.end(), 64, 0);
+    content.push_back(0x00);
     transcript_compute(s);
     content.insert(content.end(), s.transcript_hash, s.transcript_hash + suite_hash_len(s.cipher_suite));
 
@@ -936,6 +963,8 @@ static std::vector<uint8_t> build_cv_body13(dtls_session& s, const tls_certifica
         sm2_compute_za((const uint8_t*)id, sizeof(id) - 1, cert.pub.sm2, cert.pub.sm2 + 32, za_buf);
         za = za_buf;
     }
+    // wolfSSL 的 TLS 1.3 ECDSA 验签路径期望 DER（wc_ecc_verify_hash），与 RFC 8446
+    // 的 raw 要求有偏差；为与其互通使用 DER 编码。
     if (!cert.sign_scheme(scheme, content.data(), content.size(), sig, sig_len, za))
         return {};
 
@@ -961,7 +990,10 @@ static std::vector<uint8_t> build_finished13(dtls_session& s, bool for_server) {
     bool sha384 = suite_use_sha384(s.cipher_suite);
     size_t hl = suite_hash_len(s.cipher_suite);
     uint8_t finished_key[48];
-    expand_label13(s.handshake_secret, "finished", nullptr, 0, finished_key, hl, sha384);
+    // RFC 8446 4.4.4: finished_key = HKDF-Expand-Label(BaseKey, "finished", "", len)，
+    // BaseKey 是对应的 handshake traffic secret（server Finished 用 server 侧）。
+    const uint8_t* base_key = for_server ? s.server_hs_traffic : s.client_hs_traffic;
+    expand_label13(base_key, "finished", nullptr, 0, finished_key, hl, sha384);
     transcript_compute(s);
     uint8_t mac[48];
     if (sha384) hmac_sha384(finished_key, hl, s.transcript_hash, hl, mac);
@@ -1388,8 +1420,7 @@ static dtls_step_result client_step(dtls_session& s, const dtls_handshake_input&
     std::vector<uint8_t> response;
     bool build_response = false;
     bool done = false;
-    std::unique_ptr<tls_certificate> server_cert;
-    std::vector<x509::x509_cert> server_chain;
+    tls_certificate* server_cert = s.have_server_cert ? &s.server_cert_parsed : nullptr;
     bool got_shd = false;
 
     auto process = [&](dtls_session& st, uint8_t mtype, uint16_t mseq,
@@ -1444,13 +1475,17 @@ static dtls_step_result client_step(dtls_session& s, const dtls_handshake_input&
                 // DTLS 1.3 Certificate 含 1 字节 certificate_request_context 前缀
                 size_t cskip = dtls13 ? 1 : 0;
                 if (body.size() <= cskip) return false;
-                if (!parse_cert_list(body.data() + cskip, body.size() - cskip, server_chain)) return false;
-                if (!server_chain.empty()) {
-                    server_cert = cert_from_x509(server_chain[0]);
-                    if (!server_cert) return false;
+                s.server_chain.clear();
+                if (!parse_cert_list(body.data() + cskip, body.size() - cskip, s.server_chain)) return false;
+                if (!s.server_chain.empty()) {
+                    auto sc = cert_from_x509(s.server_chain[0]);
+                    if (!sc) return false;
+                    s.server_cert_parsed = std::move(*sc);
+                    s.have_server_cert = true;
+                    server_cert = &s.server_cert_parsed;
                 }
                 if (in.trust_store) {
-                    if (!verify_server_chain(server_chain, *in.trust_store, s.server_name)) {
+                    if (!verify_server_chain(s.server_chain, *in.trust_store, s.server_name)) {
                         r.ok = false; r.error = "cert chain verify failed";
                         return false;
                     }
@@ -1476,6 +1511,9 @@ static dtls_step_result client_step(dtls_session& s, const dtls_handshake_input&
                 if (!server_cert->verify_scheme(scheme, to_sign.data(), to_sign.size(), sig, sig_len))
                     return false;
                 s.ks_group = (NamedGroup)group;
+                // 服务器可能选择与客户端预生成不同的曲线（如客户端默认 X25519、
+                // 服务器选 P-256），必须按服务器曲线重新生成 ECDHE 密钥对。
+                generate_ecdh_keypair(s);
                 if (!ecdh_derive(s, body.data() + 4, pub_len)) return false;
                 transcript_add_msg(s, mtype, mseq, body, false);
                 return true;
@@ -1500,8 +1538,10 @@ static dtls_step_result client_step(dtls_session& s, const dtls_handshake_input&
                 if (4 + sig_len > body.size()) return false;
                 std::vector<uint8_t> content;
                 const char* ctx = "TLS 1.3, server CertificateVerify";
+                // RFC 8446 4.4.3: 64×0x20 || context string || 0x00 || transcript_hash
+                content.insert(content.end(), 64, 0x20);
                 content.insert(content.end(), ctx, ctx + strlen(ctx));
-                content.insert(content.end(), 64, 0);
+                content.push_back(0x00);
                 transcript_compute(s);
                 content.insert(content.end(), s.transcript_hash, s.transcript_hash + suite_hash_len(s.cipher_suite));
                 if (!server_cert->verify_scheme(scheme, content.data(), content.size(),
@@ -1516,7 +1556,8 @@ static dtls_step_result client_step(dtls_session& s, const dtls_handshake_input&
                 if (dtls13) {
                     if (body.size() != hl) return false;
                     uint8_t fk[48];
-                    expand_label13(s.handshake_secret, "finished", nullptr, 0, fk, hl, sha384);
+                    // RFC 8446 4.4.4: finished_key 基于 server handshake traffic secret
+                    expand_label13(s.server_hs_traffic, "finished", nullptr, 0, fk, hl, sha384);
                     transcript_compute(s);
                     uint8_t mac[48];
                     if (sha384) hmac_sha384(fk, hl, s.transcript_hash, hl, mac);
@@ -1739,7 +1780,8 @@ static dtls_step_result server_step(dtls_session& s, const dtls_handshake_input&
                 if (dtls13) {
                     if (body.size() != hl) return false;
                     uint8_t fk[48];
-                    expand_label13(s.handshake_secret, "finished", nullptr, 0, fk, hl, sha384);
+                    // RFC 8446 4.4.4: finished_key 基于 client handshake traffic secret
+                    expand_label13(s.client_hs_traffic, "finished", nullptr, 0, fk, hl, sha384);
                     transcript_compute(s);
                     uint8_t mac[48];
                     if (sha384) hmac_sha384(fk, hl, s.transcript_hash, hl, mac);
@@ -1928,20 +1970,22 @@ static bool sock_send(sock_t fd, const uint8_t* data, size_t len) {
 
 static int sock_recv(sock_t fd, uint8_t* buf, size_t cap) {
 #ifdef _WIN32
-    return recv(fd, (char*)buf, (int)cap, 0);
+    int n = recv(fd, (char*)buf, (int)cap, 0);
 #else
-    return (int)::recv(fd, buf, cap, 0);
+    int n = (int)::recv(fd, buf, cap, 0);
 #endif
+    return n;
 }
 
 static int sock_recvfrom(sock_t fd, uint8_t* buf, size_t cap, sockaddr_in* src) {
 #ifdef _WIN32
     int len = (int)sizeof(*src);
-    return recvfrom(fd, (char*)buf, (int)cap, 0, (sockaddr*)src, &len);
+    int n = recvfrom(fd, (char*)buf, (int)cap, 0, (sockaddr*)src, &len);
 #else
     socklen_t len = sizeof(*src);
-    return (int)::recvfrom(fd, buf, cap, 0, (sockaddr*)src, &len);
+    int n = (int)::recvfrom(fd, buf, cap, 0, (sockaddr*)src, &len);
 #endif
+    return n;
 }
 
 dtls_connection::dtls_connection() { dtls_socket_init(); }
