@@ -16,6 +16,7 @@
  *   - dtls_connection：UDP socket 封装（握手重传 + 应用数据收发）。
  */
 #include "tls.hpp"
+#include "x509.hpp"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -148,6 +149,12 @@ struct dtls_session {
     bool transcript_valid = false;
     // 服务端选择的本证书签名方案
     uint16_t selected_sig_alg = 0;
+
+    // Client-side: parsed server certificate chain, kept across step calls
+    // (RFC 6347 allows each handshake message in its own datagram).
+    std::vector<x509::x509_cert> server_chain;
+    bool have_server_cert = false;
+    tls::tls_certificate server_cert_parsed;
 };
 
 /// 握手步进输入。

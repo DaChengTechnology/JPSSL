@@ -1,6 +1,31 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.0] - 2026-08-08
+
+### Added
+- **DTLS 1.2 / 1.3 与 wolfSSL 互操作合规性测试**：
+  - 新增 `tests/test_dtls_wolfssl_interop.cpp`（CTest 目标 `test_dtls_wolfssl_interop`）：
+    jpssl 与 wolfSSL（5.9.2，DTLS 1.2/1.3，AES-128-GCM / ChaCha20-Poly1305）双向互通，
+    共 4 套件 x 2 方向 = 8 用例，全部通过；覆盖证书链双向校验与握手后应用数据。
+  - 构建时通过 `JP_WOLFSSL_PREFIX` / `JP_WOLFSSL_CERT_DIR` 注入 wolfSSL 安装前缀与测试证书目录。
+- **DTLS 1.2（RFC 6347）合规修复**：
+  - 客户端按服务器 ServerKeyExchange 选择的曲线重新生成 ECDHE 密钥对（此前固定默认曲线，
+    服务器选 P-256 时会发出 Y 坐标全零的非法点，wolfSSL 实测拒绝）。
+  - 客户端会话持久化已解析的服务器证书链（RFC 6347 允许每条握手消息独立数据报，
+    此前跨数据报会丢失证书导致 SKE 校验失败）。
+- **DTLS 1.3（RFC 9147 / RFC 8446）合规修复**：
+  - P-256 key_share 修正为 65 字节未压缩点（`0x04 || X || Y`，RFC 8446 4.2.8.2）。
+  - ServerHello 中 supported_versions 修正为单个 ProtocolVersion（RFC 8446 4.2.1）。
+  - 密钥调度补齐 `Derive-Secret(Early Secret, "derived", "")` 中间步骤（RFC 8446 7.1）。
+  - CertificateVerify 签名内容修正为 `64 x 0x20 || context || 0x00 || transcript_hash`
+    （RFC 8446 4.4.3）；Finished 密钥改为从 handshake traffic secret 派生（4.4.4）。
+  - 记录解密放宽最小密文长度检查（wolfSSL 不填充明文到 16 字节）。
+- **X.509（RFC 5280）合规修复**：ECDSA / SM2 证书签名改为 DER 编码的
+  ECDSA-Sig-Value（此前写入定长 raw r||s，wolfSSL 严格按标准拒绝）。
+
+### Fixed
+- 修复 TLS 1.3 CertificateVerify ECDSA 签名格式回归：保持 DER 编码（OpenSSL 4.0 /
+  wolfSSL 均按 DER 校验；RFC 8446 的 raw 格式实测会被拒绝）。
 
 ### Added
 - **iOS 实现（最低 iOS 13.0，仅 arm64 / ARMv8）＋ Swift 符号导出**：
