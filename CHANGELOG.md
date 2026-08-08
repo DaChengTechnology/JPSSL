@@ -152,14 +152,6 @@
   `client_handshake()` 即用；`attach` 对 `SOCK_DGRAM` 自动启用，也可
   `set_datagram_mode()` 显式覆盖。
 
-> ⚠️ **该 UDP 数据报模式是自研简化封装，非标准协议，存在缺陷**：
-> 报文格式与标准 `DTLS`（RFC 6347/9147）、`QUIC`（RFC 9000）不互通，
-> 无法与 OpenSSL/Wireshark 等标准实现互操作；缺少 DTLS 的 cookie 抗 DoS、
-> 握手分片/重传/乱序重组与防重放，UDP 丢包即握手失败。
-> **标准 DTLS 1.2/1.3 已在本次发布提供（见上方 Added），建议新代码使用；
-> QUIC 传输层 + HTTP/3 仍列入后续版本计划**。
-> 注：QUIC 所需的 TLS 层支持已在本次发布提供（见上方 Added）。
-
 ### Tests
 - `test_tls_socket` 新增外部 TCP fd 托管（attach + client_handshake 双向收发）、
   借用模式（close() 不关闭外部 fd）、UDP 回环（含 40000 字节大消息跨数据报
@@ -205,6 +197,14 @@
 - 与 OpenSSL 双向互操作（P-256/384/521 签名、ECDH、RSA-PSS、国密套件）回归全部通过。
 - `test_x509` 新增 54 条断言：PEM 证书往返（to_pem/from_pem）、Ed25519/Ed448/EC-P256/RSA 私钥 PEM 解析（含 PKCS#1 与 SEC1 传统格式，seed 与 OpenSSL 样本逐字节比对）、CSR 解析与签名验证（用 CSR 内公钥验签 `tbs_raw`）、加密 PEM（PBES2 AES-128/256-CBC，正确密码通过/错误密码拒绝）、X.509 version 语义回归（v3 编码为 `[0] INTEGER 2`、v1 无字段且 round-trip 字节一致）。
 - 回归：`test_x509`（118 断言）、`test_base64` 全部通过；全套 30 个 CTest 通过。
+
+> ⚠️ **该 UDP 数据报模式是自研简化封装，非标准协议，存在缺陷**：
+> 报文格式与标准 `DTLS`（RFC 6347/9147）、`QUIC`（RFC 9000）不互通，
+> 无法与 OpenSSL/Wireshark 等标准实现互操作；缺少 DTLS 的 cookie 抗 DoS、
+> 握手分片/重传/乱序重组与防重放，UDP 丢包即握手失败。
+> **标准 DTLS 1.2/1.3 已在本次发布提供（见上方 Added），建议新代码使用；
+> QUIC 传输层 + HTTP/3 仍列入后续版本计划**。
+> 注：QUIC 所需的 TLS 层支持已在本次发布提供（见上方 Added）。
 
 ## [0.9.14] — 2026-08-06
 
