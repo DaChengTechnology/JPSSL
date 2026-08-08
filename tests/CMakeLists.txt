@@ -102,6 +102,31 @@ target_include_directories(test_quic_openssl_interop PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_quic_openssl_interop PRIVATE jpssl_cpu OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
+# ---- QUIC v1/v2 合规性检测（quic-parser，Rust 独立实现） ----
+find_program(CARGO_EXECUTABLE cargo)
+if(CARGO_EXECUTABLE)
+    set(QUIC_PARSER_TOOL_DIR ${CMAKE_BINARY_DIR}/quic-parser-tool)
+    set(QUIC_PARSER_TOOL_EXE ${QUIC_PARSER_TOOL_DIR}/release/quic_parser_compliance${CMAKE_EXECUTABLE_SUFFIX})
+    add_custom_command(
+        OUTPUT ${QUIC_PARSER_TOOL_EXE}
+        COMMAND ${CARGO_EXECUTABLE} build --release
+                --manifest-path ${CMAKE_SOURCE_DIR}/tools/quic_parser_compliance/Cargo.toml
+                --target-dir ${QUIC_PARSER_TOOL_DIR}
+        DEPENDS
+            ${CMAKE_SOURCE_DIR}/tools/quic_parser_compliance/Cargo.toml
+            ${CMAKE_SOURCE_DIR}/tools/quic_parser_compliance/src/main.rs
+            ${CMAKE_SOURCE_DIR}/tools/quic_parser_compliance/rfc9001_a2_initial.hex
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Building quic-parser compliance tool (cargo build --release)"
+        VERBATIM)
+    add_custom_target(quic_parser_compliance_tool DEPENDS ${QUIC_PARSER_TOOL_EXE})
+    add_executable(test_quic_parser_compliance test_quic_parser_compliance.cpp)
+    target_include_directories(test_quic_parser_compliance PRIVATE ${INCLUDE_DIR})
+    target_link_libraries(test_quic_parser_compliance PRIVATE jpssl_cpu)
+    add_dependencies(test_quic_parser_compliance quic_parser_compliance_tool)
+    add_test(NAME test_quic_parser_compliance COMMAND test_quic_parser_compliance ${QUIC_PARSER_TOOL_EXE})
+endif()
+
 # ── TLS 1.3 X448/Ed448 握手测试 (OpenSSL 对比) ───────────────────────────
 if(OpenSSL_FOUND)
 add_executable(test_tls448 test_tls448.cpp)

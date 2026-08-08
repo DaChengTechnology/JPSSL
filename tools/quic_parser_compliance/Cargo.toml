@@ -1,0 +1,11 @@
+[package]
+name = "quic_parser_compliance"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"
+description = "QUIC v1/v2 Initial packet compliance checker built on quic-parser"
+license = "MIT"
+
+[dependencies]
+quic-parser = "0.1.5"
+
