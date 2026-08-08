@@ -28,6 +28,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <netdb.h>
 #endif
 
 namespace jpssl::dtls {
@@ -2041,7 +2042,11 @@ bool dtls_connection::connect(const char* host, uint16_t port,
     if (fd == SOCKET_INVALID) { freeaddrinfo(res); return false; }
     if (::connect(fd, res->ai_addr, (int)res->ai_addrlen) != 0) { freeaddrinfo(res); SOCKET_CLOSE(fd); return false; }
     freeaddrinfo(res);
+#ifdef _WIN32
     sock_ = (void*)(intptr_t)fd;
+#else
+    sock_ = fd;
+#endif
     open_ = true;
     is_server_ = false;
     sock_set_nonblocking(fd, false);
@@ -2106,7 +2111,11 @@ bool dtls_connection::bind(uint16_t port, const char* addr) {
     sa.sin_port = htons(port);
     if (::inet_pton(AF_INET, addr, &sa.sin_addr) != 1) { SOCKET_CLOSE(fd); return false; }
     if (::bind(fd, (sockaddr*)&sa, sizeof(sa)) != 0) { SOCKET_CLOSE(fd); return false; }
+#ifdef _WIN32
     sock_ = (void*)(intptr_t)fd;
+#else
+    sock_ = fd;
+#endif
     open_ = true;
     is_server_ = true;
     return true;
