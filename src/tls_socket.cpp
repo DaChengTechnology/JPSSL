@@ -616,25 +616,32 @@ bool tls_connection::establish_tcp(const std::string& host, uint16_t port,
     for (addrinfo* ai = res; ai; ai = ai->ai_next) {
         fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd == INVALID_SOCKET_HANDLE) continue;
-        // 非阻塞模式下，TCP 连接建立本身也采用非阻塞方式：
-        // 返回 EINPROGRESS/WSAEWOULDBLOCK 时用 poll 等待可写并检查 SO_ERROR
-        // （受 set_handshake_timeout 约束），完成后 socket 保持非阻塞。
-        if (nonblocking_) set_socket_nonblocking(fd, true);
-        if (::connect(fd, ai->ai_addr, (int)ai->ai_addrlen) == 0) break;
-        if (nonblocking_ && is_would_block()) {
+        // 无论阻塞/非阻塞模式，TCP 连接建立均采用非阻塞方式 + 有界等待
+        // （受 set_handshake_timeout 约束），避免目标地址无响应时永久阻塞；
+        // 阻塞模式连接成功后恢复阻塞标志。
+        // 新 socket 默认阻塞；无论目标模式如何，连接建立阶段一律先置非阻塞做有界等待
+        set_socket_nonblocking(fd, true);
+        bool connected = false;
+        if (::connect(fd, ai->ai_addr, (int)ai->ai_addrlen) == 0) {
+            connected = true;
+        } else if (is_would_block()) {
             if (wait_fd(fd, true, handshake_timeout_ms_)) {
                 int soerr = 0;
 #ifdef _WIN32
                 int slen = sizeof(soerr);
                 if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&soerr, &slen) == 0 &&
                     soerr == 0)
-                    break;
+                    connected = true;
 #else
                 socklen_t slen = sizeof(soerr);
                 if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &slen) == 0 && soerr == 0)
-                    break;
+                    connected = true;
 #endif
             }
+        }
+        if (connected) {
+            if (!nonblocking_) set_socket_nonblocking(fd, false); // 恢复阻塞模式
+            break;
         }
         close_socket_handle(fd);
         fd = INVALID_SOCKET_HANDLE;
