@@ -12,10 +12,14 @@ wiki/
 package-lock.json
 build-bench/
 build-ohos*/
+build-macos*/
 .deepseek/
 
 # iOS XCFramework 构建产物（由 ios/build-xcframework.sh 生成）
 ios/JPSsl.xcframework/
+
+# macOS framework 构建产物（由 macos/build.sh 生成）
+macos/JPSslC.framework/
 
 # Android
 android/.gradle/

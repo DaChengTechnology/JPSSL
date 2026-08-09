@@ -244,7 +244,7 @@ endif()
 # XCFramework / Package.swift 供 Swift 侧 import 使用（最低 iOS 13.0 / arm64）。
 # 注意：桥接源依赖 ios/bridge 头文件，对应 target_include_directories
 # 在 add_library 之后的既有 include 块中补充（见下方 jpssl_cpu 的 include 设置）。
-if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     list(APPEND CPU_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/ios/bridge/jpssl_bridge.cpp)
     message(STATUS "iOS: 已包含 Swift 桥接层 (ios/bridge/jpssl_bridge.cpp)")
 endif()
@@ -267,7 +267,7 @@ target_include_directories(jpssl_cpu PUBLIC
 target_include_directories(jpssl_cpu_shared PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     # Swift 桥接头文件目录（jpssl.h）
     target_include_directories(jpssl_cpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ios/bridge)
     target_include_directories(jpssl_cpu_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ios/bridge)
