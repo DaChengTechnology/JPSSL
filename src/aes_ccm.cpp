@@ -326,9 +326,9 @@ static void aes_ccm_encrypt_impl(const aes_context& ctx,
             }
             aes_encrypt_block(ctx, ctr, keystream.data() + i * 16);
         }
-        for (size_t i = 0; i < pt_len; ++i)
-            out[i] = pt[i] ^ keystream[16 + i];
-
+        // 必须先基于明文计算 MAC：in-place 场景（out == pt）下，
+        // 若先做 CTR XOR 会把明文覆盖为密文，导致 MAC 错误（仅标量路径有此问题，
+        // AES-NI 路径先在寄存器中取明文再回写，不受影响）。
         size_t pos = 0;
         while (pos + 16 <= pt_len) {
             for (int j = 0; j < 16; ++j) mac[j] ^= pt[pos + j];
@@ -341,6 +341,8 @@ static void aes_ccm_encrypt_impl(const aes_context& ctx,
             for (int j = 0; j < 16; ++j) mac[j] ^= last[j];
             aes_encrypt_block(ctx, mac, mac);
         }
+        for (size_t i = 0; i < pt_len; ++i)
+            out[i] = pt[i] ^ keystream[16 + i];
         for (size_t i = 0; i < tag_len; ++i)
             tag[i] = mac[i] ^ keystream[i];
     }
