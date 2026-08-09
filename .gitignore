@@ -13,6 +13,8 @@ package-lock.json
 build-bench/
 build-ohos*/
 build-macos*/
+build-win-test/
+win_connect_probe.obj
 .deepseek/
 
 # iOS XCFramework 构建产物（由 ios/build-xcframework.sh 生成）
