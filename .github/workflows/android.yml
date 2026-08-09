@@ -32,7 +32,7 @@ jobs:
           "$SDKMANAGER" --install \
             "platforms;android-34" \
             "build-tools;34.0.0" \
-            "ndk;23.1.7779620" \
+            "ndk;26.1.10909125" \
             "cmake;3.22.1"
 
       - name: Build release AAR

@@ -36,7 +36,13 @@ set(JPSSL_CPU_SOURCES
     ${JPSSL_ROOT}/src/ed448.cpp
     ${JPSSL_ROOT}/src/ed448_batch_cpu.cpp
     ${JPSSL_ROOT}/src/ed448_batch_dispatch.cpp
-    ${JPSSL_ROOT}/src/tls.cpp
+    ${JPSSL_ROOT}/src/dh.cpp
+    ${JPSSL_ROOT}/src/tls_router.cpp
+    ${JPSSL_ROOT}/src/tls12_server.cpp
+    ${JPSSL_ROOT}/src/tls13_server.cpp
+    ${JPSSL_ROOT}/src/tls12_client.cpp
+    ${JPSSL_ROOT}/src/tls13_client.cpp
+    ${JPSSL_ROOT}/src/tls_quic.cpp
     ${JPSSL_ROOT}/src/dtls.cpp
     ${JPSSL_ROOT}/src/x509.cpp
     ${JPSSL_ROOT}/src/ed25519.cpp
