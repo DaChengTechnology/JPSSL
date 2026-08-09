@@ -379,6 +379,18 @@ bool tls_connection::send_one_datagram(const uint8_t* data, size_t len,
                                        std::string* error) {
     const auto start = std::chrono::steady_clock::now();
     for (;;) {
+        // 握手阶段：即使阻塞模式也先做有界可写等待，避免对端停止接收时永久阻塞
+        if (handshake_pending_) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - start)
+                               .count();
+            int remain = handshake_timeout_ms_ - (int)elapsed;
+            if (remain <= 0 || !wait_fd(sock_, true, remain)) {
+                set_err(error, "handshake write timeout");
+                close();
+                return false;
+            }
+        }
         int w = (int)::send(sock_, (const char*)data, (int)len, 0);
         if (w > 0) return true; // 整包发出
         if (w == 0) {
@@ -440,6 +452,18 @@ bool tls_connection::write_all(const uint8_t* data, size_t len, std::string* err
     size_t off = 0;
     const auto start = std::chrono::steady_clock::now();
     while (off < len) {
+        // 握手阶段：即使阻塞模式也先做有界可写等待，避免对端停止接收时永久阻塞
+        if (handshake_pending_) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - start)
+                               .count();
+            int remain = handshake_timeout_ms_ - (int)elapsed;
+            if (remain <= 0 || !wait_fd(sock_, true, remain)) {
+                set_err(error, "handshake write timeout");
+                close();
+                return false;
+            }
+        }
         int w = (int)::send(sock_, (const char*)data + off, (int)(len - off), 0);
         if (w > 0) {
             off += (size_t)w;
@@ -485,6 +509,18 @@ bool tls_connection::fill_rbuf(size_t min_total, std::string* error) {
     }
     const auto start = std::chrono::steady_clock::now();
     while (rbuf_.size() < min_total) {
+        // 握手阶段：即使阻塞模式也先做有界可读等待，避免对端停止发送时永久阻塞
+        if (handshake_pending_) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - start)
+                               .count();
+            int remain = handshake_timeout_ms_ - (int)elapsed;
+            if (remain <= 0 || !wait_fd(sock_, false, remain)) {
+                set_err(error, "handshake read timeout");
+                close();
+                return false;
+            }
+        }
         // 数据报模式：一次 recv 拿一个完整 UDP 数据报（最多 64KiB，
         // 单条 record 上限 16KiB+256 开销，一个数据报恰一条 record）；
         // TCP 模式：按需增量读取，处理半包/粘包。
@@ -710,7 +746,23 @@ bool tls_connection::do_client_handshake(const tls_certificate_manager* trust_st
                 done = true;
                 break;
             }
-            // 未解析到 Server Finished：可能还有 record 未到达，继续阻塞读取
+            // 解析失败：可能是 flight 不完整（对端还会发剩余 record），也可能是
+            // 致命错误（如证书验证失败）。短暂有界等待后仍无新数据即判失败，
+            // 避免阻塞模式下永久等待（对端已停止发送时）。
+            if (!wait_fd(sock_, false, 250)) {
+                tls_session trial2 = session_;
+                std::vector<uint8_t> cf2;
+                if (tls13_process_server_flight(trial2, flight.data(), flight.size(), cf2,
+                                                trust_store, trust) &&
+                    trial2.server_finished_received) {
+                    session_ = std::move(trial2);
+                    client_finished = std::move(cf2);
+                    done = true;
+                    break;
+                }
+                set_err(error, "TLS 1.3 server flight incomplete or verification failed");
+                return false;
+            }
         }
         uint8_t rtype = 0;
         std::vector<uint8_t> payload;
