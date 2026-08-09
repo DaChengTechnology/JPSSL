@@ -10,6 +10,8 @@ plugins {
 android {
     namespace 'io.github.jpssl'
     compileSdk 34
+    // 与 CI 安装的 NDK 对齐（AGP 8.2 默认版本）
+    ndkVersion "23.1.7779620"
 
     defaultConfig {
         // ── 最低版本号：卡 arm64-v8a 基线 = API 21 ──

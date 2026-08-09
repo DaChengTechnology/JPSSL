@@ -11,6 +11,7 @@ build_test_musa/
 wiki/
 package-lock.json
 build-bench/
+build-ohos*/
 .deepseek/
 
 # iOS XCFramework 构建产物（由 ios/build-xcframework.sh 生成）
