@@ -42,4 +42,4 @@ jobs:
         run: |
           ls -la android/jpssl/build/outputs/aar/
           unzip -l android/jpssl/build/outputs/aar/jpssl-release.aar \
-            | grep -E 'lib/arm64-v8a/libjpssl\.so'
+            | grep -E 'arm64-v8a/libjpssl\.so'
