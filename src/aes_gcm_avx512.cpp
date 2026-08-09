@@ -12,7 +12,7 @@
 #include <cstring>
 #include <algorithm>
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
 #include <wmmintrin.h>    // AES-NI, PCLMULQDQ
 #include <emmintrin.h>    // SSE2
 #include <smmintrin.h>    // SSE4.1
@@ -22,7 +22,7 @@
 namespace jpssl {
 namespace {
 
-#if defined(__x86_64__) && defined(JP_AVX512)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX512)
 
 // ═══════════════════════════════════════════════════════════════════════
 //  PCLMULQDQ GF(2^128) 乘法（128-bit，与 AVX2 版本相同）
@@ -447,7 +447,7 @@ static bool avx512_gcm_decrypt_impl(const aes_context& ctx,
     return true;
 }
 
-#endif // __x86_64__ && JP_AVX512
+#endif // (__x86_64__ || _M_X64) && JP_AVX512
 
 } // anonymous namespace
 
@@ -469,7 +469,7 @@ void aes_gcm_encrypt_avx512(const aes_context& ctx,
                             std::span<const uint8_t> aad,
                             std::vector<uint8_t>& ciphertext,
                             uint8_t* tag, size_t tag_len) {
-#if defined(__x86_64__) && defined(JP_AVX512)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX512)
     if (avx512_gcm_available()) {
         ciphertext.resize(plaintext.size());
         avx512_gcm_encrypt_impl(ctx, iv, iv_len, plaintext, aad, ciphertext.data(),
@@ -486,7 +486,7 @@ bool aes_gcm_decrypt_avx512(const aes_context& ctx,
                             std::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext) {
-#if defined(__x86_64__) && defined(JP_AVX512)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX512)
     if (avx512_gcm_available()) {
         plaintext.resize(ciphertext.size());
         return avx512_gcm_decrypt_impl(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
@@ -502,7 +502,7 @@ void aes_gcm_encrypt_avx512_inplace(const aes_context& ctx,
                                     uint8_t* buf, size_t data_len,
                                     std::span<const uint8_t> aad,
                                     uint8_t* tag, size_t tag_len) {
-#if defined(__x86_64__) && defined(JP_AVX512)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX512)
     if (avx512_gcm_available()) {
         avx512_gcm_encrypt_impl(ctx, iv, iv_len,
                                 std::span<const uint8_t>(buf, data_len), aad, buf,
@@ -519,7 +519,7 @@ bool aes_gcm_decrypt_avx512_inplace(const aes_context& ctx,
                                     uint8_t* buf, size_t data_len,
                                     std::span<const uint8_t> aad,
                                     const uint8_t* tag, size_t tag_len) {
-#if defined(__x86_64__) && defined(JP_AVX512)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX512)
     if (avx512_gcm_available()) {
         return avx512_gcm_decrypt_impl(ctx, iv, iv_len,
                                        std::span<const uint8_t>(buf, data_len), aad,
