@@ -10,4 +10,8 @@ build_test_musa/
 wiki/
 package-lock.json
 build-bench/
+build-ohos*/
+build-macos*/
+build-win-test/
+win_connect_probe.obj
 .deepseek/
