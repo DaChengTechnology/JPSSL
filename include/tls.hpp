@@ -143,6 +143,16 @@ struct quic_transport_parameters {
     static bool decode(const uint8_t* data, size_t len, quic_transport_parameters& out);
 };
 
+/// QUIC 数据包保护 secret（RFC 9001 §5.1）：Handshake / 1-RTT 两阶段
+/// "client in"/"server in" 各 48 字节（SHA-384 套件取前 48，SHA-256 取前 32）。
+/// 仅 quic_mode 会话按需堆分配（普通 TLS 连接不占用这 192 字节）。
+struct quic_secrets_block {
+    uint8_t client_hs[48] = {};
+    uint8_t server_hs[48] = {};
+    uint8_t client_app[48] = {};
+    uint8_t server_app[48] = {};
+};
+
 /// 一组 QUIC 数据包保护密钥（RFC 9001 §5.1）：AEAD key + IV + 头部保护 hp。
 struct quic_packet_keys {
     uint8_t key[32] = {}; size_t key_len = 0;   // 16 (AES-128) / 32 (AES-256/ChaCha20)
@@ -166,6 +176,13 @@ union transcript_ctx_union {
     sha512_ctx sha512;
     sm3_ctx   sm3;
     transcript_ctx_union() : sha256{} {}
+};
+
+// TLS 1.2 DHE（RFC 7919 ffdhe2048）：服务端临时密钥对。
+// 仅 DHE 套件按需堆分配（ECDHE/ECDSA 默认连接不占用这 288 字节）。
+struct tls12_dhe_keys {
+    uint8_t priv[32];  // 私钥指数
+    uint8_t pub[256];  // 大端公钥
 };
 
 struct tls_session {
@@ -207,17 +224,19 @@ struct tls_session {
 
     // TLS 1.2 服务端：RSA 密钥交换/签名所需的服务器私钥（由握手流程注入，
     // 仅服务端会话填充；ECDHE 套件仅用于 SKX 签名，RSA 套件用于 premaster 解密）
-    jpssl::rsa_private_key rsa_key;
+    // TLS 1.2 服务端 RSA 套件专用私钥：按需堆分配（默认 TLS 1.3 / ECDSA 不占
+    // 这 2KB），shared_ptr 保证 tls_session 仍可拷贝（客户端 trial 回滚路径）。
+    std::shared_ptr<jpssl::rsa_private_key> rsa_key;
 
     // TLS 1.2 客户端：ClientHello 原始字节缓存。客户端生成 ClientHello 时
     // 还不知道服务端将选定的 cipher_suite（transcript 哈希算法依赖它），
     // 因此推迟到收到 ServerHello、解析出套件后再初始化 transcript 并补入。
     std::vector<uint8_t> tls12_client_hello_cache;
 
-    // TLS 1.2 DHE（RFC 7919 ffdhe2048）：服务端临时密钥对
-    //   dh_priv = 32 字节私钥指数；dh_pub = 256 字节大端公钥
-    uint8_t dh_priv[32];
-    uint8_t dh_pub[256];
+    // TLS 1.2 DHE（RFC 7919 ffdhe2048）：服务端临时密钥对。
+    // 按需堆分配（tls12_dhe_keys），仅 DHE 套件填充；共享指针保证
+    // tls_session 保持可拷贝（客户端 trial 回滚路径）。
+    std::shared_ptr<tls12_dhe_keys> dhe_keys;
 
     // TLS 1.2 PSK（RFC 4279 / RFC 5487）
     //   客户端：调用方配置 identity + value 后置 tls12_psk_valid=true；
@@ -271,14 +290,10 @@ struct tls_session {
     quic_transport_parameters quic_peer_transport_params;
     bool quic_peer_params_valid = false;
 
-    // QUIC 数据包保护 secret（RFC 9001 §5.1）：
-    //   handshake secret = HKDF-Expand-Label(Handshake Secret, "client in"/"server in")
-    //   application secret = HKDF-Expand-Label(Master Secret, "client in"/"server in")
+    // QUIC 数据包保护 secret（RFC 9001 §5.1）：按需堆分配
+    // （quic_secrets_block），仅 quic_mode 会话填充；普通 TLS 连接不占 192 字节。
     // 由 tls13_derive_handshake_keys / tls13_derive_application_keys 在 quic_mode 下派生。
-    uint8_t quic_client_hs_secret[48] = {};
-    uint8_t quic_server_hs_secret[48] = {};
-    uint8_t quic_client_app_secret[48] = {};
-    uint8_t quic_server_app_secret[48] = {};
+    std::shared_ptr<quic_secrets_block> quic_secrets;
     bool quic_hs_secrets_ready = false;
     bool quic_app_secrets_ready = false;
 };

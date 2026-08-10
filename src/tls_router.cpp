@@ -1079,8 +1079,10 @@ void tls13_derive_handshake_keys(tls_session& s, const uint8_t* shared_secret, s
 
     // QUIC mode (RFC 9001 §5.1)：Handshake 数据包保护 secret = TLS 1.3 "c/s hs traffic" 流量密钥
     if (s.quic_mode) {
-        memcpy(s.quic_client_hs_secret, ch_ts, hl);
-        memcpy(s.quic_server_hs_secret, sh_ts, hl);
+        if (!s.quic_secrets)
+            s.quic_secrets = std::make_shared<quic_secrets_block>();
+        memcpy(s.quic_secrets->client_hs, ch_ts, hl);
+        memcpy(s.quic_secrets->server_hs, sh_ts, hl);
         s.quic_hs_secrets_ready = true;
     }
 }
@@ -1141,8 +1143,10 @@ void tls13_derive_application_keys(tls_session& s){
 
     // QUIC mode (RFC 9001 §5.1)：1-RTT 数据包保护 secret = TLS 1.3 "c/s ap traffic" 流量密钥
     if (s.quic_mode) {
-        memcpy(s.quic_client_app_secret, c_ap_ts, hl);
-        memcpy(s.quic_server_app_secret, s_ap_ts, hl);
+        if (!s.quic_secrets)
+            s.quic_secrets = std::make_shared<quic_secrets_block>();
+        memcpy(s.quic_secrets->client_app, c_ap_ts, hl);
+        memcpy(s.quic_secrets->server_app, s_ap_ts, hl);
         s.quic_app_secrets_ready = true;
     }
 }

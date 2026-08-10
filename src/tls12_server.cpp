@@ -274,7 +274,8 @@ bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello,
         memcpy(s.ks_priv, ecdhe_priv, 32);
     }
     if(use_dhe){
-        jpssl::dh::ffdhe2048_keypair(s.dh_pub, s.dh_priv);
+        s.dhe_keys = std::make_shared<tls12_dhe_keys>();
+        jpssl::dh::ffdhe2048_keypair(s.dhe_keys->pub, s.dhe_keys->priv);
     }
 
     // 解析客户端 signature_algorithms / signature_algorithms_cert
@@ -306,7 +307,7 @@ bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello,
                  cert->sig_alg == SignatureAlgorithm::RSA_PSS_RSAE_SHA256 ||
                  cert->sig_alg == SignatureAlgorithm::RSA_PSS_RSAE_SHA384 ||
                  cert->sig_alg == SignatureAlgorithm::RSA_PSS_RSAE_SHA512)) {
-        s.rsa_key = cert->priv.rsa;
+        s.rsa_key = std::make_shared<jpssl::rsa_private_key>(cert->priv.rsa);
     }
 
     // ── ServerHello ──
@@ -374,12 +375,14 @@ bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello,
             server_response.insert(server_response.end(), skx_msg.begin(), skx_msg.end());
         }
     } else if (tls12_is_dhe_rsa(s.cipher_suite) && cert) {
-        std::vector<uint8_t> skx_msg = tls12_make_dhe_rsa_skx(s, *cert, skx_sig_alg, s.dh_pub);
+        if (!s.dhe_keys) return false;  // use_dhe 分支必须已生成临时密钥对
+        std::vector<uint8_t> skx_msg = tls12_make_dhe_rsa_skx(s, *cert, skx_sig_alg, s.dhe_keys->pub);
         if(skx_msg.size() <= 4) return false;
         tls_transcript_update(s, skx_msg.data(), skx_msg.size());
         server_response.insert(server_response.end(), skx_msg.begin(), skx_msg.end());
     } else if (tls12_is_dhe_psk(s.cipher_suite)) {
-        std::vector<uint8_t> skx_msg = tls12_make_dhe_psk_skx(s.dh_pub);
+        if (!s.dhe_keys) return false;  // use_dhe 分支必须已生成临时密钥对
+        std::vector<uint8_t> skx_msg = tls12_make_dhe_psk_skx(s.dhe_keys->pub);
         tls_transcript_update(s, skx_msg.data(), skx_msg.size());
         server_response.insert(server_response.end(), skx_msg.begin(), skx_msg.end());
     }
@@ -708,8 +711,9 @@ bool tls12_process_client_key_exchange(tls_session& s, const uint8_t* encrypted_
         size_t pub_len = (encrypted_pms[0] << 8) | encrypted_pms[1];
         if (2 + pub_len > epms_len || pub_len != jpssl::dh::FFDHE2048_BYTES) return false;
         const uint8_t* client_pub = encrypted_pms + 2;
+        if (!s.dhe_keys) return false;
         uint8_t shared256[256];
-        if (!jpssl::dh::ffdhe2048_shared(shared256, s.dh_priv, client_pub))
+        if (!jpssl::dh::ffdhe2048_shared(shared256, s.dhe_keys->priv, client_pub))
             return false; // RFC 7919 §4：1 < dh_Yc < dh_p-1
         uint8_t minimal[256];
         size_t n = jpssl::dh::ffdhe2048_shared_minimal(shared256, minimal);
@@ -742,8 +746,9 @@ bool tls12_process_client_key_exchange(tls_session& s, const uint8_t* encrypted_
             if (off + pub_len > epms_len || pub_len != jpssl::dh::FFDHE2048_BYTES)
                 return false;
             const uint8_t* client_pub = encrypted_pms + off;
+            if (!s.dhe_keys) return false;
             uint8_t shared256[256];
-            if (!jpssl::dh::ffdhe2048_shared(shared256, s.dh_priv, client_pub))
+            if (!jpssl::dh::ffdhe2048_shared(shared256, s.dhe_keys->priv, client_pub))
                 return false; // RFC 7919 §4：1 < dh_Yc < dh_p-1
             uint8_t minimal[256];
             size_t n = jpssl::dh::ffdhe2048_shared_minimal(shared256, minimal);
@@ -759,7 +764,8 @@ bool tls12_process_client_key_exchange(tls_session& s, const uint8_t* encrypted_
         size_t enc_len = (encrypted_pms[0] << 8) | encrypted_pms[1];
         if (2 + enc_len > epms_len) return false;
         std::vector<uint8_t> pt;
-        if (!rsa_decrypt(s.rsa_key, encrypted_pms + 2, pt)) return false;
+        if (!s.rsa_key || !rsa_decrypt(*s.rsa_key, encrypted_pms + 2, pt))
+            return false;
         size_t n = pt.size() < 48 ? pt.size() : 48;
         pre_master.assign(pt.data(), pt.data() + n);
     }

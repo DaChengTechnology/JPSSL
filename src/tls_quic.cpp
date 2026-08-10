@@ -272,20 +272,20 @@ bool tls_quic_derive_packet_keys(const uint8_t* secret, size_t secret_len,
 
 bool tls_quic_get_handshake_keys(tls_session& s, QuicVersion ver,
                                  quic_packet_keys& client, quic_packet_keys& server) {
-    if (!s.quic_hs_secrets_ready) return false;
+    if (!s.quic_hs_secrets_ready || !s.quic_secrets) return false;
     size_t hl = tls_hash_len(s.cipher_suite);
-    if (!tls_quic_derive_packet_keys(s.quic_client_hs_secret, hl, ver, s.cipher_suite, client))
+    if (!tls_quic_derive_packet_keys(s.quic_secrets->client_hs, hl, ver, s.cipher_suite, client))
         return false;
-    return tls_quic_derive_packet_keys(s.quic_server_hs_secret, hl, ver, s.cipher_suite, server);
+    return tls_quic_derive_packet_keys(s.quic_secrets->server_hs, hl, ver, s.cipher_suite, server);
 }
 
 bool tls_quic_get_application_keys(tls_session& s, QuicVersion ver,
                                    quic_packet_keys& client, quic_packet_keys& server) {
-    if (!s.quic_app_secrets_ready) return false;
+    if (!s.quic_app_secrets_ready || !s.quic_secrets) return false;
     size_t hl = tls_hash_len(s.cipher_suite);
-    if (!tls_quic_derive_packet_keys(s.quic_client_app_secret, hl, ver, s.cipher_suite, client))
+    if (!tls_quic_derive_packet_keys(s.quic_secrets->client_app, hl, ver, s.cipher_suite, client))
         return false;
-    return tls_quic_derive_packet_keys(s.quic_server_app_secret, hl, ver, s.cipher_suite, server);
+    return tls_quic_derive_packet_keys(s.quic_secrets->server_app, hl, ver, s.cipher_suite, server);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

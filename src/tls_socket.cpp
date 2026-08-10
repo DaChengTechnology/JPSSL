@@ -803,6 +803,7 @@ bool tls_connection::do_client_handshake(const tls_certificate_manager* trust_st
         return false;
     }
     if (!write_all(client_finished.data(), client_finished.size(), error)) return false;
+    rbuf_.shrink_to_fit();  // 释放握手期接收缓冲容量（握手后不再需要）
     return true;
 }
 
@@ -925,6 +926,7 @@ bool tls_connection::do_client_handshake_tls12(const tls_certificate_manager* tr
     }
 
     session_.tls12_secure = true;
+    rbuf_.shrink_to_fit();
     return true;
 }
 
@@ -1067,6 +1069,7 @@ bool tls_connection::do_server_handshake(const tls_certificate_manager& cert_man
         if (!write_all(sf_enc.data(), sf_enc.size(), error)) return false;
 
         session_.tls12_secure = true;
+        rbuf_.shrink_to_fit();
         return true;
     }
 
@@ -1112,6 +1115,7 @@ bool tls_connection::do_server_handshake(const tls_certificate_manager& cert_man
             set_err(error, "tls13_process_client_finished failed");
             return false;
         }
+        rbuf_.shrink_to_fit();
         return true;
     }
 }
