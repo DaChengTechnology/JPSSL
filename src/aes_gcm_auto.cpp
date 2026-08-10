@@ -30,11 +30,17 @@ static void detect_best() {
         g_best_level = 4; // ARM NEON（AESE + PMULL，4 路并行）
     } else
 #endif
+#if defined(JP_AVX512)
     if (feats.avx512 && feats.vpclmulqdq_vaes) {
         g_best_level = 3; // AVX512 (8 路 VAES)
-    } else if (feats.avx2 && feats.vpclmulqdq_vaes && feats.aesni) {
+    } else
+#endif
+#if defined(JP_VAES)
+    if (feats.avx2 && feats.vpclmulqdq_vaes && feats.aesni) {
         g_best_level = 2; // VAES-256 (4 路)
-    } else if (feats.avx2 && feats.pclmulqdq && feats.aesni) {
+    } else
+#endif
+    if (feats.avx2 && feats.pclmulqdq && feats.aesni) {
         g_best_level = 1; // AVX2
     } else {
         g_best_level = 0; // 软件
@@ -59,7 +65,7 @@ void aes_gcm_encrypt_auto(const aes_context& ctx,
             aes_gcm_encrypt_avx512(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
             break;
 #endif
-#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#if defined(JP_VAES)
         case 2:
             aes_gcm_encrypt_vaes(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
             break;
@@ -93,7 +99,7 @@ bool aes_gcm_decrypt_auto(const aes_context& ctx,
             return aes_gcm_decrypt_avx512(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
                                           plaintext);
 #endif
-#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#if defined(JP_VAES)
         case 2:
             return aes_gcm_decrypt_vaes(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
                                         plaintext);
@@ -129,7 +135,7 @@ void aes_gcm_encrypt_inplace(const aes_context& ctx,
             aes_gcm_encrypt_avx512_inplace(ctx, iv, iv_len, buf, data_len, aad, tag, tag_len);
             return;
 #endif
-#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#if defined(JP_VAES)
         case 2:
             aes_gcm_encrypt_vaes_inplace(ctx, iv, iv_len, buf, data_len, aad, tag, tag_len);
             return;
@@ -166,7 +172,7 @@ bool aes_gcm_decrypt_inplace(const aes_context& ctx,
             return aes_gcm_decrypt_avx512_inplace(ctx, iv, iv_len, buf, data_len, aad,
                                                   tag, tag_len);
 #endif
-#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#if defined(JP_VAES)
         case 2:
             return aes_gcm_decrypt_vaes_inplace(ctx, iv, iv_len, buf, data_len, aad,
                                                 tag, tag_len);

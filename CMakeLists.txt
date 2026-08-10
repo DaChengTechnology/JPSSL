@@ -50,10 +50,23 @@ endif()
 # ── 条件编译选项 ─────────────────────────────────────────────────────
 option(JP_ENABLE_AVX2   "Enable AVX2 acceleration"   ON)
 option(JP_ENABLE_AVX512 "Enable AVX512 acceleration" ON)
+option(JP_ENABLE_VAES   "Enable VAES-accelerated AES-GCM backend (needs -mvaes)" ON)
 option(JP_ENABLE_NEON   "Enable ARM NEON/crypto acceleration (aarch64)" ON)
 # ARMv8 / v8.1 / v8.2 / v9 架构等级（仅作用于 NEON 源文件）：
 #   空 = 默认 (armv8.2-a)；可设为 armv8-a / armv8.1-a / armv8.2-a / armv9-a
 set(JP_ARM_MARCH "" CACHE STRING "ARM architecture level for NEON sources (armv8-a/armv8.1-a/armv8.2-a/armv9-a)")
+
+# ── VAES 编译能力检测 ─────────────────────────────────────────────────
+# aes_gcm_vaes.cpp / aes_gcm_avx512.cpp 的 GNU/Clang 实现包含 VAES 汇编
+# （vaesenc/vpclmulqdq），要求编译器支持 -mvaes（GCC 10+/Clang 12+）。
+# 老工具链不支持时自动排除这两个源文件并禁用 JP_VAES/JP_AVX512，
+# 运行时（auto 分派）回退 AVX2/PCLMUL 路径——"有 AVX2 无 VAES"构建兼容。
+include(CheckCXXCompilerFlag)
+if(MSVC OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+    set(JP_CXX_HAS_VAES FALSE)   # MSVC：VAES 后端为 GNU 汇编，无实现
+else()
+    check_cxx_compiler_flag("-mvaes" JP_CXX_HAS_VAES)
+endif()
 
 # ── x86 硬件加速 ──────────────────────────────────────────────────────
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
@@ -163,8 +176,6 @@ set(CPU_SOURCES
 # x86-64 专属 SIMD 源（AVX2/AVX512/VAES/SHA-NI/ADX 汇编等）
 set(X86_SOURCES
     src/aes_gcm_avx2.cpp
-    src/aes_gcm_avx512.cpp
-    src/aes_gcm_vaes.cpp
     src/chacha20_avx2.cpp
     src/chacha20_avx512.cpp
     src/poly1305_avx2.cpp
@@ -184,6 +195,15 @@ set(X86_SOURCES
     src/x448_avx2.cpp
     src/x448_avx512.cpp
 )
+# VAES/AVX512 GCM 后端依赖 -mvaes 编译能力，按检测结果条件加入
+if(JP_CXX_HAS_VAES)
+    if(JP_ENABLE_AVX512)
+        list(APPEND X86_SOURCES src/aes_gcm_avx512.cpp)
+    endif()
+    if(JP_ENABLE_VAES)
+        list(APPEND X86_SOURCES src/aes_gcm_vaes.cpp)
+    endif()
+endif()
 
 # ARM (aarch64) NEON/crypto 加速源
 set(ARM_SOURCES
@@ -429,9 +449,14 @@ if(JP_ENABLE_AVX2 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     target_compile_definitions(jpssl_cpu PUBLIC JP_AVX2)
     target_compile_definitions(jpssl_cpu_shared PUBLIC JP_AVX2)
 endif()
-if(JP_ENABLE_AVX512 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+if(JP_ENABLE_AVX512 AND JP_CXX_HAS_VAES AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     target_compile_definitions(jpssl_cpu PUBLIC JP_AVX512)
     target_compile_definitions(jpssl_cpu_shared PUBLIC JP_AVX512)
+endif()
+if(JP_ENABLE_VAES AND JP_CXX_HAS_VAES AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+    # PUBLIC：测试/示例代码据此声明 VAES GCM 接口（aes.hpp）
+    target_compile_definitions(jpssl_cpu PUBLIC JP_VAES)
+    target_compile_definitions(jpssl_cpu_shared PUBLIC JP_VAES)
 endif()
 
 # ── ARM NEON / crypto 硬件加速 (aarch64: NEON 必选, AES/PMULL/SHA 扩展可选) ──
