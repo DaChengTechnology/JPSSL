@@ -174,7 +174,11 @@ target_link_libraries(test_base64 PRIVATE jpssl_cpu ${MUSA_LIBS})
 
 add_executable(test_tls_socket test_tls_socket.cpp)
 target_include_directories(test_tls_socket PRIVATE ${INCLUDE_DIR})
-target_link_libraries(test_tls_socket PRIVATE jpssl_cpu ${MUSA_LIBS})
+if(EXISTS ${CMAKE_SOURCE_DIR}/threadpool/CMakeLists.txt AND NOT JPSSL_USE_EXTERNAL_THREADPOOL)
+    target_link_libraries(test_tls_socket PRIVATE jpssl_cpu threadpool ${MUSA_LIBS})
+else()
+    target_link_libraries(test_tls_socket PRIVATE jpssl_cpu ${MUSA_LIBS})
+endif()
 
 # ---- TLS stability / soak test (repeated handshakes + data transfer) ----
 add_executable(test_tls_stability test_tls_stability.cpp)
