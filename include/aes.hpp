@@ -580,7 +580,7 @@ bool aes_gcm_decrypt_avx512(const aes_context& ctx,
                             std::vector<uint8_t>& plaintext);
 #endif // JP_AVX512
 
-#if defined(__x86_64__)
+#if defined(__x86_64__) && defined(JP_VAES)
 /// VAES GCM 加密（256-bit VAES，4 块并行，需要 VAES + VPCLMULQDQ + AVX2）
 /// 适用于 Alder Lake / Raptor Lake 等“AVX512 熔断但保留 256-bit VAES”的 CPU；
 /// 不满足条件时回退到软件实现
