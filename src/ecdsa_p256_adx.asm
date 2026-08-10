@@ -434,18 +434,15 @@ Z3     EQU 352
     ; A = X^2
     lea     rcx, [rsp+A]
     lea     rdx, [rsp+X]
-    lea     r8, [rsp+X]
-    call    jpssl_p256_mul_adx
+    call    jpssl_p256_sqr_adx
     ; B = Y^2
     lea     rcx, [rsp+B]
     lea     rdx, [rsp+Y]
-    lea     r8, [rsp+Y]
-    call    jpssl_p256_mul_adx
+    call    jpssl_p256_sqr_adx
     ; C = B^2
     lea     rcx, [rsp+C]
     lea     rdx, [rsp+B]
-    lea     r8, [rsp+B]
-    call    jpssl_p256_mul_adx
+    call    jpssl_p256_sqr_adx
     ; T = X + B
     mov     rax, [rsp+X]
     mov     rcx, [rsp+X+8]
@@ -481,8 +478,7 @@ Z3     EQU 352
     ; T = T^2
     lea     rcx, [rsp+T]
     lea     rdx, [rsp+T]
-    lea     r8, [rsp+T]
-    call    jpssl_p256_mul_adx
+    call    jpssl_p256_sqr_adx
     ; T = T - A
     mov     rax, [rsp+T]
     mov     rcx, [rsp+T+8]
@@ -574,13 +570,11 @@ Z3     EQU 352
     ; T = Z^2
     lea     rcx, [rsp+T]
     lea     rdx, [rsp+Z]
-    lea     r8, [rsp+Z]
-    call    jpssl_p256_mul_adx
+    call    jpssl_p256_sqr_adx
     ; T = T^2 (Z^4)
     lea     rcx, [rsp+T]
     lea     rdx, [rsp+T]
-    lea     r8, [rsp+T]
-    call    jpssl_p256_mul_adx
+    call    jpssl_p256_sqr_adx
     ; T = A - T
     mov     rax, [rsp+A]
     mov     rcx, [rsp+A+8]
@@ -676,8 +670,7 @@ Z3     EQU 352
     ; X3 = E^2
     lea     rcx, [rsp+X3]
     lea     rdx, [rsp+E]
-    lea     r8, [rsp+E]
-    call    jpssl_p256_mul_adx
+    call    jpssl_p256_sqr_adx
     ; T = D + D; X3 = X3 - T
     mov     rax, [rsp+D]
     mov     rcx, [rsp+D+8]
@@ -1142,8 +1135,7 @@ madd_p_notinf:
     ; Z1Z1 = Z1^2
     lea     rcx, [rsp+MZ1Z1]
     lea     rdx, [rsp+M1Z]
-    lea     r8, [rsp+M1Z]
-    call    jpssl_p256_mul_adx
+    call    jpssl_p256_sqr_adx
     ; U2 = Xq * Z1Z1
     lea     rcx, [rsp+MU2]
     lea     rdx, [rsp+MQX]
@@ -1266,8 +1258,7 @@ madd_h_nonzero:
     mov     [rsp+MI+24], r8
     lea     rcx, [rsp+MI]
     lea     rdx, [rsp+MI]
-    lea     r8, [rsp+MI]
-    call    jpssl_p256_mul_adx
+    call    jpssl_p256_sqr_adx
     ; J = H * I
     lea     rcx, [rsp+MJ]
     lea     rdx, [rsp+MH]
@@ -1281,8 +1272,7 @@ madd_h_nonzero:
     ; X3 = R2^2 - J - 2V
     lea     rcx, [rsp+MX3]
     lea     rdx, [rsp+MR2]
-    lea     r8, [rsp+MR2]
-    call    jpssl_p256_mul_adx
+    call    jpssl_p256_sqr_adx
     MODSUB  MX3, MX3, MJ, madd_sub5, madd_no5
     mov     rax, [rsp+MV]
     mov     rcx, [rsp+MV+8]
@@ -1568,8 +1558,12 @@ FRSZ   EQU 448
 MODMUL MACRO dst:REQ, s1:REQ, s2:REQ
     lea     rcx, dst
     lea     rdx, s1
-    lea     r8, s2
-    call    jpssl_p256_mul_adx
+    IFIDN   <s1>, <s2>
+        call    jpssl_p256_sqr_adx
+    ELSE
+        lea     r8, s2
+        call    jpssl_p256_mul_adx
+    ENDIF
 ENDM
 
     push    rbp
@@ -1906,6 +1900,947 @@ ENDM
     ret
 jpssl_p256_inv_adx ENDP
 
+; jpssl_p256_sqr_adx(rcx=r, rdx=a): r = a*a*R^{-1} mod p, R = 2^256.
+; Ported from OpenSSL __ecp_nistz256_sqr_montx (ecp_nistz256-x86_64.pl):
+; Gueron-Krasnov squaring (doubled cross products + squares) followed by the
+; 4-step special-form Montgomery reduction. Requires BMI2 + ADX.
+;
+; Register map (same as the perlasm source):
+;   acc0..acc7 = r8..r15, t0 = rcx, t1 = rbp, t2 = rbx, t3 = rdx, t4 = rax
+;   r_ptr = rdi, a_ptr = rsi
+.code
+align 16
+jpssl_p256_sqr_adx PROC
+    push    rbp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    push    rsi
+    push    rdi
+
+    mov     rdi, rcx                     ; r_ptr
+    mov     rsi, rdx                     ; a_ptr
+
+    mov     rdx, qword ptr [rsi]         ; rdx = a[0]
+    mov     r14, qword ptr [rsi+8]       ; acc6 = a[1]
+    mov     r15, qword ptr [rsi+16]      ; acc7 = a[2]
+    mov     r8,  qword ptr [rsi+24]      ; acc0 = a[3]
+
+    ; ---- cross products ----
+    mulx    r10, r9,  r14                ; a0*a1: hi=acc2, lo=acc1
+    mulx    r11, rcx, r15                ; a0*a2: hi=acc3, lo=t0
+    xor     eax, eax
+    adc     r10, rcx                     ; acc2 += t0
+    mulx    r12, rbp, r8                 ; a0*a3: hi=acc4, lo=t1
+    mov     rdx, r14                     ; rdx = a1
+    adc     r11, rbp                     ; acc3 += t1
+    adc     r12, 0                       ; acc4 += carry
+    xor     r13, r13                     ; acc5 = 0 (cf=of=0)
+
+    mulx    rbp, rcx, r15                ; a1*a2: hi=t1, lo=t0
+    adcx    r11, rcx                     ; acc3 += t0
+    adox    r12, rbp                     ; acc4 += t1
+
+    mulx    rbp, rcx, r8                 ; a1*a3: hi=t1, lo=t0
+    mov     rdx, r15                     ; rdx = a2
+    adcx    r12, rcx                     ; acc4 += t0
+    adox    r13, rbp                     ; acc5 += t1
+    adc     r13, 0                       ; acc5 += carry
+
+    mulx    r14, rcx, r8                 ; a2*a3: hi=acc6, lo=t0
+    mov     rdx, qword ptr [rsi]         ; rdx = a0
+    xor     r15, r15                     ; acc7 = 0 (cf=of=0)
+    adcx    r9,  r9                      ; acc1 <<= 1
+    adox    r13, rcx                     ; acc5 += t0
+    adcx    r10, r10                     ; acc2 <<= 1
+    adox    r14, r15                     ; acc6 += 0 (of=0)
+
+    ; ---- squares ----
+    mulx    rbp, r8,  qword ptr [rsi]    ; a0*a0: hi=t1, lo=acc0
+    mov     rdx, qword ptr [rsi+8]       ; rdx = a1
+    adcx    r11, r11                     ; acc3 <<= 1
+    adox    r9,  rbp                     ; acc1 += a0^2.hi
+    adcx    r12, r12                     ; acc4 <<= 1
+    mulx    rax, rcx, qword ptr [rsi+8]  ; a1*a1: hi=t4, lo=t0
+    mov     rdx, qword ptr [rsi+16]      ; rdx = a2
+    adcx    r13, r13                     ; acc5 <<= 1
+    adox    r10, rcx                     ; acc2 += a1^2.lo
+    adcx    r14, r14                     ; acc6 <<= 1
+    mulx    rbp, rcx, qword ptr [rsi+16] ; a2*a2: hi=t1, lo=t0
+    mov     rdx, qword ptr [rsi+24]      ; rdx = a3
+    adox    r11, rax                     ; acc3 += a1^2.hi
+    adcx    r15, r15                     ; acc7 <<= 1
+    adox    r12, rcx                     ; acc4 += a2^2.lo
+    mov     rbx, rdx                     ; t2 = a3 (for the square below)
+    mov     rsi, 32                      ; shift count
+    adox    r13, rbp                     ; acc5 += a2^2.hi
+    mulx    rax, rcx, rbx                ; a3*a3: hi=t4, lo=t0
+    mov     rdx, 0ffffffff00000001h      ; rdx = poly3
+    adox    r14, rcx                     ; acc6 += a3^2.lo
+    shlx    rcx, r8, rsi                 ; t0 = acc0 << 32
+    adox    r15, rax                     ; acc7 += a3^2.hi
+    shrx    rax, r8, rsi                 ; t4 = acc0 >> 32
+    mov     rbp, rdx                     ; t1 = poly3
+
+    ; ---- Montgomery reduction (4 steps) ----
+    add     r9,  rcx                     ; acc1 += acc0<<32
+    adc     r10, rax                     ; acc2 += acc0>>32
+    mulx    r8,  rcx, r8                 ; poly3*acc0: hi=acc0, lo=t0
+    adc     r11, rcx                     ; acc3 += t0
+    shlx    rcx, r9, rsi                 ; t0 = acc1 << 32
+    adc     r8,  0                       ; acc0 += carry
+    shrx    rax, r9, rsi                 ; t4 = acc1 >> 32
+
+    add     r10, rcx                     ; acc2 += acc1<<32
+    adc     r11, rax                     ; acc3 += acc1>>32
+    mulx    r9,  rcx, r9                 ; poly3*acc1: hi=acc1, lo=t0
+    adc     r8,  rcx                     ; acc0 += t0
+    shlx    rcx, r10, rsi                ; t0 = acc2 << 32
+    adc     r9,  0                       ; acc1 += carry
+    shrx    rax, r10, rsi                ; t4 = acc2 >> 32
+
+    add     r11, rcx                     ; acc3 += acc2<<32
+    adc     r8,  rax                     ; acc0 += acc2>>32
+    mulx    r10, rcx, r10                ; poly3*acc2: hi=acc2, lo=t0
+    adc     r9,  rcx                     ; acc1 += t0
+    shlx    rcx, r11, rsi                ; t0 = acc3 << 32
+    adc     r10, 0                       ; acc2 += carry
+    shrx    rax, r11, rsi                ; t4 = acc3 >> 32
+
+    add     r8,  rcx                     ; acc0 += acc3<<32
+    adc     r9,  rax                     ; acc1 += acc3>>32
+    mulx    r11, rcx, r11                ; poly3*acc3: hi=acc3, lo=t0
+    adc     r10, rcx                     ; acc2 += t0
+    adc     r11, 0                       ; acc3 += carry
+
+    ; ---- fold upper half + branch-less conditional subtraction of p ----
+    xor     rdx, rdx                     ; t3 = 0
+    add     r12, r8                      ; acc4 += acc0
+    mov     rsi, 00000000ffffffffh       ; a_ptr = poly1
+    adc     r13, r9                      ; acc5 += acc1
+    mov     r8,  r12                     ; acc0 = acc4
+    adc     r14, r10                     ; acc6 += acc2
+    adc     r15, r11                     ; acc7 += acc3
+    mov     r9,  r13                     ; acc1 = acc5
+    adc     rdx, 0                       ; t3 += carry
+
+    sub     r12, -1                      ; acc4 -= poly[0]
+    mov     r10, r14                     ; acc2 = acc6
+    sbb     r13, rsi                     ; acc5 -= poly1
+    sbb     r14, 0                       ; acc6 -= 0
+    mov     r11, r15                     ; acc3 = acc7
+    sbb     r15, rbp                     ; acc7 -= poly3
+    sbb     rdx, 0                       ; t3 -= 0
+
+    cmovc   r12, r8                      ; restore acc4 if borrow
+    cmovc   r13, r9                      ; restore acc5
+    mov     qword ptr [rdi], r12
+    cmovc   r14, r10                     ; restore acc6
+    mov     qword ptr [rdi+8], r13
+    cmovc   r15, r11                     ; restore acc7
+    mov     qword ptr [rdi+16], r14
+    mov     qword ptr [rdi+24], r15
+
+    pop     rdi
+    pop     rsi
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+jpssl_p256_sqr_adx ENDP
+
+; ============================================================================
+; jpssl_p256_ord_inv_adx(rcx=r, rdx=a): r = a^{-1} mod n (P-256 order field).
+; Addition chain for n-2 generated by gen_ord_inv_chain.py (sliding window 4):
+;   318 ops (253 sqr + 65 mul), all via jpssl_p256_ord_mul_adx.
+; Input a may alias output r (a is copied to the stack first).
+; ============================================================================
+jpssl_p256_ord_inv_adx PROC
+EXTERN ecp_nistz256_ord_sqr_mont:PROC
+OX     EQU 32      ; leave rsp+0..31 as shadow space for callees
+OT0   EQU 64
+OT1   EQU 96
+OT2   EQU 128
+OT3   EQU 160
+OT4   EQU 192
+OT5   EQU 224
+OT6   EQU 256
+OT7   EQU 288
+OT8   EQU 320
+OT9   EQU 352
+OT10   EQU 384
+OT11   EQU 416
+OT12   EQU 448
+OFRSZ  EQU 480
+
+ORDMODMUL MACRO dst:REQ, s1:REQ, s2:REQ
+    lea     rcx, dst
+    lea     rdx, s1
+    IFIDN   <s1>, <s2>
+        mov     r8d, 1
+        call    ecp_nistz256_ord_sqr_mont
+    ELSE
+        lea     r8, s2
+        call    jpssl_p256_ord_mul_adx
+    ENDIF
+ENDM
+
+    push    rbp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    push    rsi
+    push    rdi
+    sub     rsp, OFRSZ
+
+    mov     rdi, rcx                ; output pointer
+    mov     rax, [rdx]
+    mov     rcx, [rdx+8]
+    mov     r9, [rdx+16]
+    mov     r10, [rdx+24]
+    mov     [rsp+OX], rax
+    mov     [rsp+OX+8], rcx
+    mov     [rsp+OX+16], r9
+    mov     [rsp+OX+24], r10
+
+    ; ---- addition chain for a^(n-2) - 318 ops -------
+ORDMODMUL [rsp+OT0], [rsp+OX], [rsp+OX]
+    ORDMODMUL [rsp+OT1], [rsp+OX], [rsp+OT0]
+    ORDMODMUL [rsp+OT2], [rsp+OT1], [rsp+OT0]
+    ORDMODMUL [rsp+OT3], [rsp+OT2], [rsp+OT0]
+    ORDMODMUL [rsp+OT4], [rsp+OT3], [rsp+OT0]
+    ORDMODMUL [rsp+OT5], [rsp+OT4], [rsp+OT0]
+    ORDMODMUL [rsp+OT6], [rsp+OT5], [rsp+OT0]
+    ORDMODMUL [rsp+OT7], [rsp+OT6], [rsp+OT0]
+    ORDMODMUL [rsp+OT12], [rsp+OT7], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT3]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT1]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT1]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT1]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT3]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT3]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT3]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT3]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT1]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT1]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT1]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT1]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OX]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT12]
+    ORDMODMUL [rsp+OT12], [rsp+OT12], [rsp+OT7]
+
+    ; store result to [rdi]
+    mov     rax, [rsp+OT12]
+    mov     rcx, [rsp+OT12+8]
+    mov     rdx, [rsp+OT12+16]
+    mov     r8, [rsp+OT12+24]
+    mov     [rdi], rax
+    mov     [rdi+8], rcx
+    mov     [rdi+16], rdx
+    mov     [rdi+24], r8
+
+    add     rsp, OFRSZ
+    pop     rdi
+    pop     rsi
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+jpssl_p256_ord_inv_adx ENDP
+
+
+
+
+; ============================================================================
+; jpssl_p256_comb_mul_G(rcx=r, rdx=k, r8=table, r9=one):
+;   r = k*G via a 64-window 4-bit comb (constant time).
+;   table: 64 windows x 15 affine points (each 64 bytes: X[4] Y[4], Montgomery)
+;     table[i][d-1] = d * 2^(4i) * G, d in [1,15]; window stride 960 bytes.
+;   k: bn<4> (32 bytes); r: jac_point<4> (96 bytes) = k*G (Jacobian).
+;   one: Montgomery 1 (4 limbs), used for Z of affine entries / infinity.
+; ============================================================================
+.code
+align 16
+jpssl_p256_comb_mul_G PROC
+R      EQU 0
+Q      EQU 96
+K      EQU 192
+DIG    EQU 224
+FRSZ2  EQU 232
+
+    push    rbp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    push    rsi
+    push    rdi
+    sub     rsp, FRSZ2
+
+    mov     rdi, rcx                ; r_ptr
+    mov     rsi, rdx                ; k_ptr
+    mov     rbx, r8                 ; table
+    mov     rbp, r9                 ; one
+
+    ; copy k to the stack frame
+    mov     rax, [rsi]
+    mov     [rsp+K], rax
+    mov     rax, [rsi+8]
+    mov     [rsp+K+8], rax
+    mov     rax, [rsi+16]
+    mov     [rsp+K+16], rax
+    mov     rax, [rsi+24]
+    mov     [rsp+K+24], rax
+
+    ; R = infinity (X=one, Y=one, Z=0)
+    mov     rax, [rbp]
+    mov     [rsp+R], rax
+    mov     rax, [rbp+8]
+    mov     [rsp+R+8], rax
+    mov     rax, [rbp+16]
+    mov     [rsp+R+16], rax
+    mov     rax, [rbp+24]
+    mov     [rsp+R+24], rax
+    mov     rax, [rbp]
+    mov     [rsp+R+32], rax
+    mov     rax, [rbp+8]
+    mov     [rsp+R+40], rax
+    mov     rax, [rbp+16]
+    mov     [rsp+R+48], rax
+    mov     rax, [rbp+24]
+    mov     [rsp+R+56], rax
+    xor     eax, eax
+    mov     [rsp+R+64], rax
+    mov     [rsp+R+72], rax
+    mov     [rsp+R+80], rax
+    mov     [rsp+R+88], rax
+
+    xor     r12, r12                ; window index
+    mov     r15, rbx                ; window base pointer
+comb_loop:
+    ; digit = k & 15
+    mov     rax, [rsp+K]
+    and     rax, 15
+    mov     [rsp+DIG], rax
+
+    ; constant-time 15-way select into Q (X, Y, Z)
+    xor     r13, r13                ; any = 0
+    pxor    xmm0, xmm0
+    movdqu  [rsp+Q], xmm0
+    movdqu  [rsp+Q+16], xmm0
+    movdqu  [rsp+Q+32], xmm0
+    movdqu  [rsp+Q+48], xmm0
+    movdqu  [rsp+Q+64], xmm0
+    movdqu  [rsp+Q+80], xmm0
+    xor     r14, r14                ; entry byte offset
+comb_sel:
+    mov     rax, [rsp+DIG]
+    mov     rcx, r14
+    shr     rcx, 6
+    inc     rcx
+    xor     rdx, rdx
+    cmp     rax, rcx
+    sete    dl
+    neg     rdx
+    or      r13, rdx
+    mov     rax, [r15+r14]
+    and     rax, rdx
+    or      [rsp+Q], rax
+    mov     rax, [r15+r14+8]
+    and     rax, rdx
+    or      [rsp+Q+8], rax
+    mov     rax, [r15+r14+16]
+    and     rax, rdx
+    or      [rsp+Q+16], rax
+    mov     rax, [r15+r14+24]
+    and     rax, rdx
+    or      [rsp+Q+24], rax
+    mov     rax, [r15+r14+32]
+    and     rax, rdx
+    or      [rsp+Q+32], rax
+    mov     rax, [r15+r14+40]
+    and     rax, rdx
+    or      [rsp+Q+40], rax
+    mov     rax, [r15+r14+48]
+    and     rax, rdx
+    or      [rsp+Q+48], rax
+    mov     rax, [r15+r14+56]
+    and     rax, rdx
+    or      [rsp+Q+56], rax
+    add     r14, 64
+    cmp     r14, 960
+    jb      comb_sel
+
+    ; Z = one & any
+    mov     rax, [rbp]
+    and     rax, r13
+    mov     [rsp+Q+64], rax
+    mov     rax, [rbp+8]
+    and     rax, r13
+    mov     [rsp+Q+72], rax
+    mov     rax, [rbp+16]
+    and     rax, r13
+    mov     [rsp+Q+80], rax
+    mov     rax, [rbp+24]
+    and     rax, r13
+    mov     [rsp+Q+88], rax
+
+    ; R = R + Q
+    lea     rcx, [rsp+R]
+    lea     rdx, [rsp+R]
+    lea     r8, [rsp+Q]
+    call    jpssl_p256_madd
+
+    ; k >>= 4
+    mov     rax, [rsp+K]
+    mov     rcx, [rsp+K+8]
+    mov     rdx, [rsp+K+16]
+    mov     r8, [rsp+K+24]
+    shrd    rax, rcx, 4
+    shrd    rcx, rdx, 4
+    shrd    rdx, r8, 4
+    shr     r8, 4
+    mov     [rsp+K], rax
+    mov     [rsp+K+8], rcx
+    mov     [rsp+K+16], rdx
+    mov     [rsp+K+24], r8
+
+    add     r15, 960
+    inc     r12
+    cmp     r12, 64
+    jb      comb_loop
+
+    ; store R
+    mov     rax, [rsp+R]
+    mov     [rdi], rax
+    mov     rax, [rsp+R+8]
+    mov     [rdi+8], rax
+    mov     rax, [rsp+R+16]
+    mov     [rdi+16], rax
+    mov     rax, [rsp+R+24]
+    mov     [rdi+24], rax
+    mov     rax, [rsp+R+32]
+    mov     [rdi+32], rax
+    mov     rax, [rsp+R+40]
+    mov     [rdi+40], rax
+    mov     rax, [rsp+R+48]
+    mov     [rdi+48], rax
+    mov     rax, [rsp+R+56]
+    mov     [rdi+56], rax
+    mov     rax, [rsp+R+64]
+    mov     [rdi+64], rax
+    mov     rax, [rsp+R+72]
+    mov     [rdi+72], rax
+    mov     rax, [rsp+R+80]
+    mov     [rdi+80], rax
+    mov     rax, [rsp+R+88]
+    mov     [rdi+88], rax
+
+    add     rsp, FRSZ2
+    pop     rdi
+    pop     rsi
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+jpssl_p256_comb_mul_G ENDP
+
+; ============================================================================
+; jpssl_p256_gather_w7(rcx=val[8], rdx=table, r8d=index):
+;   Constant-time gather of one 64-byte affine entry from a w7 precomputed
+;   frame. Semantics (same as OpenSSL ecp_nistz256_gather_w7):
+;     index == 0 -> all-zero point (infinity)
+;     index  k   -> frame entry k-1 (k-th multiple, 1..64)
+;   Table entries are 64 bytes (X[4] Y[4]); frames are 64 entries.
+; ============================================================================
+.code
+align 16
+jpssl_p256_gather_w7 PROC
+    sub     rsp, 168
+    movaps  [rsp], xmm6
+    movaps  [rsp+16], xmm7
+    movaps  [rsp+32], xmm8
+    movaps  [rsp+48], xmm9
+    movaps  [rsp+64], xmm10
+    movaps  [rsp+80], xmm11
+    movaps  [rsp+96], xmm12
+    movaps  [rsp+112], xmm13
+    movaps  [rsp+128], xmm14
+    movaps  [rsp+144], xmm15
+
+    mov     eax, 1
+    movd    xmm0, eax
+    pshufd  xmm0, xmm0, 0            ; xmm0 = counter (dword 1s)
+    movd    xmm1, r8d
+    pshufd  xmm1, xmm1, 0            ; xmm1 = index broadcast
+    pxor    xmm2, xmm2               ; acc limbs 0-3
+    pxor    xmm3, xmm3               ; acc limbs 4-7
+    pxor    xmm4, xmm4               ; acc limbs 8-11
+    pxor    xmm5, xmm5               ; acc limbs 12-15
+    movdqa  xmm7, xmm0               ; ones (for increment)
+    mov     eax, 64
+select_loop_w7:
+    movdqa  xmm6, xmm0
+    paddd   xmm0, xmm7
+    pcmpeqd xmm6, xmm1               ; mask = (counter == index)
+    movdqa  xmm8, [rdx]
+    movdqa  xmm9, [rdx+16]
+    movdqa  xmm10, [rdx+32]
+    movdqa  xmm11, [rdx+48]
+    add     rdx, 64
+    pand    xmm8, xmm6
+    pand    xmm9, xmm6
+    por     xmm2, xmm8
+    pand    xmm10, xmm6
+    por     xmm3, xmm9
+    pand    xmm11, xmm6
+    por     xmm4, xmm10
+    por     xmm5, xmm11
+    dec     eax
+    jnz     select_loop_w7
+
+    movdqu  [rcx], xmm2
+    movdqu  [rcx+16], xmm3
+    movdqu  [rcx+32], xmm4
+    movdqu  [rcx+48], xmm5
+
+    movaps  xmm6, [rsp]
+    movaps  xmm7, [rsp+16]
+    movaps  xmm8, [rsp+32]
+    movaps  xmm9, [rsp+48]
+    movaps  xmm10, [rsp+64]
+    movaps  xmm11, [rsp+80]
+    movaps  xmm12, [rsp+96]
+    movaps  xmm13, [rsp+112]
+    movaps  xmm14, [rsp+128]
+    movaps  xmm15, [rsp+144]
+    add     rsp, 168
+    ret
+jpssl_p256_gather_w7 ENDP
+
+; ============================================================================
+; jpssl_p256_gather_w7_avx2(rcx=val[8], rdx=table, r8d=index):
+;   Constant-time AVX2 gather, same semantics as the SSE version but with
+;   256-bit compare/mask (8 dwords per op) - faster on AVX2 CPUs.
+; ============================================================================
+.code
+align 16
+jpssl_p256_gather_w7_avx2 PROC
+    sub     rsp, 328
+    vmovdqu ymmword ptr [rsp], ymm6
+    vmovdqu ymmword ptr [rsp+32], ymm7
+    vmovdqu ymmword ptr [rsp+64], ymm8
+    vmovdqu ymmword ptr [rsp+96], ymm9
+    vmovdqu ymmword ptr [rsp+128], ymm10
+    vmovdqu ymmword ptr [rsp+160], ymm11
+    vmovdqu ymmword ptr [rsp+192], ymm12
+    vmovdqu ymmword ptr [rsp+224], ymm13
+    vmovdqu ymmword ptr [rsp+256], ymm14
+    vmovdqu ymmword ptr [rsp+288], ymm15
+
+    vmovd   xmm1, r8d
+    vpbroadcastd ymm1, xmm1        ; index (8 dwords)
+    vpcmpeqd ymm3, ymm3, ymm3      ; -1s
+    vpsrld  ymm2, ymm3, 31         ; counter = 1s
+    vpsrld  ymm7, ymm3, 31         ; ones (increment)
+    vpxor   ymm4, ymm4, ymm4       ; acc X
+    vpxor   ymm5, ymm5, ymm5       ; acc Y
+    mov     eax, 64
+select_loop_avx2:
+    vpcmpeqd ymm6, ymm2, ymm1      ; mask = (counter == index)
+    vmovdqu ymm8, ymmword ptr [rdx]
+    vmovdqu ymm9, ymmword ptr [rdx+32]
+    add     rdx, 64
+    vpand   ymm8, ymm8, ymm6
+    vpand   ymm9, ymm9, ymm6
+    vpor    ymm4, ymm4, ymm8
+    vpor    ymm5, ymm5, ymm9
+    vpaddd  ymm2, ymm2, ymm7
+    dec     eax
+    jnz     select_loop_avx2
+
+    vmovdqu ymmword ptr [rcx], ymm4
+    vmovdqu ymmword ptr [rcx+32], ymm5
+
+    vmovdqu ymm6, ymmword ptr [rsp]
+    vmovdqu ymm7, ymmword ptr [rsp+32]
+    vmovdqu ymm8, ymmword ptr [rsp+64]
+    vmovdqu ymm9, ymmword ptr [rsp+96]
+    vmovdqu ymm10, ymmword ptr [rsp+128]
+    vmovdqu ymm11, ymmword ptr [rsp+160]
+    vmovdqu ymm12, ymmword ptr [rsp+192]
+    vmovdqu ymm13, ymmword ptr [rsp+224]
+    vmovdqu ymm14, ymmword ptr [rsp+256]
+    vmovdqu ymm15, ymmword ptr [rsp+288]
+    add     rsp, 328
+        vzeroupper
+ret
+jpssl_p256_gather_w7_avx2 ENDP
+
+; ============================================================================
+; jpssl_p256_neg(rcx=r[4], rdx=a[4]): r = -a mod p (branchless)
+; ============================================================================
+.code
+align 16
+jpssl_p256_neg PROC
+    push    rbp
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    push    rsi
+    push    rdi
+
+    mov     rdi, rcx                 ; r_ptr
+    mov     rsi, rdx                 ; a_ptr
+    mov     r14, 0ffffffffh          ; p1 = 0x00000000ffffffff
+    mov     r15, 0ffffffff00000001h  ; p3
+
+    xor     r8, r8
+    xor     r9, r9
+    xor     r10, r10
+    xor     r11, r11
+    xor     rax, rax
+    sub     r8, qword ptr [rsi]      ; 0 - a0
+    sbb     r9, qword ptr [rsi+8]
+    sbb     r10, qword ptr [rsi+16]
+    mov     r12, r8                  ; save t0
+    sbb     r11, qword ptr [rsi+24]
+    mov     r13, r9                  ; save t1
+    sbb     rax, 0                   ; rax = -borrow (0 or -1)
+    mov     rbx, r10                 ; save t2
+    mov     rbp, r11                 ; save t3
+    add     r8, -1                   ; + p0 (0xffffffffffffffff)
+    adc     r9, r14                  ; + p1 (0x00000000ffffffff)
+    adc     r10, 0
+    adc     r11, r15                 ; + p3
+    test    rax, rax
+    cmovz   r8, r12
+    cmovz   r9, r13
+    mov     qword ptr [rdi], r8
+    cmovz   r10, rbx
+    mov     qword ptr [rdi+8], r9
+    cmovz   r11, rbp
+    mov     qword ptr [rdi+16], r10
+    mov     qword ptr [rdi+24], r11
+
+    pop     rdi
+    pop     rsi
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    pop     rbp
+    ret
+jpssl_p256_neg ENDP
 END
-
-

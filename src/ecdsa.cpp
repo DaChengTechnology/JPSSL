@@ -29,10 +29,23 @@ namespace jpssl {
 #if defined(_MSC_VER) && defined(_M_X64)
 // Windows x64 MASM 快速路径（src/ecdsa_p256_adx.asm，需 BMI2+ADX）
 extern "C" void jpssl_p256_mul_adx(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
+extern "C" void jpssl_p256_sqr_adx(uint64_t r[4], const uint64_t a[4]);
 extern "C" void jpssl_p256_ord_mul_adx(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
 extern "C" void jpssl_p256_dbl(uint64_t r[12], const uint64_t p[12]);
 extern "C" void jpssl_p256_madd(uint64_t r[12], const uint64_t p[12], const uint64_t q[12]);
 extern "C" void jpssl_p256_inv_adx(uint64_t r[4], const uint64_t a[4]);
+extern "C" void jpssl_p256_ord_inv_adx(uint64_t r[4], const uint64_t a[4]);
+extern "C" void jpssl_p256_comb_mul_G(uint64_t r[12], const uint64_t k[4],
+                                      const void* table, const uint64_t one[4]);
+extern "C" void jpssl_p256_gather_w7(uint64_t val[8], const uint64_t* table,
+                                     unsigned int index);
+extern "C" void jpssl_p256_gather_w7_avx2(uint64_t val[8], const uint64_t* table,
+                                          unsigned int index);
+extern "C" void jpssl_p256_neg(uint64_t r[4], const uint64_t a[4]);
+extern "C" void ecp_nistz256_point_double(uint64_t r[12], const uint64_t p[12]);
+extern "C" void ecp_nistz256_point_add_affine(uint64_t r[12],
+                                              const uint64_t p[12],
+                                              const uint64_t q[8]);
 #endif
 
 namespace {
@@ -352,6 +365,12 @@ static void mont_mul(bn<N>* r, const bn<N>* a, const bn<N>* b, const mod_ctx<N>&
 
 template <int N>
 static void mont_sqr(bn<N>* r, const bn<N>* a, const mod_ctx<N>& M) {
+#if defined(_MSC_VER) && defined(_M_X64)
+    if (N == 4 && M.special == 1 && g_p256_adx_ok) {
+        jpssl_p256_sqr_adx((uint64_t*)r->v, (const uint64_t*)a->v);
+        return;
+    }
+#endif
 #if defined(__aarch64__) && !defined(__APPLE__)
     if (N == 4 && M.special == 1 && g_p256_arm_ok) {
         ecp_nistz256_sqr_mont((uint64_t*)r->v, (const uint64_t*)a->v);
@@ -416,6 +435,12 @@ static void mod_inv(bn<N>* r, const bn<N>* a, const mod_ctx<N>& M) {
         // P-256 素数域专用加法链求逆：255 sq + 12 mul（addchain v0.4.0，
         // 与 crypto/internal/nistec/fiat/p256_invert.go 同源），比 Fermat 链快 ~1.5 倍
         jpssl_p256_inv_adx((uint64_t*)r->v, (const uint64_t*)a->v);
+        return;
+    }
+    if (N == 4 && M.special == 2 && g_p256_adx_ok) {
+        // ord field (mod n) inversion via the generated addition chain
+        // (253 sq + 65 mul); saves ~1.5-2 us vs the C++ Fermat mont_pow.
+        jpssl_p256_ord_inv_adx((uint64_t*)r->v, (const uint64_t*)a->v);
         return;
     }
 #elif defined(__aarch64__) && !defined(__APPLE__)
@@ -517,7 +542,7 @@ template <int N>
 static void jac_dbl(jac_point<N>* R, const jac_point<N>* P, const mod_ctx<N>& M) {
 #if defined(_MSC_VER) && defined(_M_X64)
     if (N == 4 && M.special == 1 && g_p256_adx_ok) {
-        jpssl_p256_dbl((uint64_t*)R, (const uint64_t*)P);
+        ecp_nistz256_point_double((uint64_t*)R, (const uint64_t*)P);
         return;
     }
 #elif defined(__aarch64__) && !defined(__APPLE__)
@@ -568,7 +593,8 @@ static void pt_madd(jac_point<N>* R, const jac_point<N>* P,
                     const jac_point<N>* Q, const mod_ctx<N>& M) {
 #if defined(_MSC_VER) && defined(_M_X64)
     if (N == 4 && M.special == 1 && g_p256_adx_ok) {
-        jpssl_p256_madd((uint64_t*)R, (const uint64_t*)P, (const uint64_t*)Q);
+        ecp_nistz256_point_add_affine((uint64_t*)R, (const uint64_t*)P,
+                                      (const uint64_t*)&Q->X);
         return;
     }
 #elif defined(__aarch64__) && !defined(__APPLE__)
@@ -674,7 +700,7 @@ static void jac_add(jac_point<N>* R, const jac_point<N>* P, const jac_point<N>* 
 template <int N>
 static void batch_affine(jac_point<N>* pts, aff_point<N>* out, int n,
                          const mod_ctx<N>& M) {
-    bn<N> pre[16];
+    bn<N> pre[64];
     bn<N> acc = M.one;
     for (int i = 0; i < n; ++i) {
         pre[i] = acc;
@@ -695,16 +721,18 @@ static void batch_affine(jac_point<N>* pts, aff_point<N>* out, int n,
 
 // ── 标量乘 ──
 
-// 宽度-5 wNAF：数字 ∈ {-15,-13,...,-1,1,...,15}（奇数）
+// 閫氱敤瀹藉害 wNAF 閲嶇爜锛氭暟瀛楀€?{-2^(w-1)+1, ..., -1, 1, ..., 2^(w-1)-1}锛堝鏁帮級
 template <int N>
-static int wnaf5(const bn<N>* k, int8_t* digits, int cap) {
+static int wnaf_recode(const bn<N>* k, int8_t* digits, int cap, int width) {
     bn<N> t = *k;
+    const uint64_t mask = (1ull << width) - 1;
+    const uint64_t half = 1ull << (width - 1);
     int i = 0;
     while (!bn_is_zero(&t)) {
         if (i >= cap) break;
         if (t.v[0] & 1u) {
-            int d = (int)(t.v[0] & 31u);
-            if (d >= 16) d -= 32;
+            int d = (int)(t.v[0] & mask);
+            if (d >= (int)half) d -= (int)(1u << width);
             digits[i] = (int8_t)d;
             if (d > 0) bn_sub_word(&t, (uint64_t)d);
             else bn_add_word(&t, (uint64_t)(-d));
@@ -720,6 +748,12 @@ static int wnaf5(const bn<N>* k, int8_t* digits, int cap) {
     return i;
 }
 
+// width-5 wNAF: digits in {-15,-13,...,-1,1,...,15} (odd)
+template <int N>
+static int wnaf5(const bn<N>* k, int8_t* digits, int cap) {
+    return wnaf_recode<N>(k, digits, cap, 5);
+}
+
 // 计算 1Q, 3Q, ..., 15Q 的仿射表（7 次混合加法 + 批量求逆）
 template <int N>
 static void build_odd_table(aff_point<N> out[8], const aff_point<N>* Q,
@@ -732,12 +766,15 @@ static void build_odd_table(aff_point<N> out[8], const aff_point<N>* Q,
     const bool saved_pt_madd_asm = g_pt_madd_asm;
     g_pt_madd_asm = false;
 #endif
-    for (int i = 0; i < 8; ++i) {
+    // Odd multiples 1Q,3Q,...,15Q. Avoid adding Q to itself (H==0 is
+    // undefined for the nistz256 add_affine): 2Q via doubling, then step by
+    // +2Q with the general Jacobian add.
+    jac_point<N> T;
+    jac_dbl(&T, &R, M);                 // T = 2Q
+    pts[0] = R;
+    for (int i = 1; i < 8; ++i) {
+        jac_add(&R, &R, &T, M);
         pts[i] = R;
-        if (i < 7) {
-            pt_madd(&R, &R, &Qj, M);
-            pt_madd(&R, &R, &Qj, M);
-        }
     }
 #if defined(__aarch64__) && !defined(__APPLE__)
     g_pt_madd_asm = saved_pt_madd_asm;
@@ -779,6 +816,45 @@ static void wnaf_dual(jac_point<N>* R, const bn<N>* k1, const aff_point<N>* t1,
     int8_t d1[64 * N + 8], d2[64 * N + 8];
     int l1 = wnaf5(k1, d1, 64 * N + 8);
     int l2 = wnaf5(k2, d2, 64 * N + 8);
+    int len = (l1 > l2) ? l1 : l2;
+    jac_inf(R, M);
+    jac_point<N> Q;
+    bn<N> zero{};
+    for (int i = len - 1; i >= 0; --i) {
+        jac_dbl(R, R, M);
+        int a = (i < l1) ? d1[i] : 0;
+        int b = (i < l2) ? d2[i] : 0;
+        if (a > 0) {
+            Q.X = t1[a >> 1].X; Q.Y = t1[a >> 1].Y; Q.Z = M.one;
+            pt_madd(R, R, &Q, M);
+        } else if (a < 0) {
+            Q.X = t1[(-a) >> 1].X;
+            mod_sub(&Q.Y, &zero, &t1[(-a) >> 1].Y, M);
+            Q.Z = M.one;
+            pt_madd(R, R, &Q, M);
+        }
+        if (b > 0) {
+            Q.X = t2[b >> 1].X; Q.Y = t2[b >> 1].Y; Q.Z = M.one;
+            pt_madd(R, R, &Q, M);
+        } else if (b < 0) {
+            Q.X = t2[(-b) >> 1].X;
+            mod_sub(&Q.Y, &zero, &t2[(-b) >> 1].Y, M);
+            Q.Z = M.one;
+            pt_madd(R, R, &Q, M);
+        }
+    }
+}
+
+// 娣峰悎瀹藉害鍙屾爣閲忎箻锛歨1 鐢ㄥ搴?2^(w1-1) 鏉￠〉锛宬2 鐢ㄥ搴?2^(w2-1) 鏉￠〉
+// 锛圥-256 楠岀鍥炵敤锛歨1=u1路G 璧颁笂 7 浣嶅搴﹀苟缂撳瓨鐨?32 椤硅〃锛宬2=u2路Q 璧?5 浣嶅搴︼級
+template <int N>
+static void wnaf_dual_mixed(jac_point<N>* R, const bn<N>* k1,
+                            const aff_point<N>* t1, int w1,
+                            const bn<N>* k2, const aff_point<N>* t2, int w2,
+                            const mod_ctx<N>& M) {
+    int8_t d1[64 * N + 8], d2[64 * N + 8];
+    int l1 = wnaf_recode(k1, d1, 64 * N + 8, w1);
+    int l2 = wnaf_recode(k2, d2, 64 * N + 8, w2);
     int len = (l1 > l2) ? l1 : l2;
     jac_inf(R, M);
     jac_point<N> Q;
@@ -857,6 +933,13 @@ template <int N>
 static void comb_fixed_window(jac_point<N>* R, const bn<N>* k,
                               const aff_point<N> (*table)[15], const mod_ctx<N>& M,
                               int windows) {
+#if defined(_MSC_VER) && defined(_M_X64)
+    if (N == 4 && M.special == 1 && g_p256_adx_ok && windows == 64) {
+        jpssl_p256_comb_mul_G((uint64_t*)R, (const uint64_t*)k->v, table,
+                              (const uint64_t*)M.one.v);
+        return;
+    }
+#endif
     int8_t digits[64];
     bn<N> kk = *k;
     for (int i = 0; i < windows; ++i) {
@@ -934,6 +1017,31 @@ static void nistz256_scalar_mul_G(jac_point<4>* R, const bn<4>* k) {
 }
 #endif
 
+#if defined(_MSC_VER) && defined(_M_X64)
+// ============ NIST P-256 fixed-base scalar mult (x64, nistz256 structure) ===
+static inline uint32_t booth_recode_w7_x64(uint32_t in) {
+    uint32_t s = ~((in >> 7) - 1);
+    uint32_t d = (1 << 8) - in - 1;
+    d = (d & s) | (in & ~s);
+    d = (d >> 1) + (d & 1);
+    return (d << 1) + (s & 1);
+}
+static inline void copy_conditional_x64(uint64_t dst[4], const uint64_t src[4],
+                                        uint64_t move) {
+    uint64_t mask1 = 0 - move;
+    uint64_t mask2 = ~mask1;
+    for (int i = 0; i < 4; ++i)
+        dst[i] = (dst[i] & mask2) | (src[i] & mask1);
+}
+
+// OpenSSL-style w7 precomputed table: 37 frames x 64 affine points,
+// frame k entry j = (j+1)*2^(7k)*G (Montgomery), j = 0..63.
+static alignas(64) uint64_t g_nistz_pre[37 * 64 * 8];
+static bool g_nistz_pre_ready = false;
+static bool g_p256_avx2_ok = false;
+
+#endif
+
 // ── 曲线上下文 ──
 
 template <int N>
@@ -958,7 +1066,11 @@ static void build_g_tables(ecdsa_curve<N>* c) {
     const bool saved_pt_madd_asm = g_pt_madd_asm;
     g_pt_madd_asm = false;
 #endif
-    for (int i = 0; i < 15; ++i) {
+    // 1G..15G without adding G to itself (H==0 undefined for nistz256 add):
+    // 2G via doubling, then step by +G (G stays affine).
+    pts[0] = R;
+    jac_dbl(&R, &R, c->MP);             // R = 2G
+    for (int i = 1; i < 15; ++i) {
         pts[i] = R;
         pt_madd(&R, &R, &Gj, c->MP);
     }
@@ -1002,10 +1114,114 @@ static const uint8_t P256_Gy_BYTES[32] = {
 };
 
 static ecdsa_curve<4> C256;
+
+#if defined(_MSC_VER) && defined(_M_X64)
+static void nistz256_scalar_mul_G_x64(jac_point<4>* R, const bn<4>* k) {
+    unsigned char p_str[33] = {0};
+    for (int i = 0; i < 4; ++i) {
+        uint64_t d = k->v[i];
+        for (int b = 0; b < 8; ++b)
+            p_str[i * 8 + b] = (unsigned char)(d >> (8 * b));
+    }
+    auto gather = g_p256_avx2_ok ? jpssl_p256_gather_w7_avx2
+                                 : jpssl_p256_gather_w7;
+    uint32_t wv[37];
+    unsigned int idx = 0;
+    unsigned int wraw = ((unsigned int)p_str[0] << 1) & 255u;
+    idx += 7;
+    wv[0] = booth_recode_w7_x64(wraw);
+    for (unsigned int f = 1; f < 37; ++f) {
+        unsigned int off = (idx - 1) / 8;
+        wraw = p_str[off] | ((unsigned int)p_str[off + 1] << 8);
+        wraw = (wraw >> ((idx - 1) % 8)) & 255u;
+        idx += 7;
+        wv[f] = booth_recode_w7_x64(wraw);
+    }
+    uint64_t p[12], t[12];
+    unsigned int wvalue = wv[0];
+    gather(p, g_nistz_pre + 0 * 64 * 8, wvalue >> 1);
+    {
+        uint64_t neg_y[4];
+        jpssl_p256_neg(neg_y, p + 4);
+        copy_conditional_x64(p + 4, neg_y, (uint64_t)(wvalue & 1));
+    }
+    {
+        uint64_t infty = 0;
+        for (int i = 0; i < 8; ++i) infty |= p[i];
+        uint64_t inf_mask = 0 - (uint64_t)(infty == 0);
+        for (int i = 0; i < 4; ++i)
+            p[8 + i] = C256.MP.one.v[i] & ~inf_mask;
+    }
+    for (unsigned int i = 1; i < 37; ++i) {
+        wvalue = wv[i];
+        gather(t, g_nistz_pre + i * 64 * 8, wvalue >> 1);
+        {
+            uint64_t neg_y[4];
+            jpssl_p256_neg(neg_y, t + 4);
+            copy_conditional_x64(t + 4, neg_y, (uint64_t)(wvalue & 1));
+        }
+        uint64_t qj[8];
+        for (int j = 0; j < 8; ++j) qj[j] = t[j];
+        // register-resident mixed add; q all-zero is handled as infinity
+        ecp_nistz256_point_add_affine(p, p, qj);
+    }
+    for (int i = 0; i < 12; ++i) ((uint64_t*)R)[i] = p[i];
+}
+
+static void build_nistz_pre() {
+    if (g_nistz_pre_ready) return;
+    jac_point<4> base;
+    base.X = C256.g_full[0].X;
+    base.Y = C256.g_full[0].Y;
+    base.Z = C256.MP.one;                // base = 1G
+    for (int k = 0; k < 37; ++k) {
+        jac_point<4> pts[64];
+        pts[0] = base;
+        for (int i = 1; i < 64; ++i)
+            jac_add(&pts[i], &pts[i - 1], &base, C256.MP);
+        aff_point<4> out[64];
+        batch_affine(pts, out, 64, C256.MP);
+        for (int i = 0; i < 64; ++i) {
+            uint64_t* dst = g_nistz_pre + (size_t)(k * 64 + i) * 8;
+            for (int j = 0; j < 4; ++j) dst[j] = out[i].X.v[j];
+            for (int j = 0; j < 4; ++j) dst[4 + j] = out[i].Y.v[j];
+        }
+        if (k < 36) {
+            // base_{k+1} = 2^7 * base_k = 2 * (64 * base_k)
+            jac_dbl(&base, &pts[63], C256.MP);
+        }
+    }
+    g_nistz_pre_ready = true;
+}
+#endif
+
+/// R = k*G (k < n): 37-frame Booth w7 with the static precomputed table.
 static bool c256_ready = false;
 // P-256 固定基点 comb 表：g_comb[k][d-1] = d·2^(4k)·G，k=0..63，d=1..15
 static aff_point<4> g_comb[64][15];
 static bool g_comb_ready = false;
+// P-256 wNAF-7 鐢熸垚鍏冨鏁拌〃锛?G,3G,...,63G锛堜豢灏勶紝Montgomery锛夛紝楠岀 u1路G 渚ф縺娲荤敤
+static aff_point<4> g_odd7[32];
+static bool g_odd7_ready = false;
+
+static void build_g_odd7() {
+    if (g_odd7_ready) return;
+    jac_point<4> R;
+    R.X = C256.g_full[0].X;
+    R.Y = C256.g_full[0].Y;
+    R.Z = C256.MP.one;                  // R = 1G
+    jac_point<4> Gj = R;
+    jac_point<4> pts[32];
+    pts[0] = R;
+    jac_point<4> T;
+    jac_dbl(&T, &R, C256.MP);           // T = 2G
+    for (int i = 1; i < 32; ++i) {
+        jac_add(&R, &R, &T, C256.MP);   // R += 2G (general Jacobian add)
+        pts[i] = R;
+    }
+    batch_affine(pts, g_odd7, 32, C256.MP);
+    g_odd7_ready = true;
+}
 
 static void build_comb_table() {
     if (g_comb_ready) return;
@@ -1039,6 +1255,11 @@ static void ensure256() {
 #endif
         c256_ready = true;
     }
+    build_g_odd7();
+#if defined(_MSC_VER) && defined(_M_X64)
+    build_nistz_pre();
+    g_p256_avx2_ok = cpu_has_avx2();
+#endif
 }
 
 // ── P-384 域参数（FIPS 186-4, NIST secp384r1）──
@@ -1288,12 +1509,12 @@ static bool ecdh_batch_impl(uint8_t* shared, const uint8_t* priv, const uint8_t*
             const bool saved_pt_madd_asm = g_pt_madd_asm;
             g_pt_madd_asm = false;  // 同点相加（首轮 H==0）走 C++
 #endif
-            for (int k = 0; k < 8; ++k) {
+            odd[i][0] = R;
+            jac_point<N> T;
+            jac_dbl(&T, &R, C.MP);            // T = 2Q
+            for (int k = 1; k < 8; ++k) {
+                jac_add(&R, &R, &T, C.MP);    // R += 2Q (H==0 safe)
                 odd[i][k] = R;
-                if (k < 7) {
-                    pt_madd(&R, &R, &Qj, C.MP);
-                    pt_madd(&R, &R, &Qj, C.MP);
-                }
             }
 #if defined(__aarch64__) && !defined(__APPLE__)
             g_pt_madd_asm = saved_pt_madd_asm;
@@ -1345,6 +1566,12 @@ void ecdsa_p256_keygen(uint8_t pub[64], uint8_t priv[32]) {
     jac_point<4> Q;
 #if defined(__aarch64__) && !defined(__APPLE__)
     nistz256_scalar_mul_G(&Q, &d);
+#elif defined(_MSC_VER) && defined(_M_X64)
+    if (g_p256_adx_ok) nistz256_scalar_mul_G_x64(&Q, &d);
+    else {
+        build_comb_table();
+        comb_fixed_window(&Q, &d, g_comb, C256.MP, 64);
+    }
 #else
     build_comb_table();
     comb_fixed_window(&Q, &d, g_comb, C256.MP, 64);
@@ -1377,6 +1604,9 @@ void ecdsa_p256_sign(const uint8_t priv[32], const uint8_t* msg,
         rand_scalar<4, 32>(&k, &C256.order, false);
 #if defined(__aarch64__) && !defined(__APPLE__)
         nistz256_scalar_mul_G(&R, &k);
+#elif defined(_MSC_VER) && defined(_M_X64)
+        if (g_p256_adx_ok) nistz256_scalar_mul_G_x64(&R, &k);
+        else comb_fixed_window(&R, &k, g_comb, C256.MP, 64);
 #else
         comb_fixed_window(&R, &k, g_comb, C256.MP, 64);
 #endif
@@ -1434,7 +1664,7 @@ bool ecdsa_p256_verify(const uint8_t pub[64], const uint8_t* msg,
     aff_point<4> qt[8];
     build_odd_table(qt, &Q, C256.MP);
     jac_point<4> R;
-    wnaf_dual(&R, &u1, C256.g_odd, &u2, qt, C256.MP);
+    wnaf_dual_mixed(&R, &u1, g_odd7, 7, &u2, qt, 5, C256.MP);
     if (jac_is_inf(&R)) return false;
 
     // v = R.x mod n == r  ⇔  X ≡ r·Z² (mod p) 或 X ≡ (r+n)·Z² (mod p)
