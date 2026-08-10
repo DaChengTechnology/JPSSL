@@ -18,6 +18,15 @@
 #include <cstdlib>
 #include <mutex>
 #include <algorithm>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <wincrypt.h>
+#endif
+
 namespace jpssl::tls {
 
 
@@ -955,6 +964,24 @@ tls_trust_store tls_trust_store::from_system() {
         auto ts = from_pem_file(*p);
         if (!ts.empty()) { cached = std::move(ts); loaded = true; return cached; }
     }
+#ifdef _WIN32
+    // Windows 没有 POSIX CA bundle：从系统证书库（ROOT）加载根证书
+    if (cached.empty()) {
+        HCERTSTORE store =
+            CertOpenSystemStoreW(static_cast<HCRYPTPROV_LEGACY>(0), L"ROOT");
+        if (store) {
+            PCCERT_CONTEXT ctx = nullptr;
+            while ((ctx = CertEnumCertificatesInStore(store, ctx)) != nullptr) {
+                if (ctx->cbCertEncoded > 0) {
+                    auto cert = x509::x509_cert::from_der(
+                        ctx->pbCertEncoded, ctx->cbCertEncoded);
+                    if (cert) cached.ca_roots.push_back(std::move(*cert));
+                }
+            }
+            CertCloseStore(store, 0);
+        }
+    }
+#endif
     loaded = true;  // 缓存"未找�?结果，避免每次连接都探测
     return cached;
 }

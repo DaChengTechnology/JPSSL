@@ -57,6 +57,10 @@ enum class ASN1Tag : uint8_t {
 inline const uint8_t OID_RSA_ENCRYPTION[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x01};  // 1.2.840.113549.1.1.1
 inline const uint8_t OID_SHA256_WITH_RSA[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0B};  // 1.2.840.113549.1.1.11
 inline const uint8_t OID_SHA384_WITH_RSA[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0C};  // 1.2.840.113549.1.1.12
+inline const uint8_t OID_RSASSA_PSS[]           = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0A};  // 1.2.840.113549.1.1.10
+inline const uint8_t OID_SHA256[]               = {0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01};  // 2.16.840.1.101.3.4.2.1
+inline const uint8_t OID_SHA384[]               = {0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x02};  // 2.16.840.1.101.3.4.2.2
+inline const uint8_t OID_SHA512[]               = {0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x03};  // 2.16.840.1.101.3.4.2.3
 inline const uint8_t OID_SHA512_WITH_RSA[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0D};  // 1.2.840.113549.1.1.13
 inline const uint8_t OID_EC_PUBLIC_KEY[]        = {0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01};            // 1.2.840.10045.2.1
 inline const uint8_t OID_EC_SECP256R1[]         = {0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07};      // 1.2.840.10045.3.1.7
@@ -189,6 +193,8 @@ struct x509_cert {
     KeyType sign_key_type = KeyType::Ed25519;
     std::vector<uint8_t> signature;      // raw signature bytes
     std::vector<uint8_t> tbs_raw;        // raw TBS bytes (for verification, set by from_der)
+    bool sig_is_pss = false;             // signatureAlgorithm = RSASSA-PSS
+    int sig_hash_len = 32;               // PSS 哈希长度（32/48/64）
 
     // ── 辅助方法 ────────────────────────────────────────────────────────
     /// 从 DER 编码的证书解析

@@ -302,6 +302,9 @@ if(WIN32)
     # BCrypt (rand_os.cpp 的 BCryptGenRandom)；DLL 导出所有公共符号
     target_link_libraries(jpssl_cpu PUBLIC bcrypt)
     target_link_libraries(jpssl_cpu_shared PUBLIC bcrypt)
+    # 系统证书库（from_system 的 Windows ROOT store 加载）
+    target_link_libraries(jpssl_cpu PUBLIC crypt32)
+    target_link_libraries(jpssl_cpu_shared PUBLIC crypt32)
     # Winsock (tls_socket.cpp)
     target_link_libraries(jpssl_cpu PUBLIC ws2_32)
     target_link_libraries(jpssl_cpu_shared PUBLIC ws2_32)
