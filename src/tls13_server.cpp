@@ -154,30 +154,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         }
     }
 
-    // ClientHello transcript 更新已移�?cipher_suite 选择之后
-
-    { size_t cs_off = 4+2+32; uint8_t sid_len = client_hello[cs_off]; cs_off += 1+sid_len;
-      uint16_t cs_list_len = (client_hello[cs_off]<<8)|client_hello[cs_off+1]; cs_off += 2;
-      std::vector<uint16_t> client_cs;
-      for(size_t i=0; i+2<=cs_list_len; i+=2)
-        client_cs.push_back((client_hello[cs_off+i]<<8)|client_hello[cs_off+i+1]);
-      auto cs_has = [&](uint16_t id){ for (uint16_t c : client_cs) if (c==id) return true; return false; };
-      if (s.cipher_suite != CipherSuite::TLS_AES_128_GCM_SHA256 && cs_has((uint16_t)s.cipher_suite)) {
-          s.cipher_suite = s.cipher_suite;
-      } else if (cs_has(0x00C6)) s.cipher_suite = CipherSuite::TLS_SM4_GCM_SM3;
-      else if (cs_has(0x00C7)) s.cipher_suite = CipherSuite::TLS_SM4_CCM_SM3;
-      else if (cs_has(0x1301)) s.cipher_suite = CipherSuite::TLS_AES_128_GCM_SHA256;
-      else if (cs_has(0x1302)) s.cipher_suite = CipherSuite::TLS_AES_256_GCM_SHA384;
-      else if (cs_has(0x1303)) s.cipher_suite = CipherSuite::TLS_CHACHA20_POLY1305_SHA256;
-      else if (cs_has(0x1304)) s.cipher_suite = CipherSuite::TLS_AES_128_CCM_SHA256;
-      else if (cs_has(0x1305)) s.cipher_suite = CipherSuite::TLS_AES_128_CCM_8_SHA256;
-      else s.cipher_suite = CipherSuite::TLS_AES_128_GCM_SHA256;
-    }
-
-    // 记录 ClientHello (须在 cipher_suite 确定�? 保证 transcript 哈希算法与客户端一�?
-    tls_transcript_update(s,client_hello,ch_len);
-
-    // 解析 SNI
+    // 解析 SNI（须在 cipher_suite 选择前，供证书类型过滤使用）
     uint16_t ext_len_total=0;
     size_t ext_offset=client_hello_ext_offset(client_hello,ch_len);
     if(ext_offset+2<=ch_len){
@@ -187,6 +164,35 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     }
     const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
     if(!cert)return false;
+
+    // ── 密码套件协商（RFC 8446 §4.1.3：只能从客户端通告列表中选；无交集即失败）──
+    // 默认偏好：国密（RFC 8998）> ChaCha20-Poly1305 > AES-GCM/CCM。
+    // 国密套件要求服务端 SM2 证书（RFC 8998），否则跳过。
+    { size_t cs_off = 4+2+32; uint8_t sid_len = client_hello[cs_off]; cs_off += 1+sid_len;
+      uint16_t cs_list_len = (client_hello[cs_off]<<8)|client_hello[cs_off+1]; cs_off += 2;
+      std::vector<uint16_t> client_cs;
+      for(size_t i=0; i+2<=cs_list_len; i+=2)
+        client_cs.push_back((client_hello[cs_off+i]<<8)|client_hello[cs_off+i+1]);
+      auto cs_has = [&](uint16_t id){ for (uint16_t c : client_cs) if (c==id) return true; return false; };
+      bool cert_is_sm2 = (cert->sig_alg == SignatureAlgorithm::SM2_SM3);
+      // QUIC 模式（RFC 9001 §5）的 AEAD 集合不含国密套件，服务端同样不得选择
+      auto sm_ok = [&](uint16_t id){ return !s.quic_mode && cert_is_sm2 && cs_has(id); };
+      bool pinned_ok = s.cipher_suite_pinned && cs_has((uint16_t)s.cipher_suite)
+                       && (!tls_use_sm3(s.cipher_suite) || (cert_is_sm2 && !s.quic_mode));
+      if (pinned_ok) {
+          s.cipher_suite = s.cipher_suite;   // 保持显式固定套件
+      } else if (sm_ok(0x00C6)) s.cipher_suite = CipherSuite::TLS_SM4_GCM_SM3;
+      else if (sm_ok(0x00C7)) s.cipher_suite = CipherSuite::TLS_SM4_CCM_SM3;
+      else if (cs_has(0x1303)) s.cipher_suite = CipherSuite::TLS_CHACHA20_POLY1305_SHA256;
+      else if (cs_has(0x1301)) s.cipher_suite = CipherSuite::TLS_AES_128_GCM_SHA256;
+      else if (cs_has(0x1302)) s.cipher_suite = CipherSuite::TLS_AES_256_GCM_SHA384;
+      else if (cs_has(0x1304)) s.cipher_suite = CipherSuite::TLS_AES_128_CCM_SHA256;
+      else if (cs_has(0x1305)) s.cipher_suite = CipherSuite::TLS_AES_128_CCM_8_SHA256;
+      else return false;   // 无共同套件（不再兜底选择客户端未通告的套件）
+    }
+
+    // 记录 ClientHello (须在 cipher_suite 确定�? 保证 transcript 哈希算法与客户端一�?
+    tls_transcript_update(s,client_hello,ch_len);
 
     // ALPN (RFC 7301)：解析客户端协议列表并与本地支持列表匹配选择
     s.alpn_selected.clear();

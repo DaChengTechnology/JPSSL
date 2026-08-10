@@ -588,11 +588,13 @@ static std::string run_0rtt_combination(CipherSuite cs, SignatureAlgorithm sig) 
     tls_session client;
     client.server_name = "localhost";
     client.cipher_suite = cs;
+    client.cipher_suite_pinned = true;
     std::vector<uint8_t> ch;
     if (!tls13_make_client_hello(client, ch)) return "client hello";
 
     tls_session server;
     server.cipher_suite = cs;   // 服务端显式偏好目标套件
+    server.cipher_suite_pinned = true;
     std::vector<uint8_t> sf;
     if (!tls13_make_server_flight(server, ch.data(), ch.size(), sf, cert_mgr)) return "server flight";
     if (server.cipher_suite != cs) return "cipher not negotiated";
@@ -687,7 +689,10 @@ void test_tls13_0rtt_matrix() {
     int fail_count = 0, total = 0;
     const int iterations = 5;   // 每个组合重复 5 次完整流程，暴露间歇性/未初始化内存问题
     for (CipherSuite cs : ciphers) {
+        bool sm_suite = tls_use_sm3(cs);
         for (SignatureAlgorithm sig : sigs) {
+            // RFC 8998：SM 套件必须配 SM2 证书，跳过无效组合
+            if (sm_suite && sig != SignatureAlgorithm::SM2_SM3) continue;
             ++total;
             std::string d;
             for (int it = 0; it < iterations; ++it) {
