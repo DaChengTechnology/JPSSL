@@ -668,6 +668,30 @@ jpssl::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) 
         }
     }
 
+    // 从 AlgorithmIdentifier 的 params 解析 RSASSA-PSS 哈希长度（NULL/缺省 = SHA-256）
+    auto pss_hash_len = [&](size_t params_off) {
+        if (params_off >= sig_alg_tlv->value.size() ||
+            sig_alg_tlv->value[params_off] == 0x05) {
+            return 32;  // 无参数 / NULL 参数 → SHA-256
+        }
+        size_t po = params_off;
+        auto params = decode_tlv2(sig_alg_tlv->value.data(),
+                                  sig_alg_tlv->value.size(), po);
+        if (!params || params->tag != (ASN1Tag)0x30) return 32;
+        size_t ho = 0;
+        auto hash_seq =
+            decode_tlv2(params->value.data(), params->value.size(), ho);
+        if (!hash_seq || hash_seq->tag != (ASN1Tag)0x30) return 32;
+        size_t oo = 0;
+        auto hoid = decode_tlv2(hash_seq->value.data(),
+                                hash_seq->value.size(), oo);
+        if (!hoid) return 32;
+        const std::vector<uint8_t> hb = tlv_to_oid(*hoid);
+        if (oid_equal(hb, OID_SHA384, sizeof(OID_SHA384))) return 48;
+        if (oid_equal(hb, OID_SHA512, sizeof(OID_SHA512))) return 64;
+        return 32;
+    };
+
     // sign key type from sig algo OID
     {   size_t saoff = 0;
         auto sa_oid_tlv = decode_tlv2(sig_alg_tlv->value.data(), sig_alg_tlv->value.size(), saoff);
@@ -675,6 +699,11 @@ jpssl::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) 
             auto sa_oid = tlv_to_oid(*sa_oid_tlv);
             if (oid_equal(sa_oid, OID_SHA256_WITH_RSA, sizeof(OID_SHA256_WITH_RSA))) cert.sign_key_type = KeyType::RSA_2048;
             else if (oid_equal(sa_oid, OID_SHA384_WITH_RSA, sizeof(OID_SHA384_WITH_RSA))) cert.sign_key_type = KeyType::RSA_4096;
+            else if (oid_equal(sa_oid, OID_RSASSA_PSS, sizeof(OID_RSASSA_PSS))) {
+                cert.sign_key_type = KeyType::RSA_2048;
+                cert.sig_is_pss = true;
+                cert.sig_hash_len = pss_hash_len(saoff);
+            }
             else if (oid_equal(sa_oid, OID_ECDSA_WITH_SHA256, sizeof(OID_ECDSA_WITH_SHA256))) cert.sign_key_type = KeyType::ECDSA_P256;
             else if (oid_equal(sa_oid, OID_ECDSA_WITH_SHA384, sizeof(OID_ECDSA_WITH_SHA384))) cert.sign_key_type = KeyType::ECDSA_P384;
             else if (oid_equal(sa_oid, OID_ECDSA_WITH_SHA512, sizeof(OID_ECDSA_WITH_SHA512))) cert.sign_key_type = KeyType::ECDSA_P521;
@@ -820,22 +849,55 @@ bool x509_cert::verify_signature(const x509_cert& issuer) const {
         case KeyType::RSA_2048: case KeyType::RSA_4096: {
             uint8_t hash[32];
             sha256_ctx ctx; sha256_init(&ctx); sha256_update(&ctx, tbs_data, tbs_len); sha256_final(&ctx, hash);
-            size_t n_len = issuer.public_key.size() > 3 ? issuer.public_key.size() - 3 : 256;
-            rsa_bignum n = rsa_bignum::from_bytes(issuer.public_key.data(), n_len);
-            rsa_bignum e = rsa_bignum::from_uint64(65537);
-            rsa_bignum sig_bn = rsa_bignum::from_bytes(signature.data(), std::min(signature.size(), (size_t)256));
-            rsa_bignum decrypted; bn_modpow(decrypted, sig_bn, e, n);
-            uint8_t dec[256] = {}; decrypted.to_bytes(dec);
-            if (dec[0] != 0x00 || dec[1] != 0x01) return false;
-            size_t pos = 2;
-            while (pos < 256 && dec[pos] == 0xFF) ++pos;
-            if (pos >= 256 || dec[pos] != 0x00) return false;
-            ++pos;
             static const uint8_t SHA256_DI[] = {0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20};
             size_t di_len = sizeof(SHA256_DI);
-            if (pos + di_len + 32 > 256) return false;
-            if (memcmp(dec + pos, SHA256_DI, di_len) != 0) return false;
-            return memcmp(dec + pos + di_len, hash, 32) == 0;
+            const size_t k = issuer.public_key.size() > 3
+                                 ? issuer.public_key.size() - 3
+                                 : 0;
+            if (k != 256 && k != 512) return false;
+            if (signature.size() < k) return false;
+            if (sig_is_pss) {
+                PssHash ph = PssHash::SHA256;
+                if (sig_hash_len == 48) ph = PssHash::SHA384;
+                else if (sig_hash_len == 64) ph = PssHash::SHA512;
+                if (k == 256) {
+                    rsa_public_key pub;
+                    pub.n = rsa_bignum::from_bytes(issuer.public_key.data(), 256);
+                    pub.e = rsa_bignum::from_uint64(65537);
+                    return rsassa_pss_verify(pub, tbs_data, tbs_len,
+                                             signature.data(), 0, ph);
+                }
+                rsa4096_public_key pub;
+                pub.n = rsa4096_bignum::from_bytes(issuer.public_key.data(), 512);
+                pub.e = rsa4096_bignum::from_uint64(65537);
+                return rsassa_pss_verify4096(pub, tbs_data, tbs_len,
+                                             signature.data(), 0, ph);
+            }
+            // RSASSA-PKCS1-v1_5（2048/4096）
+            auto pkcs1_check = [&](const uint8_t* dec, size_t kk) {
+                if (dec[0] != 0x00 || dec[1] != 0x01) return false;
+                size_t pos = 2;
+                while (pos < kk && dec[pos] == 0xFF) ++pos;
+                if (pos >= kk || dec[pos] != 0x00) return false;
+                ++pos;
+                if (pos + di_len + 32 > kk) return false;
+                if (memcmp(dec + pos, SHA256_DI, di_len) != 0) return false;
+                return memcmp(dec + pos + di_len, hash, 32) == 0;
+            };
+            if (k == 256) {
+                rsa_bignum n = rsa_bignum::from_bytes(issuer.public_key.data(), 256);
+                rsa_bignum e = rsa_bignum::from_uint64(65537);
+                rsa_bignum sig_bn = rsa_bignum::from_bytes(signature.data(), 256);
+                rsa_bignum decrypted; bn_modpow(decrypted, sig_bn, e, n);
+                uint8_t dec[256] = {}; decrypted.to_bytes(dec);
+                return pkcs1_check(dec, 256);
+            }
+            rsa4096_bignum n = rsa4096_bignum::from_bytes(issuer.public_key.data(), 512);
+            rsa4096_bignum e = rsa4096_bignum::from_uint64(65537);
+            rsa4096_bignum sig_bn = rsa4096_bignum::from_bytes(signature.data(), 512);
+            rsa4096_bignum decrypted; bn_modpow(decrypted, sig_bn, e, n);
+            uint8_t dec[512] = {}; decrypted.to_bytes(dec);
+            return pkcs1_check(dec, 512);
         }
         case KeyType::Ed25519:
             return ed25519_verify(issuer.public_key.data(), tbs_data, tbs_len, signature.data());
@@ -1543,6 +1605,9 @@ jpssl::optional<csr> csr::from_der(const uint8_t* data, size_t len) {
             auto sa_oid = tlv_to_oid(*sa_oid_tlv);
             if (oid_equal(sa_oid, OID_SHA256_WITH_RSA, sizeof(OID_SHA256_WITH_RSA))) out.sign_key_type = KeyType::RSA_2048;
             else if (oid_equal(sa_oid, OID_SHA384_WITH_RSA, sizeof(OID_SHA384_WITH_RSA))) out.sign_key_type = KeyType::RSA_4096;
+            else if (oid_equal(sa_oid, OID_RSASSA_PSS, sizeof(OID_RSASSA_PSS))) {
+                out.sign_key_type = KeyType::RSA_2048;
+            }
             else if (oid_equal(sa_oid, OID_ECDSA_WITH_SHA256, sizeof(OID_ECDSA_WITH_SHA256))) out.sign_key_type = KeyType::ECDSA_P256;
             else if (oid_equal(sa_oid, OID_ECDSA_WITH_SHA384, sizeof(OID_ECDSA_WITH_SHA384))) out.sign_key_type = KeyType::ECDSA_P384;
             else if (oid_equal(sa_oid, OID_ECDSA_WITH_SHA512, sizeof(OID_ECDSA_WITH_SHA512))) out.sign_key_type = KeyType::ECDSA_P521;
