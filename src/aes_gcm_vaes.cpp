@@ -149,6 +149,28 @@ static inline void vaes_encrypt_4blocks(__m256i& b0, __m256i& b1,
     __asm__ __volatile__("vaesenclast %2, %1, %0" : "+x"(b1) : "x"(b1), "x"(rr));
 }
 
+/// 对 4 个 YMM（8 个 128-bit 块）做一轮 AES 加密（VAES，4 路并行）
+static inline void vaes_encrypt_8blocks(__m256i& b0, __m256i& b1, __m256i& b2,
+                                        __m256i& b3, const __m128i* rk, int rounds) {
+    __m256i r0 = _mm256_broadcastsi128_si256(rk[0]);
+    b0 = _mm256_xor_si256(b0, r0);
+    b1 = _mm256_xor_si256(b1, r0);
+    b2 = _mm256_xor_si256(b2, r0);
+    b3 = _mm256_xor_si256(b3, r0);
+    for (int r = 1; r < rounds; ++r) {
+        __m256i rr = _mm256_broadcastsi128_si256(rk[r]);
+        __asm__ __volatile__("vaesenc %2, %1, %0" : "+x"(b0) : "x"(b0), "x"(rr));
+        __asm__ __volatile__("vaesenc %2, %1, %0" : "+x"(b1) : "x"(b1), "x"(rr));
+        __asm__ __volatile__("vaesenc %2, %1, %0" : "+x"(b2) : "x"(b2), "x"(rr));
+        __asm__ __volatile__("vaesenc %2, %1, %0" : "+x"(b3) : "x"(b3), "x"(rr));
+    }
+    __m256i rr = _mm256_broadcastsi128_si256(rk[rounds]);
+    __asm__ __volatile__("vaesenclast %2, %1, %0" : "+x"(b0) : "x"(b0), "x"(rr));
+    __asm__ __volatile__("vaesenclast %2, %1, %0" : "+x"(b1) : "x"(b1), "x"(rr));
+    __asm__ __volatile__("vaesenclast %2, %1, %0" : "+x"(b2) : "x"(b2), "x"(rr));
+    __asm__ __volatile__("vaesenclast %2, %1, %0" : "+x"(b3) : "x"(b3), "x"(rr));
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  Counter / J0 辅助
 // ═══════════════════════════════════════════════════════════════════════
@@ -265,41 +287,73 @@ static void vaes_gcm_encrypt_impl(const aes_context& ctx,
 
     // 4. CTR 加密（4 块并行，2 个 YMM）+ GHASH 密文（直写 out）
     size_t num_blocks = (plaintext.size() + 15) / 16;
-    size_t num_blocks4 = (plaintext.size() / 64) * 4;  // 只处理完整 64 字节组
+    size_t num_blocks8 = (plaintext.size() / 128) * 8;  // 完整 128 字节组（8 块）
 
-    __m128i ctrs[4];
-    ctrs[0] = inc_counter_1(J0);
-    for (int i = 1; i < 4; ++i) ctrs[i] = inc_counter_1(ctrs[i - 1]);
+    // 8 个 counter → 4 个 YMM（每 YMM 2 个 128-bit 块）。每 lane 的末 dword 即
+    // GCM big-endian 计数器的低 4 字节，整体 +8 不越 32 位边界（GCM 2^32 限制内）
+    __m128i c0 = inc_counter_1(J0);
+    __m128i c1 = inc_counter_1(c0);
+    __m128i c2 = inc_counter_1(c1);
+    __m128i c3 = inc_counter_1(c2);
+    __m128i c4 = inc_counter_1(c3);
+    __m128i c5 = inc_counter_1(c4);
+    __m128i c6 = inc_counter_1(c5);
+    __m128i c7 = inc_counter_1(c6);
+    __m256i yc[4] = {
+        _mm256_set_m128i(c1, c0),
+        _mm256_set_m128i(c3, c2),
+        _mm256_set_m128i(c5, c4),
+        _mm256_set_m128i(c7, c6),
+    };
+    const __m256i inc8 = _mm256_set_epi32(0, 0, 0, 8, 0, 0, 0, 8);
 
     size_t i = 0;
-    for (; i < num_blocks4; i += 4) {
-        // 打包 4 个 counter → 2 个 YMM（各 2 块）
-        __m256i ks0 = _mm256_set_m128i(ctrs[1], ctrs[0]);
-        __m256i ks1 = _mm256_set_m128i(ctrs[3], ctrs[2]);
-        vaes_encrypt_4blocks(ks0, ks1, rk, rounds);
-
-        const uint8_t* pt = plaintext.data() + i * 16;
-        __m256i pt0 = _mm256_loadu_si256((const __m256i*)(pt));
-        __m256i pt1 = _mm256_loadu_si256((const __m256i*)(pt + 32));
-        __m256i ct0 = _mm256_xor_si256(pt0, ks0);
-        __m256i ct1 = _mm256_xor_si256(pt1, ks1);
-
-        uint8_t* ct = out + i * 16;
-        _mm256_storeu_si256((__m256i*)(ct), ct0);
-        _mm256_storeu_si256((__m256i*)(ct + 32), ct1);
-
+    __m256i ct0, ct1, ct2, ct3;  // 上一组密文（YMM 形式）
+    auto enc_group = [&](size_t off) {
+        vaes_encrypt_8blocks(yc[0], yc[1], yc[2], yc[3], rk, rounds);
+        const uint8_t* p = plaintext.data() + off * 16;
+        __m256i p0 = _mm256_loadu_si256((const __m256i*)(p));
+        __m256i p1 = _mm256_loadu_si256((const __m256i*)(p + 32));
+        __m256i p2 = _mm256_loadu_si256((const __m256i*)(p + 64));
+        __m256i p3 = _mm256_loadu_si256((const __m256i*)(p + 96));
+        ct0 = _mm256_xor_si256(p0, yc[0]);
+        ct1 = _mm256_xor_si256(p1, yc[1]);
+        ct2 = _mm256_xor_si256(p2, yc[2]);
+        ct3 = _mm256_xor_si256(p3, yc[3]);
+        uint8_t* co = out + off * 16;
+        _mm256_storeu_si256((__m256i*)(co), ct0);
+        _mm256_storeu_si256((__m256i*)(co + 32), ct1);
+        _mm256_storeu_si256((__m256i*)(co + 64), ct2);
+        _mm256_storeu_si256((__m256i*)(co + 96), ct3);
+    };
+    auto ghash_group = [&]() {
         __m128i b0 = _mm256_extracti128_si256(ct0, 0);
         __m128i b1 = _mm256_extracti128_si256(ct0, 1);
         __m128i b2 = _mm256_extracti128_si256(ct1, 0);
         __m128i b3 = _mm256_extracti128_si256(ct1, 1);
+        __m128i b4 = _mm256_extracti128_si256(ct2, 0);
+        __m128i b5 = _mm256_extracti128_si256(ct2, 1);
+        __m128i b6 = _mm256_extracti128_si256(ct3, 0);
+        __m128i b7 = _mm256_extracti128_si256(ct3, 1);
         ghash_state = gcm_ghash4(ghash_state, gcm_bitrev(b0), gcm_bitrev(b1),
                                  gcm_bitrev(b2), gcm_bitrev(b3), Hr, H2, H3, H4);
+        ghash_state = gcm_ghash4(ghash_state, gcm_bitrev(b4), gcm_bitrev(b5),
+                                 gcm_bitrev(b6), gcm_bitrev(b7), Hr, H2, H3, H4);
+    };
 
-        for (int k = 0; k < 4; ++k)
-            ctrs[k] = inc_counter_n(ctrs[k], 4);
+    // 软件流水：迭代内 GHASH(上一组密文) 与 AES(本组) 无数据依赖，
+    // 由乱序执行重叠，隐藏 GHASH 乘法链与 AES 轮的互相等待
+    if (num_blocks8 >= 8) {
+        enc_group(0);
+        i = 8;
     }
+    for (; i + 8 <= num_blocks8; i += 8) {
+        ghash_group();
+        for (int k = 0; k < 4; ++k) yc[k] = _mm256_add_epi32(yc[k], inc8);
+        enc_group(i);
+    }
+    if (num_blocks8 >= 8) ghash_group();  // 最后一组密文 → GHASH
 
-    // 剩余块（< 4 个，含部分块），逐块处理
     __m128i ctr = inc_counter_n(J0, (int)(i + 1));
     for (; i < num_blocks; ++i) {
         __m128i ks = ctr;
@@ -406,30 +460,42 @@ static bool vaes_gcm_decrypt_impl(const aes_context& ctx,
 
     // 解密（CTR，直写 out）
     size_t num_blocks = (ciphertext.size() + 15) / 16;
-    size_t num_blocks4 = (ciphertext.size() / 64) * 4;
+    size_t num_blocks8 = (ciphertext.size() / 128) * 8;
 
-    __m128i ctrs[4];
-    ctrs[0] = inc_counter_1(J0);
-    for (int i = 1; i < 4; ++i) ctrs[i] = inc_counter_1(ctrs[i - 1]);
+    __m128i c0 = inc_counter_1(J0);
+    __m128i c1 = inc_counter_1(c0);
+    __m128i c2 = inc_counter_1(c1);
+    __m128i c3 = inc_counter_1(c2);
+    __m128i c4 = inc_counter_1(c3);
+    __m128i c5 = inc_counter_1(c4);
+    __m128i c6 = inc_counter_1(c5);
+    __m128i c7 = inc_counter_1(c6);
+    __m256i yc[4] = {
+        _mm256_set_m128i(c1, c0),
+        _mm256_set_m128i(c3, c2),
+        _mm256_set_m128i(c5, c4),
+        _mm256_set_m128i(c7, c6),
+    };
+    const __m256i inc8 = _mm256_set_epi32(0, 0, 0, 8, 0, 0, 0, 8);
 
     size_t i = 0;
-    for (; i < num_blocks4; i += 4) {
-        __m256i ks0 = _mm256_set_m128i(ctrs[1], ctrs[0]);
-        __m256i ks1 = _mm256_set_m128i(ctrs[3], ctrs[2]);
-        vaes_encrypt_4blocks(ks0, ks1, rk, rounds);
-
+    for (; i + 8 <= num_blocks8; i += 8) {
+        vaes_encrypt_8blocks(yc[0], yc[1], yc[2], yc[3], rk, rounds);
         const uint8_t* ct = ciphertext.data() + i * 16;
-        __m256i ct0 = _mm256_loadu_si256((const __m256i*)(ct));
-        __m256i ct1 = _mm256_loadu_si256((const __m256i*)(ct + 32));
-        __m256i pt0 = _mm256_xor_si256(ct0, ks0);
-        __m256i pt1 = _mm256_xor_si256(ct1, ks1);
-
-        uint8_t* pt = out + i * 16;
-        _mm256_storeu_si256((__m256i*)(pt), pt0);
-        _mm256_storeu_si256((__m256i*)(pt + 32), pt1);
-
-        for (int k = 0; k < 4; ++k)
-            ctrs[k] = inc_counter_n(ctrs[k], 4);
+        __m256i c0v = _mm256_loadu_si256((const __m256i*)(ct));
+        __m256i c1v = _mm256_loadu_si256((const __m256i*)(ct + 32));
+        __m256i c2v = _mm256_loadu_si256((const __m256i*)(ct + 64));
+        __m256i c3v = _mm256_loadu_si256((const __m256i*)(ct + 96));
+        __m256i p0 = _mm256_xor_si256(c0v, yc[0]);
+        __m256i p1 = _mm256_xor_si256(c1v, yc[1]);
+        __m256i p2 = _mm256_xor_si256(c2v, yc[2]);
+        __m256i p3 = _mm256_xor_si256(c3v, yc[3]);
+        uint8_t* po = out + i * 16;
+        _mm256_storeu_si256((__m256i*)(po), p0);
+        _mm256_storeu_si256((__m256i*)(po + 32), p1);
+        _mm256_storeu_si256((__m256i*)(po + 64), p2);
+        _mm256_storeu_si256((__m256i*)(po + 96), p3);
+        for (int k = 0; k < 4; ++k) yc[k] = _mm256_add_epi32(yc[k], inc8);
     }
 
     __m128i ctr = inc_counter_n(J0, (int)(i + 1));
