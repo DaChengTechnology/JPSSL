@@ -1,9 +1,21 @@
 # jpssl — C++20 高性能密码学库（CPU + MUSA GPU）
 
-跨平台密码学库，支持 **AES**、**ChaCha20-Poly1305**、**RSA**、**TLS 1.2/1.3**、**Ed25519**、**Ed448**、**ECDSA**、**X.509 v3 证书**（RFC 5280），以及 **SM2/SM3/SM4 国密算法**（GM/T 0002/3/4-2012，RFC 8998 TLS 1.3 国密套件）。提供 CPU 优化（AES-NI/AVX2/VAES/PCLMULQDQ/Montgomery、ARM NEON：AES-GCM / ChaCha20 / SHA-1 / SHA-256 / SHA-512 / SHA-3 / SM3 / SM4）和可选的 MUSA GPU 加速（实验性，默认关闭）。同时提供静态库和动态库两种构建方式。
+跨平台密码学库，支持 **AES**、**ChaCha20-Poly1305**、**RSA**、**TLS 1.2/1.3**（含 0-RTT 与 RFC 8998 国密套件）、**DTLS 1.2/1.3**（RFC 6347/9147 标准数据报 TLS）、**QUIC v1/v2**（RFC 9001/9369 QUIC 所需 TLS 层）、**Ed25519**、**Ed448**、**ECDSA**、**X.509 v3 证书**（RFC 5280），以及 **SM2/SM3/SM4 国密算法**（GM/T 0002/3/4-2012）。提供 CPU 优化（AES-NI/AVX2/VAES/PCLMULQDQ/Montgomery、ARM NEON：AES-GCM / ChaCha20 / SHA-1 / SHA-256 / SHA-512 / SHA-3 / SM3 / SM4）和可选的 MUSA GPU 加速（实验性，默认关闭）。同时提供静态库和动态库两种构建方式。
+
+## 功能特性
+
+- **TLS 1.2 / 1.3**：完整握手与记录层，ECDHE/RSA/DHE/PSK 密钥交换、0-RTT 早数据、SNI 多域名证书、RFC 8998 国密套件（TLS_SM4_GCM_SM3）
+- **DTLS 1.2 / 1.3**：标准数据报 TLS（RFC 6347 / RFC 9147），cookie、分片/重组、重传/ACK、记录号加密；与 OpenSSL（DTLS 1.2）及 wolfSSL 5.9.2（DTLS 1.2/1.3）双向互操作测试
+- **QUIC v1 / v2**：QUIC 所需 TLS 层支持（RFC 9001 / RFC 9369）——无记录层握手、`quic_transport_parameters` 扩展、Initial/握手/1-RTT 数据包保护密钥、头部保护掩码、varint 编解码；与 OpenSSL QUIC 双向互通，v1/v2 Initial 包通过独立解析器合规校验
+- **对称加密与 AEAD**：AES-128/256（ECB/CBC/GCM）、ChaCha20-Poly1305、SM4（ECB/CBC/GCM/CCM）
+- **公钥密码**：RSA-2048/4096、ECDSA P-256/P-384/P-521、Ed25519/Ed448、SM2（签名/验签/密钥交换）、X25519/X448 ECDH
+- **哈希与密钥派生**：SHA-1/SHA-256/SHA-384/512/SHA3、SM3、HMAC、HKDF
+- **X.509 v3 与证书透明**：DER/PEM 编解码、自签名、证书链验证、CSR、加密私钥（PBES2）；RFC 6962 国际 CT 与 SM2/SM3 国密 CT
+- **性能与跨平台**：AES-NI/AVX2/AVX512/VAES、ARM NEON、Montgomery 汇编、OpenMP；Windows / Linux / macOS / Android / iOS / HarmonyOS；可选 MUSA GPU 加速（实验性）
 
 ## 目录
 
+- [功能特性](#功能特性)
 - [架构](#架构)
 - [性能基准 (benchmarks/)](#性能基准-benchmarks)
 - [快速开始](#快速开始)
@@ -30,6 +42,8 @@
   - [SM4-CCM AEAD](#sm4-ccm-aead)
   - [X25519 ECDH](#x25519-ecdh)
   - [TLS 1.2 / 1.3](#tls-12--13)
+  - [QUIC v1 / v2（RFC 9001 / RFC 9369）](#quic-v1--v2rfc-9001--rfc-9369)
+  - [DTLS 1.2 / 1.3（RFC 6347 / RFC 9147）](#dtls-12--13rfc-6347--rfc-9147)
   - [Ed25519](#ed25519)
   - [ECDSA P-256](#ecdsa-p-256)
   - [X.509 v3 证书 (RFC 5280)](#x509-v3-证书-rfc-5280)
@@ -961,7 +975,7 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 | `tls_session::client_early_write_key` / `client_early_write_iv` | 0-RTT 早数据加密密钥和 IV |
 | `tls_session::early_data_accepted` | 服务端是否接受了 0-RTT 早数据 |
 
-#### 11. QUIC v1 / v2（RFC 9001 / RFC 9369）
+### QUIC v1 / v2（RFC 9001 / RFC 9369）
 
 QUIC 不使用 TLS 记录层：握手消息直接以原始 TLS Handshake 字节流交付，由 QUIC 封装进
 
@@ -1016,27 +1030,21 @@ tls_quic_header_protection_mask(client.cipher_suite, init_keys.client.hp, 16,
                                 sample, 16, mask, 5);
 ```
 
-服务端在 `tls_quic_make_server_flight` 前必须为 `server.quic_transport_params` 设置
-
-`original_destination_connection_id`（与客户端首包 DST CID 一致）与 `initial_source_connection_id`；
-
-客户端必须设置 `initial_source_connection_id`（RFC 9000 §7.2/§18.2）。
+服务端在 `tls_quic_make_server_flight` 前必须为 `server.quic_transport_params` 设置 `original_destination_connection_id`（与客户端首包 DST CID 一致）与 `initial_source_connection_id`；客户端必须设置 `initial_source_connection_id`（RFC 9000 §7.2/§18.2）。
 
 `tls_session.quic_peer_transport_params` 在握手解析后保存对端传输参数（`quic_peer_params_valid`）。
 
-QUIC 模式也可用 `tls13_make_quic_client_hello` / `tls13_make_quic_server_flight` /
-
-`tls13_process_quic_server_flight` / `tls13_process_quic_client_finished` 便捷包装。
+QUIC 模式也可用 `tls13_make_quic_client_hello` / `tls13_make_quic_server_flight` / `tls13_process_quic_server_flight` / `tls13_process_quic_client_finished` 便捷包装。
 
 > QUIC v1 与 v2 的线格式、版本号（v1=`0x00000001`，v2=`0x6b3343cf`）与包类型位由 QUIC 层负责；
 > 本模块仅提供 TLS 部分。Initial 数据包恒用 AEAD_AES_128_GCM + SHA-256，握手/1-RTT 套件
 > 由 TLS 协商（AES-128/256-GCM、ChaCha20-Poly1305 等，对应 16/32 字节密钥）。
 
-#### 12. DTLS 1.2 / 1.3（RFC 6347 / RFC 9147）
+合规性验证：`test_quic_openssl_interop` 与 OpenSSL QUIC 客户端/服务端双向互通（测试内置最小 RFC 9000 报文层）；`test_quic_parser_compliance` 用独立实现的 Rust quic-parser（canmi21/quic-parser）校验 jpssl 生成的 v1/v2 Initial 包解析、头部保护移除与 AEAD 解密。
 
-DTLS 在不可靠的数据报传输（UDP）上提供与 TLS 同等的安全保证。jpssl 提供标准 DTLS
+### DTLS 1.2 / 1.3（RFC 6347 / RFC 9147）
 
-记录层与握手（`include/dtls.hpp` / `src/dtls.cpp`）。
+DTLS 在不可靠的数据报传输（UDP）上提供与 TLS 同等的安全保证。jpssl 提供标准 DTLS 记录层与握手（`include/dtls.hpp` / `src/dtls.cpp`）。
 
 ```cpp
 #include "dtls.hpp"
@@ -1059,11 +1067,7 @@ std::vector<uint8_t> dec;
 dtls_unprotect_application(server, enc.data(), enc.size(), dec);
 ```
 
-`dtls_handshake_step` 是纯数据报状态机（datagram in → datagram out），可嵌入任意传输
-
-（内存、UDP、回调式事件循环）；内部处理记录层加解密、握手消息分片重组、cookie 交换
-
-（DTLS 1.2）、message_seq、Finished 校验与 DTLS 1.3 ACK。
+`dtls_handshake_step` 是纯数据报状态机（datagram in → datagram out），可嵌入任意传输（内存、UDP、回调式事件循环）；内部处理记录层加解密、握手消息分片重组、cookie 交换（DTLS 1.2）、message_seq、Finished 校验与 DTLS 1.3 ACK。
 
 UDP socket 封装（含握手超时重传）：
 
@@ -1080,12 +1084,12 @@ client.send((const uint8_t*)"hi", 2);        // 发送应用数据
 std::vector<uint8_t> resp; server.recv(resp); // 接收
 ```
 
-支持：DTLS 1.2（ECDHE-X25519/P-256 + AES-128-GCM/ChaCha20，cookie 可选）与
-
-DTLS 1.3（X25519/P-256/X448 + AES-128/256-GCM/ChaCha20，Ed25519/ECDSA/RSA-PSS 证书）。
+支持：DTLS 1.2（ECDHE-X25519/P-256 + AES-128-GCM/ChaCha20，cookie 可选）与 DTLS 1.3（X25519/P-256/X448 + AES-128/256-GCM/ChaCha20，Ed25519/ECDSA/RSA-PSS 证书）。
 
 > 说明：DTLS 1.3 未实现 HelloRetryRequest 与 Connection ID（RFC 9146）；DTLS 1.2
 > cookie 交换默认关闭（`dtls_session::require_cookie = true` 开启）。
+
+互操作测试：`test_dtls_openssl_interop`（DTLS 1.2 与 OpenSSL 双向互通）、`test_dtls_wolfssl_interop`（DTLS 1.2/1.3 与 wolfSSL 5.9.2 双向互通）；`test_dtls13_openssl_interop` 已在编译期探测 OpenSSL DTLS 1.3 支持，上游实现后自动启用真实互通用例。
 
 ### Ed25519
 
@@ -1474,10 +1478,10 @@ client.recv(resp, &err);
 - **无防重放**：应用数据记录不带 epoch/sequence 滑动窗口，重放的旧数据报
   会被当作新数据接受。
 
-**标准 DTLS 1.2/1.3 已在本次发布提供**（见「TLS 1.2/1.3」小节第 12 点「DTLS 1.2/1.3」），
+**标准 DTLS 1.2/1.3 已完整提供**（见 [DTLS 1.2 / 1.3](#dtls-12--13rfc-6347--rfc-9147)），
 建议新代码直接使用标准 DTLS。`QUIC` 传输层（CRYPTO/STREAM 帧、连接迁移、
 拥塞控制）与 `HTTP/3`（RFC 9000/9114）仍列入后续版本计划。
-QUIC 所需的 TLS 层支持已提供（见「TLS 1.2/1.3」小节第 11 点「QUIC v1/v2」）。
+QUIC 所需的 TLS 层支持已完整提供（见 [QUIC v1 / v2](#quic-v1--v2rfc-9001--rfc-9369)）。
 在此之前，UDP 场景请评估上述缺陷，
 并优先考虑使用 TCP + TLS 或标准 DTLS 实现。
 ### 非阻塞模式（事件循环）
