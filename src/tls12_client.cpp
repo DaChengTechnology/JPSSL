@@ -186,7 +186,9 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
     size_t cs_off = sid_off + 1 + sid_len;
     if (cs_off + 2 > resp_len) return false;
     uint16_t sel_cs = (server_response[cs_off]<<8) | server_response[cs_off+1];
-    s.cipher_suite = select_cipher_suite(sel_cs);
+    CipherSuite cs = select_cipher_suite(sel_cs);
+    if (cs == CipherSuite::UNKNOWN) return false;   // 未知套件直接拒绝
+    s.cipher_suite = cs;
     // transcript hash depends on cipher_suite; ClientHello was cached in
     // tls12_make_client_hello and is replayed here after the suite is known.
     if (!s.tls12_client_hello_cache.empty())

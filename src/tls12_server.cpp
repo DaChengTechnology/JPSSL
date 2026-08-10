@@ -141,6 +141,7 @@ static uint16_t tls12_select_server_suite(const std::vector<uint16_t>& client_su
         for (uint16_t cl : client_suites) if (cl == srv) { offered = true; break; }
         if (!offered) continue;
         CipherSuite cs = select_cipher_suite(srv);
+        if (cs == CipherSuite::UNKNOWN) continue;
         if (tls12_is_psk(cs)) {
             if (!psk_store || psk_store->count() == 0) continue;
             if (tls12_is_dhe(cs) && ffdhe.any_ffdhe && !ffdhe.has_ffdhe2048) continue;
@@ -258,6 +259,7 @@ bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello,
     uint16_t selected_cs = tls12_select_server_suite(client_suites, cert, psk_store, ffdhe);
     if(selected_cs == 0) return false; // no common cipher suite
     s.cipher_suite = select_cipher_suite(selected_cs);
+    if (s.cipher_suite == CipherSuite::UNKNOWN) return false;
     bool use_psk = tls12_is_psk(s.cipher_suite);
     bool use_dhe = tls12_is_dhe(s.cipher_suite);
     bool use_ecdhe = tls12_is_ecdhe(s.cipher_suite);
@@ -419,6 +421,7 @@ bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     uint16_t selected_cs = tls12_select_legacy_suite(client_suites, cert);
     if(selected_cs == 0) return false; // no common cipher suite
     s.cipher_suite = select_cipher_suite(selected_cs);
+    if (s.cipher_suite == CipherSuite::UNKNOWN) return false;
 
     // transcript 哈希算法（SHA-256 vs SHA-384）取决于 cipher_suite，
     // 须在选定套件后再加入 ClientHello（与 tls12_make_server_hello_flight 一致）
@@ -561,6 +564,7 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
     uint16_t sim_cs = tls12_select_best_cipher_suite(sim_suites);
     if(sim_cs == 0) return false;
     s.cipher_suite = select_cipher_suite(sim_cs);
+    if (s.cipher_suite == CipherSuite::UNKNOWN) return false;
     // ECDHE: generate ephemeral keypair
     uint8_t ecdhe_pub[32], ecdhe_priv[32];
     bool use_ecdhe = tls12_is_ecdhe(s.cipher_suite);

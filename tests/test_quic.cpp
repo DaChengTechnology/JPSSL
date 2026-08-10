@@ -352,6 +352,7 @@ static bool quic_handshake_roundtrip(QuicVersion ver, CipherSuite cs, NamedGroup
     client.quic_version = ver;
     client.server_name = dns;
     client.cipher_suite = cs;
+    client.cipher_suite_pinned = true;
     client.ks_group = group;
     client.quic_transport_params.initial_source_connection_id = h2b("8394c8f03e515708");
     client.quic_transport_params.initial_max_data = 1000000;
@@ -365,6 +366,7 @@ static bool quic_handshake_roundtrip(QuicVersion ver, CipherSuite cs, NamedGroup
     tls_session server;
     server.quic_version = ver;
     server.cipher_suite = cs;
+    server.cipher_suite_pinned = true;
     server.quic_transport_params.original_destination_connection_id = h2b("8394c8f03e515708");
     server.quic_transport_params.initial_source_connection_id = h2b("f067a5502a4262b5");
     server.quic_transport_params.initial_max_data = 2000000;

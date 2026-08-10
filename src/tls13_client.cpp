@@ -80,14 +80,23 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
     client_hello.insert(client_hello.end(),s.client_random,s.client_random+32);
     std::vector<uint16_t> cs_list;
     auto cs_push = [&](uint16_t id){ for (uint16_t c : cs_list) if (c==id) return; cs_list.push_back(id); };
-    if (tls_use_sm3(s.cipher_suite)) {
+    // 默认偏好：国密（RFC 8998）> ChaCha20-Poly1305 > AES-GCM/CCM。
+    // 显式指定非 SM 密钥交换组（X448/P-256/P-384）时不默认通告国密套件：
+    // RFC 8998 要求 SM 套件配 curveSM2 key_share，没有该 share 时通告会被服务端拒绝。
+    // QUIC 模式（RFC 9001 §5）不使用国密套件，一律不通告。
+    bool non_sm_ks_group = (s.ks_group == NamedGroup::X448 ||
+                            s.ks_group == NamedGroup::secp256r1 ||
+                            s.ks_group == NamedGroup::secp384r1);
+    bool sm_allowed = !s.quic_mode && !non_sm_ks_group;
+    bool offer_sm = sm_allowed && (!s.cipher_suite_pinned || tls_use_sm3(s.cipher_suite));
+    if (s.cipher_suite_pinned && !(s.quic_mode && tls_use_sm3(s.cipher_suite)))
         cs_push((uint16_t)s.cipher_suite);
-        cs_push(0x00C6);
-    } else if (s.cipher_suite != CipherSuite::TLS_AES_128_GCM_SHA256) {
-        cs_push((uint16_t)s.cipher_suite);
-    }
-    cs_push(0x1301);
-    cs_push(0x1302);
+    if (offer_sm) { cs_push(0x00C6); cs_push(0x00C7); }   // TLS_SM4_GCM_SM3 / TLS_SM4_CCM_SM3
+    cs_push(0x1303);   // TLS_CHACHA20_POLY1305_SHA256
+    cs_push(0x1301);   // TLS_AES_128_GCM_SHA256
+    cs_push(0x1302);   // TLS_AES_256_GCM_SHA384
+    cs_push(0x1304);   // TLS_AES_128_CCM_SHA256
+    cs_push(0x1305);   // TLS_AES_128_CCM_8_SHA256
     uint16_t cs_len = (uint16_t)(cs_list.size() * 2);
     client_hello.push_back(0);
     client_hello.push_back((uint8_t)(cs_len>>8));client_hello.push_back((uint8_t)cs_len);
@@ -112,7 +121,7 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
     {
         std::vector<uint16_t> groups;
         // SM 套件必须包含 curveSM2（RFC 8998 3.3.1.1）；同时保留 X25519 兜底
-        if (tls_use_sm3(s.cipher_suite)) {
+        if (offer_sm) {
             groups.push_back((uint16_t)NamedGroup::curveSM2);
             groups.push_back((uint16_t)NamedGroup::X25519);
         } else if (s.ks_group == NamedGroup::X448) {
@@ -148,7 +157,7 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         append_sig_alg_extension(ext, 0x0032, cert_filtered);
     }
     // key_share: 根据 ks_group 生成对应密钥�?
-    if (tls_use_sm3(s.cipher_suite)) {
+    if (offer_sm) {
         // curveSM2（RFC 8998 3.3.1.1 必须提供，key_exchange �?SEC1 非压�?65 字节�?
         uint8_t sm2_pub[SM2_PUB_SIZE], sm2_priv[SM2_KEY_SIZE];
         sm2_keygen(sm2_pub, sm2_priv);
@@ -285,7 +294,11 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
     offset+=4+sh_len;if(offset>len)return false;
     memcpy(s.server_random,data+sh_start+10,32);
 
-    { size_t cs_off_in_sh = 4+2+32+1; uint16_t sel_cs = (data[sh_start+cs_off_in_sh]<<8)|data[sh_start+cs_off_in_sh+1]; s.cipher_suite = select_cipher_suite(sel_cs); }
+    { size_t cs_off_in_sh = 4+2+32+1; uint16_t sel_cs = (data[sh_start+cs_off_in_sh]<<8)|data[sh_start+cs_off_in_sh+1];
+      CipherSuite cs = select_cipher_suite(sel_cs);
+      if (cs == CipherSuite::UNKNOWN) return false;   // 未知套件直接拒绝
+      s.cipher_suite = cs;
+    }
 
     tls_transcript_update(s,data+sh_start,4+sh_len);
 
@@ -680,9 +693,14 @@ bool tls13_make_psk_client_hello(tls_session& s, std::vector<uint8_t>& client_he
     client_hello.insert(client_hello.end(),s.client_random,s.client_random+32);
     std::vector<uint16_t> psk_cs;
     auto psk_push = [&](uint16_t id){ for (uint16_t c : psk_cs) if (c==id) return; psk_cs.push_back(id); };
-    psk_push((uint16_t)s.cipher_suite);
-    psk_push(0x1301); psk_push(0x1302); psk_push(0x1303); psk_push(0x1304);
-    psk_push(0x00C6); psk_push(0x00C7);
+    // 与完整握手相同的默认偏好：国密 > ChaCha20 > AES（QUIC 模式不通告国密）
+    bool psk_offer_sm = !s.quic_mode && (!s.cipher_suite_pinned || tls_use_sm3(s.cipher_suite));
+    if (s.cipher_suite_pinned && !(s.quic_mode && tls_use_sm3(s.cipher_suite)))
+        psk_push((uint16_t)s.cipher_suite);
+    if (psk_offer_sm) { psk_push(0x00C6); psk_push(0x00C7); }
+    psk_push(0x1303);
+    psk_push(0x1301); psk_push(0x1302);
+    psk_push(0x1304); psk_push(0x1305);
     uint16_t psk_cs_len = (uint16_t)(psk_cs.size() * 2);
     client_hello.push_back(0);
     client_hello.push_back((uint8_t)(psk_cs_len>>8));client_hello.push_back((uint8_t)psk_cs_len);

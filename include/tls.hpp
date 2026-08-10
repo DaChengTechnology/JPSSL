@@ -95,7 +95,8 @@ enum class CipherSuite : uint16_t {
     TLS_AES_128_CCM_SHA256       = 0x1304,
     TLS_AES_128_CCM_8_SHA256     = 0x1305,
     TLS_SM4_GCM_SM3              = 0x00C6,
-    TLS_SM4_CCM_SM3              = 0x00C7
+    TLS_SM4_CCM_SM3              = 0x00C7,
+    UNKNOWN                      = 0xFFFF   ///< 未知/未支持套件标记（select_cipher_suite 对无法识别的 ID 返回此值）
 };
 
 struct tls_record { ContentType type; TLSVersion ver; std::vector<uint8_t> payload; };
@@ -211,6 +212,7 @@ struct tls_session {
 
     bool is_server = false;
     CipherSuite cipher_suite = CipherSuite::TLS_AES_128_GCM_SHA256;
+    bool cipher_suite_pinned = false;   // 用户显式固定 cipher_suite（默认值视为未固定）
     transcript_ctx_union transcript_ctx; // TLS 1.3 握手 transcript 哈希
     uint8_t transcript_hash[48]; // 已计算的 transcript 哈希 (32 for SHA-256, 48 for SHA-384)
     bool transcript_ready = false;
