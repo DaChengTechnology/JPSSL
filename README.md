@@ -55,7 +55,7 @@
 - [国密证书透明 (SM2 CT)](#国密证书透明-sm2-ct)
 - [TLS socket 封装层](#tls-socket-封装层)
   - [外部 fd 托管](#外部-fd-托管)
-  - [UDP 链接（数据报模式）— ⚠️ 非标准，存在缺陷，仅限自研两端互通](#udp-链接数据报模式-️-非标准存在缺陷仅限自研两端互通)
+  - [UDP 链接（数据报模式）](#udp-链接数据报模式)
   - [非阻塞模式（事件循环）](#非阻塞模式事件循环)
   - [协程 I/O（C++20）](#协程-ioc20)
 - [国际证书透明（RFC 6962）+ HTTPS 示例](#国际证书透明rfc-6962-https-示例)
@@ -1433,7 +1433,7 @@ borrowed.close();                        // fd 仍有效，调用方自行释放
   （原 `connect()` 会自行建立 TCP 连接，不适用于外部 fd）。
 - `tls_listener::attach(fd, ...)`：托管外部监听 socket（TCP 已 listen / UDP 已 bind）。
 
-### UDP 链接（数据报模式）— ⚠️ 非标准，存在缺陷，仅限自研两端互通
+### UDP 链接（数据报模式）
 
 `tls_connection` 支持在 UDP 上承载 TLS（数据报模式）：每条 TLS record
 （含握手消息）封装为一个 UDP 数据报发送——UDP 发送是原子的，整包成功或失败，
@@ -1463,27 +1463,8 @@ client.recv(resp, &err);
   UDP 服务端入口。`accept_udp` 用监听 socket 本身 `connect` 固定对端
   （保持源端口不变，客户端才能收到回复），随后把 socket 转交给 `conn`，
   一个 UDP listener 同一时刻服务一个客户端。
-#### ⚠️ 已知缺陷（与标准 DTLS / QUIC 不互通）
+标准 UDP 安全方案请使用 [DTLS 1.2 / 1.3](#dtls-12--13rfc-6347--rfc-9147) 与 [QUIC v1 / v2](#quic-v1--v2rfc-9001--rfc-9369)。
 
-本数据报模式是**自研的简化封装，不是标准 DTLS，也不是 QUIC**：
-
-- **非标准协议，无互操作性**：报文格式与 `DTLS`（RFC 6347/9147）和
-  `QUIC`（RFC 9000）完全不同，无法与 OpenSSL、Wireshark、浏览器等标准
-  实现互通，仅限本库客户端与服务端之间使用。
-- **无抗 DoS 机制**：缺少 DTLS 的 `HelloVerifyRequest` 无状态 cookie，
-  服务端对任意伪造源地址的 ClientHello 都会建立会话状态。
-- **无握手分片 / 重传 / 乱序重组**：握手消息不按 `message_seq` 分片编号，
-  无 flight 超时重传；UDP 丢包（尤其大证书链跨多个数据报时）直接导致
-  握手失败（受 `set_handshake_timeout` 约束），由调用方重试整个握手。
-- **无防重放**：应用数据记录不带 epoch/sequence 滑动窗口，重放的旧数据报
-  会被当作新数据接受。
-
-**标准 DTLS 1.2/1.3 已完整提供**（见 [DTLS 1.2 / 1.3](#dtls-12--13rfc-6347--rfc-9147)），
-建议新代码直接使用标准 DTLS。`QUIC` 传输层（CRYPTO/STREAM 帧、连接迁移、
-拥塞控制）与 `HTTP/3`（RFC 9000/9114）仍列入后续版本计划。
-QUIC 所需的 TLS 层支持已完整提供（见 [QUIC v1 / v2](#quic-v1--v2rfc-9001--rfc-9369)）。
-在此之前，UDP 场景请评估上述缺陷，
-并优先考虑使用 TCP + TLS 或标准 DTLS 实现。
 ### 非阻塞模式（事件循环）
 
 `tls_connection` / `tls_listener` 支持非阻塞模式，便于在单线程事件循环中复用同一线程服务大量连接：
