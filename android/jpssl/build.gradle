@@ -10,7 +10,7 @@ plugins {
 android {
     namespace 'io.github.jpssl'
     compileSdk 34
-    // C++20 coroutine (<coroutine>) 需要 Clang 14+；r26b (Clang 17) 与 CI 安装版本对齐
+    // 协程 I/O 需要 C++20 coroutine（仅 C++20 构建启用）；r26b (Clang 17) 与 CI 安装版本对齐
     ndkVersion "26.1.10909125"
 
     defaultConfig {

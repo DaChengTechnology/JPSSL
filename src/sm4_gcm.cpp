@@ -66,7 +66,7 @@ static void sm4_gcm_make_j0(const uint8_t H[16],
         for (int i = 7; i >= 0; --i)
             gh_input.push_back((uint8_t)(iv_bits64 >> (i * 8)));
 
-        ghash(H, std::span<const uint8_t>(gh_input), j0);
+        ghash(H, jpssl::span<const uint8_t>(gh_input), j0);
     }
 }
 
@@ -187,7 +187,7 @@ static void sm4_gcm_ghash(const uint8_t H[16],
         gh_input.push_back((uint8_t)(aad_bits >> (i * 8)));
     for (int i = 7; i >= 0; --i)
         gh_input.push_back((uint8_t)(ct_bits >> (i * 8)));
-    ghash(H, std::span<const uint8_t>(gh_input), out);
+    ghash(H, jpssl::span<const uint8_t>(gh_input), out);
 }
 
 // ------------------------------------------------------------------------
@@ -196,8 +196,8 @@ static void sm4_gcm_ghash(const uint8_t H[16],
 
 void sm4_gcm_encrypt(const sm4_ctx* ctx,
                      const uint8_t* iv, size_t iv_len,
-                     std::span<const uint8_t> plaintext,
-                     std::span<const uint8_t> aad,
+                     jpssl::span<const uint8_t> plaintext,
+                     jpssl::span<const uint8_t> aad,
                      std::vector<uint8_t>& ciphertext,
                      uint8_t* tag, size_t tag_len) {
     // 1. H = SM4_encrypt(0^128)
@@ -241,8 +241,8 @@ void sm4_gcm_encrypt(const sm4_ctx* ctx,
 
 bool sm4_gcm_decrypt(const sm4_ctx* ctx,
                      const uint8_t* iv, size_t iv_len,
-                     std::span<const uint8_t> ciphertext,
-                     std::span<const uint8_t> aad,
+                     jpssl::span<const uint8_t> ciphertext,
+                     jpssl::span<const uint8_t> aad,
                      const uint8_t* tag, size_t tag_len,
                      std::vector<uint8_t>& plaintext) {
     // 1. H = SM4_encrypt(0^128)
@@ -299,7 +299,7 @@ bool sm4_gcm_decrypt(const sm4_ctx* ctx,
 void sm4_gcm_encrypt_inplace(const sm4_ctx* ctx,
                              const uint8_t* iv, size_t iv_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              uint8_t* tag, size_t tag_len) {
     uint8_t zero[16] = {};
     uint8_t H[16];
@@ -336,7 +336,7 @@ void sm4_gcm_encrypt_inplace(const sm4_ctx* ctx,
 bool sm4_gcm_decrypt_inplace(const sm4_ctx* ctx,
                              const uint8_t* iv, size_t iv_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              const uint8_t* tag, size_t tag_len) {
     uint8_t zero[16] = {};
     uint8_t H[16];

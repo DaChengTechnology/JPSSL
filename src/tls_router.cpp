@@ -137,8 +137,8 @@ case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
 }
 
 void aes_ctx_init(aes_context& ctx, const uint8_t* key, size_t key_len){
-    if(key_len==32) ctx.init(std::span<const uint8_t,32>(key,32));
-    else ctx.init(std::span<const uint8_t,16>(key,16));
+    if(key_len==32) ctx.init(jpssl::span<const uint8_t,32>(key,32));
+    else ctx.init(jpssl::span<const uint8_t,16>(key,16));
 }
 
 // raw CBC encrypt/decrypt (no padding), used for TLS 1.2 record layer
@@ -1350,7 +1350,7 @@ std::vector<uint8_t> tls_encrypt_handshake(tls_session& s, const uint8_t* hs_msg
 
     // RFC 8446 5.2：TLS 1.3 AEAD �?additional_data (AAD) = record �?5 字节
     uint8_t aad[5]={0x17,0x03,0x03,(uint8_t)(rlen>>8),(uint8_t)rlen};
-    std::span<const uint8_t> aad_span(aad,5);
+    jpssl::span<const uint8_t> aad_span(aad,5);
 
     std::vector<uint8_t> ciphertext;uint8_t tag[16];
     // RFC 8446 5.2：TLS 1.3 握手记录与应用程序记录使用相同的 AEAD 构造，
@@ -1410,36 +1410,36 @@ bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_t recor
     std::vector<uint8_t> inner;
     bool ok = false;
     // RFC 8446 5.2：AAD = record �?5 字节
-    std::span<const uint8_t> aad_span(record,5);
+    jpssl::span<const uint8_t> aad_span(record,5);
     switch(s.cipher_suite){
         case CipherSuite::TLS_AES_128_GCM_SHA256:
         case CipherSuite::TLS_AES_256_GCM_SHA384: {
             aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
-            ok = aes_gcm_decrypt_auto(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
+            ok = aes_gcm_decrypt_auto(ctx,nonce,12,jpssl::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
             break;
         }
         case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
             ok = chacha20_poly1305_decrypt(read_key, nonce,
-                                           std::span<const uint8_t>(ciphertext,ct_len),
+                                           jpssl::span<const uint8_t>(ciphertext,ct_len),
                                            aad_span, tag, inner);
             break;
         case CipherSuite::TLS_AES_128_CCM_SHA256:
         case CipherSuite::TLS_AES_128_CCM_8_SHA256: {
             aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
             ok = aes_ccm_decrypt(ctx, nonce, 12,
-                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 jpssl::span<const uint8_t>(ciphertext,ct_len),
                                  aad_span, tag, tag_len, inner);
             break;
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, read_key);
-            ok = sm4_gcm_decrypt(&s.sm4,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
+            ok = sm4_gcm_decrypt(&s.sm4,nonce,12,jpssl::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
             break;
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, read_key);
             ok = sm4_ccm_decrypt(&s.sm4, nonce, 12,
-                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 jpssl::span<const uint8_t>(ciphertext,ct_len),
                                  aad_span, tag, 16, inner);
             break;
         }
@@ -1704,7 +1704,7 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
             out.resize(body+inner_len+16);
             std::memcpy(out.data()+body, data, len);
             chacha20_poly1305_encrypt_inplace(write_key, cha_nonce, out.data()+body,
-                                              inner_len, std::span<const uint8_t>(aad, 13),
+                                              inner_len, jpssl::span<const uint8_t>(aad, 13),
                                               out.data()+body+inner_len);
         }else if(is_cbc){
             // RFC 5246 6.2.3.2 CBC suite:
@@ -1763,7 +1763,7 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
             out.resize(body+inner_len+16);
             std::memcpy(out.data()+body, data, len);
             aes_gcm_encrypt_inplace(ctx, nonce, 12, out.data()+body, inner_len,
-                                    std::span<const uint8_t>(aad, 13),
+                                    jpssl::span<const uint8_t>(aad, 13),
                                     out.data()+body+inner_len, 16);
         }
         return;
@@ -1789,7 +1789,7 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
             out[body+len]=(uint8_t)ct;
             uint8_t aad[5]={0x17,0x03,0x03,(uint8_t)(rlen>>8),(uint8_t)rlen};
             aes_gcm_encrypt_inplace(ctx, nonce, 12, out.data()+body, inner_len,
-                                    std::span<const uint8_t>(aad,5),
+                                    jpssl::span<const uint8_t>(aad,5),
                                     out.data()+body+inner_len, 16);
             return;
         }
@@ -1805,7 +1805,7 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
             uint8_t* inner=out.data()+body;
             uint8_t* tag=out.data()+body+inner_len;
             uint8_t aad[5]={0x17,0x03,0x03,(uint8_t)(rlen>>8),(uint8_t)rlen};
-            std::span<const uint8_t> aad_span(aad,5);
+            jpssl::span<const uint8_t> aad_span(aad,5);
             switch(s.cipher_suite){
                 case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
                     chacha20_poly1305_encrypt_inplace(write_key, nonce, inner, inner_len,
@@ -1874,8 +1874,8 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
             memcpy(cha_nonce, read_iv, 12);
             for (int i = 0; i < 8; ++i) cha_nonce[4+i] ^= (uint8_t)(seq >> (56 - i*8));
             if(!chacha20_poly1305_decrypt(read_key, cha_nonce,
-                    std::span<const uint8_t>(ciphertext,ct_len),
-                    std::span<const uint8_t>(aad,13), tag, inner)) return false;
+                    jpssl::span<const uint8_t>(ciphertext,ct_len),
+                    jpssl::span<const uint8_t>(aad,13), tag, inner)) return false;
         }else if(is_cbc){
             // RFC 5246 6.2.3.2: explicit IV(16) || AES-CBC(content || MAC || padding)
             const uint8_t* explicit_iv = record + 5;
@@ -1908,7 +1908,7 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
             memcpy(nonce,read_iv,4);
             memcpy(nonce+4,record+5,8);  // GCM explicit nonce
             aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
-            if(!aes_gcm_decrypt_auto(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),std::span<const uint8_t>(aad,13),tag,16,inner))
+            if(!aes_gcm_decrypt_auto(ctx,nonce,12,jpssl::span<const uint8_t>(ciphertext,ct_len),jpssl::span<const uint8_t>(aad,13),tag,16,inner))
                 return false;
         }
         if(inner.empty())return false;
@@ -1932,38 +1932,38 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
     std::vector<uint8_t> inner;
     bool ok = false;
     // RFC 8446 5.2：TLS 1.3 AEAD AAD = record �?5 字节
-    std::span<const uint8_t> aad_span(record,5);
+    jpssl::span<const uint8_t> aad_span(record,5);
     switch(s.cipher_suite){
         case CipherSuite::TLS_AES_128_GCM_SHA256:
         case CipherSuite::TLS_AES_256_GCM_SHA384: {
             aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
-            ok = aes_gcm_decrypt_auto(ctx,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
+            ok = aes_gcm_decrypt_auto(ctx,nonce,12,jpssl::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
             break;
         }
         case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
             ok = chacha20_poly1305_decrypt(read_key, nonce,
-                                           std::span<const uint8_t>(ciphertext,ct_len),
+                                           jpssl::span<const uint8_t>(ciphertext,ct_len),
                                            aad_span, tag, inner);
             break;
         case CipherSuite::TLS_AES_128_CCM_SHA256:
         case CipherSuite::TLS_AES_128_CCM_8_SHA256: {
             aes_context ctx;aes_ctx_init(ctx, read_key, aes_key_len(s.cipher_suite));
             ok = aes_ccm_decrypt(ctx, nonce, 12,
-                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 jpssl::span<const uint8_t>(ciphertext,ct_len),
                                  aad_span, tag, tag_len, inner);
             break;
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, read_key);
             ok = sm4_gcm_decrypt(&s.sm4, nonce, 12,
-                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 jpssl::span<const uint8_t>(ciphertext,ct_len),
                                  aad_span, tag, 16, inner);
             break;
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, read_key);
             ok = sm4_ccm_decrypt(&s.sm4, nonce, 12,
-                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 jpssl::span<const uint8_t>(ciphertext,ct_len),
                                  aad_span, tag, 16, inner);
             break;
         }

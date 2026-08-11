@@ -208,7 +208,7 @@ static double bench_jp_encrypt(const Opts& o, size_t total,
         run_records(total, rec, [&](uint64_t seq, size_t off, size_t len) {
             uint8_t iv[12];
             record_iv(base_iv, seq, iv);
-            enc(iv, std::span<const uint8_t>(plain + off, len), ct, tag);
+            enc(iv, jpssl::span<const uint8_t>(plain + off, len), ct, tag);
         });
     });
 }
@@ -224,7 +224,7 @@ static double bench_jp_decrypt(const Opts& o, size_t total,
         run_records(total, rec, [&](uint64_t seq, size_t off, size_t len) {
             uint8_t iv[12];
             record_iv(base_iv, seq, iv);
-            dec(iv, std::span<const uint8_t>(ct.data() + off, len), tag, pt);
+            dec(iv, jpssl::span<const uint8_t>(ct.data() + off, len), tag, pt);
         });
     });
 }
@@ -243,17 +243,17 @@ static void benchmark_gcm(const char* title, const char** suites, int bits,
     RAND_bytes(plain.data(), plain.size());
 
     aes_context ctx;
-    if (bits == 128) ctx.init(std::span<const uint8_t, 16>(key.data(), 16));
-    else if (bits == 192) ctx.init(std::span<const uint8_t, 24>(key.data(), 24));
-    else ctx.init(std::span<const uint8_t, 32>(key.data(), 32));
+    if (bits == 128) ctx.init(jpssl::span<const uint8_t, 16>(key.data(), 16));
+    else if (bits == 192) ctx.init(jpssl::span<const uint8_t, 24>(key.data(), 24));
+    else ctx.init(jpssl::span<const uint8_t, 32>(key.data(), 32));
 
     std::vector<uint8_t> ct, pt;
     uint8_t tag[16];
 
     // ── 正确性（与 OpenSSL 交叉验证）──
-    aes_gcm_encrypt_auto(ctx, iv.data(), 12, plain, std::span<const uint8_t>(), ct, tag, 16);
+    aes_gcm_encrypt_auto(ctx, iv.data(), 12, plain, jpssl::span<const uint8_t>(), ct, tag, 16);
     std::vector<uint8_t> ct2;
-    bool ok = aes_gcm_decrypt_auto(ctx, iv.data(), 12, ct, std::span<const uint8_t>(),
+    bool ok = aes_gcm_decrypt_auto(ctx, iv.data(), 12, ct, jpssl::span<const uint8_t>(),
                                    tag, 16, pt);
     TEST(std::string("jpssl AES-") + std::to_string(bits) + "-GCM round-trip", ok && pt == plain);
 
@@ -282,14 +282,14 @@ static void benchmark_gcm(const char* title, const char** suites, int bits,
     const size_t rec = (o.record_size && o.record_size < total) ? o.record_size : 0;
 
     double jp_enc_ms = bench_jp_encrypt(o, total, iv.data(), plain.data(), ct, jp_tag,
-        [&](const uint8_t* ivr, std::span<const uint8_t> p, std::vector<uint8_t>& c,
+        [&](const uint8_t* ivr, jpssl::span<const uint8_t> p, std::vector<uint8_t>& c,
             uint8_t* tg) {
-            aes_gcm_encrypt_auto(ctx, ivr, 12, p, std::span<const uint8_t>(), c, tg, 16);
+            aes_gcm_encrypt_auto(ctx, ivr, 12, p, jpssl::span<const uint8_t>(), c, tg, 16);
         });
     double jp_dec_ms = bench_jp_decrypt(o, total, iv.data(), ct, jp_tag, pt,
-        [&](const uint8_t* ivr, std::span<const uint8_t> c, const uint8_t* tg,
+        [&](const uint8_t* ivr, jpssl::span<const uint8_t> c, const uint8_t* tg,
             std::vector<uint8_t>& p) {
-            aes_gcm_decrypt_auto(ctx, ivr, 12, c, std::span<const uint8_t>(), tg, 16, p);
+            aes_gcm_decrypt_auto(ctx, ivr, 12, c, jpssl::span<const uint8_t>(), tg, 16, p);
         });
 
     double os_enc_ms = 0, os_dec_ms = 0;
@@ -355,8 +355,8 @@ static void benchmark_chacha(const char* title, const char** suites,
     std::vector<uint8_t> ct, pt;
     uint8_t tag[16];
 
-    chacha20_poly1305_encrypt(key, nonce, plain, std::span<const uint8_t>(), ct, tag);
-    bool ok = chacha20_poly1305_decrypt(key, nonce, ct, std::span<const uint8_t>(), tag, pt);
+    chacha20_poly1305_encrypt(key, nonce, plain, jpssl::span<const uint8_t>(), ct, tag);
+    bool ok = chacha20_poly1305_decrypt(key, nonce, ct, jpssl::span<const uint8_t>(), tag, pt);
     TEST("jpssl ChaCha20-Poly1305 round-trip", ok && pt == plain);
 
     EVP_CIPHER_CTX* ectx = EVP_CIPHER_CTX_new();
@@ -380,14 +380,14 @@ static void benchmark_chacha(const char* title, const char** suites,
     const size_t rec = (o.record_size && o.record_size < total) ? o.record_size : 0;
 
     double jp_enc_ms = bench_jp_encrypt(o, total, nonce, plain.data(), ct, jp_tag,
-        [&](const uint8_t* ivr, std::span<const uint8_t> p, std::vector<uint8_t>& c,
+        [&](const uint8_t* ivr, jpssl::span<const uint8_t> p, std::vector<uint8_t>& c,
             uint8_t* tg) {
-            chacha20_poly1305_encrypt(key, ivr, p, std::span<const uint8_t>(), c, tg);
+            chacha20_poly1305_encrypt(key, ivr, p, jpssl::span<const uint8_t>(), c, tg);
         });
     double jp_dec_ms = bench_jp_decrypt(o, total, nonce, ct, jp_tag, pt,
-        [&](const uint8_t* ivr, std::span<const uint8_t> c, const uint8_t* tg,
+        [&](const uint8_t* ivr, jpssl::span<const uint8_t> c, const uint8_t* tg,
             std::vector<uint8_t>& p) {
-            chacha20_poly1305_decrypt(key, ivr, c, std::span<const uint8_t>(), tg, p);
+            chacha20_poly1305_decrypt(key, ivr, c, jpssl::span<const uint8_t>(), tg, p);
         });
 
     double os_enc_ms = 0, os_dec_ms = 0;
@@ -455,10 +455,10 @@ static void benchmark_ccm(const char* title, const char** suites, int tag_len,
     uint8_t tag[16];
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
-    aes_ccm_encrypt(ctx, nonce, 12, plain, std::span<const uint8_t>(), ct, tag, tag_len);
-    bool ok = aes_ccm_decrypt(ctx, nonce, 12, ct, std::span<const uint8_t>(), tag, tag_len, pt);
+    aes_ccm_encrypt(ctx, nonce, 12, plain, jpssl::span<const uint8_t>(), ct, tag, tag_len);
+    bool ok = aes_ccm_decrypt(ctx, nonce, 12, ct, jpssl::span<const uint8_t>(), tag, tag_len, pt);
     TEST(std::string("jpssl AES-128-CCM-") + std::to_string(tag_len) + " round-trip",
          ok && pt == plain);
 
@@ -485,14 +485,14 @@ static void benchmark_ccm(const char* title, const char** suites, int tag_len,
     const size_t rec = (o.record_size && o.record_size < total) ? o.record_size : 0;
 
     double jp_enc_ms = bench_jp_encrypt(o, total, nonce, plain.data(), ct, jp_tag,
-        [&](const uint8_t* ivr, std::span<const uint8_t> p, std::vector<uint8_t>& c,
+        [&](const uint8_t* ivr, jpssl::span<const uint8_t> p, std::vector<uint8_t>& c,
             uint8_t* tg) {
-            aes_ccm_encrypt(ctx, ivr, 12, p, std::span<const uint8_t>(), c, tg, tag_len);
+            aes_ccm_encrypt(ctx, ivr, 12, p, jpssl::span<const uint8_t>(), c, tg, tag_len);
         });
     double jp_dec_ms = bench_jp_decrypt(o, total, nonce, ct, jp_tag, pt,
-        [&](const uint8_t* ivr, std::span<const uint8_t> c, const uint8_t* tg,
+        [&](const uint8_t* ivr, jpssl::span<const uint8_t> c, const uint8_t* tg,
             std::vector<uint8_t>& p) {
-            aes_ccm_decrypt(ctx, ivr, 12, c, std::span<const uint8_t>(), tg, tag_len, p);
+            aes_ccm_decrypt(ctx, ivr, 12, c, jpssl::span<const uint8_t>(), tg, tag_len, p);
         });
 
     double os_enc_ms = 0, os_dec_ms = 0;

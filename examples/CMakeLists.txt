@@ -13,6 +13,9 @@ add_executable(nonblocking_echo tls_socket/nonblocking_echo.cpp)
 target_include_directories(nonblocking_echo PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(nonblocking_echo PRIVATE jpssl_cpu)
 
-add_executable(coroutine_echo tls_socket/coroutine_echo.cpp)
-target_include_directories(coroutine_echo PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(coroutine_echo PRIVATE jpssl_cpu)
+# coroutine_echo 依赖 C++20 coroutine，仅在标准 >= C++20 时构建
+if(CMAKE_CXX_STANDARD GREATER_EQUAL 20)
+    add_executable(coroutine_echo tls_socket/coroutine_echo.cpp)
+    target_include_directories(coroutine_echo PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_link_libraries(coroutine_echo PRIVATE jpssl_cpu)
+endif()

@@ -20,7 +20,7 @@ namespace jpssl {
 //    Output     ct[k] = 密文 (256 字节 for 2048-bit)
 // ═══════════════════════════════════════════════════════════════════════
 
-bool rsaes_oaep_encrypt(const rsa_public_key& pub, std::span<const uint8_t> msg,
+bool rsaes_oaep_encrypt(const rsa_public_key& pub, jpssl::span<const uint8_t> msg,
                         const uint8_t* label, size_t labelLen,
                         uint8_t ct[256]) {
     (void)pub;(void)msg;(void)label;(void)labelLen;(void)ct;

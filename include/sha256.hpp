@@ -2,7 +2,7 @@
 /** sha256.hpp — SHA-256 哈希（FIPS 180-4） */
 #include <cstddef>
 #include <cstdint>
-#include <span>
+#include "jpssl_span.hpp"
 #include <string>
 namespace jpssl {
 inline constexpr size_t SHA256_DIGEST_SIZE=32, SHA256_BLOCK_SIZE=64;

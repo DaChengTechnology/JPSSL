@@ -158,20 +158,20 @@ static void quic_aead_seal(CipherSuite cs, const quic_packet_keys& k, uint64_t p
     if (cs == CipherSuite::TLS_CHACHA20_POLY1305_SHA256) {
         uint8_t tag[16];
         chacha20_poly1305_encrypt(k.key, nonce,
-                                  std::span<const uint8_t>(pt, pt_len),
-                                  std::span<const uint8_t>(aad, aad_len),
+                                  jpssl::span<const uint8_t>(pt, pt_len),
+                                  jpssl::span<const uint8_t>(aad, aad_len),
                                   out, tag);
         out.insert(out.end(), tag, tag + 16);
     } else {
         aes_context ctx;
         if (k.key_len == 32)
-            ctx.init(std::span<const uint8_t, 32>(k.key, 32));
+            ctx.init(jpssl::span<const uint8_t, 32>(k.key, 32));
         else
-            ctx.init(std::span<const uint8_t, 16>(k.key, 16));
+            ctx.init(jpssl::span<const uint8_t, 16>(k.key, 16));
         uint8_t tag[16];
         aes_gcm_encrypt(ctx, nonce, 12,
-                        std::span<const uint8_t>(pt, pt_len),
-                        std::span<const uint8_t>(aad, aad_len),
+                        jpssl::span<const uint8_t>(pt, pt_len),
+                        jpssl::span<const uint8_t>(aad, aad_len),
                         out, tag, 16);
         out.insert(out.end(), tag, tag + 16);
     }
@@ -186,18 +186,18 @@ static bool quic_aead_open(CipherSuite cs, const quic_packet_keys& k, uint64_t p
     quic_aead_nonce(k.iv, pn, nonce);
     if (cs == CipherSuite::TLS_CHACHA20_POLY1305_SHA256) {
         return chacha20_poly1305_decrypt(k.key, nonce,
-                                         std::span<const uint8_t>(ct, ct_len - 16),
-                                         std::span<const uint8_t>(aad, aad_len),
+                                         jpssl::span<const uint8_t>(ct, ct_len - 16),
+                                         jpssl::span<const uint8_t>(aad, aad_len),
                                          ct + ct_len - 16, pt);
     } else {
         aes_context ctx;
         if (k.key_len == 32)
-            ctx.init(std::span<const uint8_t, 32>(k.key, 32));
+            ctx.init(jpssl::span<const uint8_t, 32>(k.key, 32));
         else
-            ctx.init(std::span<const uint8_t, 16>(k.key, 16));
+            ctx.init(jpssl::span<const uint8_t, 16>(k.key, 16));
         return aes_gcm_decrypt(ctx, nonce, 12,
-                               std::span<const uint8_t>(ct, ct_len - 16),
-                               std::span<const uint8_t>(aad, aad_len),
+                               jpssl::span<const uint8_t>(ct, ct_len - 16),
+                               jpssl::span<const uint8_t>(aad, aad_len),
                                ct + ct_len - 16, 16, pt);
     }
 }

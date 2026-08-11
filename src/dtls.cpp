@@ -279,15 +279,15 @@ static bool aead_encrypt(CipherSuite cs, const uint8_t* key, size_t key_len,
                          const uint8_t* pt, size_t pt_len,
                          std::vector<uint8_t>& ct, uint8_t tag[16]) {
     if (suite_is_chacha20(cs)) {
-        chacha20_poly1305_encrypt(key, nonce, std::span<const uint8_t>(pt, pt_len),
-                                  std::span<const uint8_t>(aad, aad_len), ct, tag);
+        chacha20_poly1305_encrypt(key, nonce, jpssl::span<const uint8_t>(pt, pt_len),
+                                  jpssl::span<const uint8_t>(aad, aad_len), ct, tag);
         return true;
     }
     aes_context ctx;
-    if (key_len == 32) ctx.init(std::span<const uint8_t, 32>(key, 32));
-    else ctx.init(std::span<const uint8_t, 16>(key, 16));
-    aes_gcm_encrypt_auto(ctx, nonce, 12, std::span<const uint8_t>(pt, pt_len),
-                         std::span<const uint8_t>(aad, aad_len), ct, tag, 16);
+    if (key_len == 32) ctx.init(jpssl::span<const uint8_t, 32>(key, 32));
+    else ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
+    aes_gcm_encrypt_auto(ctx, nonce, 12, jpssl::span<const uint8_t>(pt, pt_len),
+                         jpssl::span<const uint8_t>(aad, aad_len), ct, tag, 16);
     return true;
 }
 static bool aead_decrypt(CipherSuite cs, const uint8_t* key, size_t key_len,
@@ -295,14 +295,14 @@ static bool aead_decrypt(CipherSuite cs, const uint8_t* key, size_t key_len,
                          const uint8_t* ct, size_t ct_len, const uint8_t tag[16],
                          std::vector<uint8_t>& pt) {
     if (suite_is_chacha20(cs)) {
-        return chacha20_poly1305_decrypt(key, nonce, std::span<const uint8_t>(ct, ct_len),
-                                         std::span<const uint8_t>(aad, aad_len), tag, pt);
+        return chacha20_poly1305_decrypt(key, nonce, jpssl::span<const uint8_t>(ct, ct_len),
+                                         jpssl::span<const uint8_t>(aad, aad_len), tag, pt);
     }
     aes_context ctx;
-    if (key_len == 32) ctx.init(std::span<const uint8_t, 32>(key, 32));
-    else ctx.init(std::span<const uint8_t, 16>(key, 16));
-    return aes_gcm_decrypt_auto(ctx, nonce, 12, std::span<const uint8_t>(ct, ct_len),
-                                std::span<const uint8_t>(aad, aad_len), tag, 16, pt);
+    if (key_len == 32) ctx.init(jpssl::span<const uint8_t, 32>(key, 32));
+    else ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
+    return aes_gcm_decrypt_auto(ctx, nonce, 12, jpssl::span<const uint8_t>(ct, ct_len),
+                                jpssl::span<const uint8_t>(aad, aad_len), tag, 16, pt);
 }
 
 // ---- DTLS 1.2 record layer (RFC 6347 4.1) --------------------------------
@@ -445,8 +445,8 @@ static void dtls13_sn_mask(CipherSuite cs, const uint8_t* sn_key, size_t sn_key_
         memcpy(mask, block, 16);
     } else {
         aes_context ctx;
-        if (sn_key_len == 32) ctx.init(std::span<const uint8_t, 32>(sn_key, 32));
-        else ctx.init(std::span<const uint8_t, 16>(sn_key, 16));
+        if (sn_key_len == 32) ctx.init(jpssl::span<const uint8_t, 32>(sn_key, 32));
+        else ctx.init(jpssl::span<const uint8_t, 16>(sn_key, 16));
         aes_encrypt_block(ctx, ct, mask);
     }
 }

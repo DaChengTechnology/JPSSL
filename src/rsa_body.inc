@@ -588,7 +588,7 @@ bool CAT(keygen_fn_,K)(PUB_KEY&pub,PRIV_KEY&prv){
     prv.p=p;prv.q=q;return 1;
 }
 
-void CAT(enc_fn_,K)(const PUB_KEY&pub,std::span<const uint8_t> pt,uint8_t*ct){size_t pl=pt.size(),bl=K*8;uint8_t pad[512]={};pad[0]=0;pad[1]=2;size_t pdl=bl-pl-3;if(pdl){secure_rand_bytes(pad+2,pdl);for(size_t i=0;i<pdl;++i)if(pad[2+i]==0)pad[2+i]=1;}pad[2+pdl]=0;memcpy(pad+3+pdl,pt.data(),pl);BN m=BN::from_bytes(pad,bl),c;MONT_CTX mc=CAT(mont_init_cached_,K)(pub.n);if(pub.e.bit_length()>=64)CAT(mont_modpow_win_fn_,K)(c,m,pub.e,mc,pub.n);else CAT(mont_modpow_fn_,K)(c,m,pub.e,mc,pub.n);c.to_bytes(ct);}
+void CAT(enc_fn_,K)(const PUB_KEY&pub,jpssl::span<const uint8_t> pt,uint8_t*ct){size_t pl=pt.size(),bl=K*8;uint8_t pad[512]={};pad[0]=0;pad[1]=2;size_t pdl=bl-pl-3;if(pdl){secure_rand_bytes(pad+2,pdl);for(size_t i=0;i<pdl;++i)if(pad[2+i]==0)pad[2+i]=1;}pad[2+pdl]=0;memcpy(pad+3+pdl,pt.data(),pl);BN m=BN::from_bytes(pad,bl),c;MONT_CTX mc=CAT(mont_init_cached_,K)(pub.n);if(pub.e.bit_length()>=64)CAT(mont_modpow_win_fn_,K)(c,m,pub.e,mc,pub.n);else CAT(mont_modpow_fn_,K)(c,m,pub.e,mc,pub.n);c.to_bytes(ct);}
 bool CAT(dec_fn_,K)(const PRIV_KEY&prv,const uint8_t*ct,std::vector<uint8_t>&pt){size_t bl=K*8;BN c=BN::from_bytes(ct,bl),m;if(!prv.p.is_zero()&&!prv.q.is_zero()){/* CRT fast path (half-size 8-bit window): m1=c^dP mod p, m2=c^dQ mod q, Garner combine */MONT_CTX mcp=CAT(mont_init_mp_,K)(prv.p),mcq=CAT(mont_init_mp_,K)(prv.q);BN Rh_p,R2h_p,Rh_q,R2h_q;CAT(half_rh_get_,K)(prv.p,Rh_p,R2h_p);CAT(half_rh_get_,K)(prv.q,Rh_q,R2h_q);BN m1,m2;
 #ifdef _OPENMP
 /* CRT two modpows fully independent -> OpenMP dual-path parallel;

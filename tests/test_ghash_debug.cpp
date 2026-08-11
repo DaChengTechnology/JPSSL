@@ -51,7 +51,7 @@ int main() {
     };
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     // Compute H = AES_encrypt(K, 0^128)
     uint8_t H[16], zero[16] = {};

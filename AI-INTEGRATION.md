@@ -8,7 +8,7 @@
 
 ## 1. 一句话概览
 
-jpssl 是一个 **C++20 跨平台密码学库**，无第三方运行时依赖：
+jpssl 是一个 **C++17 跨平台密码学库**，无第三方运行时依赖：
 
 - 对称加密：AES（ECB/CBC/GCM/CCM）、ChaCha20-Poly1305、SM4
 - 哈希 / MAC / KDF：SHA-1/2/3、SM3、HMAC、HKDF
@@ -45,7 +45,7 @@ namespace jpssl::x509 {  // 证书：der 编解码 / pem / 证书链 ...
 
 ## 3. 构建（每个 AI 第一件事）
 
-环境要求：CMake ≥ 3.20，C++20，GCC 13+ / Clang 16+ / MSVC（VS 2019 16.10+ 或 2022+）。库本身**不依赖 OpenSSL**（OpenSSL 只用于对比测试）。
+环境要求：CMake ≥ 3.20，C++17，GCC 7+ / Clang 7+ / MSVC（VS 2019 16.10+ 或 2022+）；协程 I/O 需 C++20。库本身**不依赖 OpenSSL**（OpenSSL 只用于对比测试）。
 
 ### Linux / macOS
 
@@ -91,8 +91,8 @@ ctest --test-dir build-win -C Release --output-on-failure
 用 `cl.exe` 手工编译小工具时，仓库源文件含 **UTF-8 中文注释**，而 MSVC 默认按 GBK(936) 解释，会报奇怪错误：
 
 ```powershell
-# 必须加 /std:c++20 /utf-8 /MD（库是动态运行时编译的）
-cl /nologo /O2 /std:c++20 /EHsc /MD /utf-8 /I include my_probe.cpp `
+# 必须加 /std:c++17 /utf-8 /MD（库是动态运行时编译的）
+cl /nologo /O2 /std:c++17 /EHsc /MD /utf-8 /I include my_probe.cpp `
   /link /LIBPATH:build-win-test\Release jpssl_cpu_static.lib ws2_32.lib bcrypt.lib
 ```
 
@@ -348,7 +348,7 @@ int main() {
 |---|---|---|
 | MSVC 手工编译报 `hex 未声明`/乱码 | 源文件 UTF-8 中文注释被当 GBK 解析 | `cl` 加 `/utf-8` |
 | `LNK2038 RuntimeLibrary 不匹配` | 库是 `/MD` 编译，你的探针是 `/MT` | `cl` 加 `/MD` |
-| `std::span 不是 std 成员` | 用了 C++17 | `cl` 加 `/std:c++20` |
+| `std::span 不是 std 成员` | 缺少兼容头 | 项目内置 `jpssl_span.hpp`（`jpssl::span`），无需手改 |
 | `tls_session` 拷贝编译失败 | 有人把成员改成了 `unique_ptr` | 用 `shared_ptr` 或深拷贝 |
 | TLS 1.2 RSA 握手失败/空密钥 | `rsa_key` 未分配 | 检查 `tls12_make_server_flight` 注入路径 |
 | P-256 汇编符号找不到 | `.asm` 没加进 `CMakeLists.txt` | 追加 `CPU_SOURCES` 并重新 configure |

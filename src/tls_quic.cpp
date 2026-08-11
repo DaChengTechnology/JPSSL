@@ -310,8 +310,8 @@ bool tls_quic_header_protection_mask(CipherSuite cs, const uint8_t* hp_key, size
     // AES 套件（AES-128/256）：mask = AES-ECB(hp_key, sample)[0..mask_len]
     if ((hp_len != 16 && hp_len != 32) || sample_len < 16) return false;
     aes_context ctx;
-    if (hp_len == 32) ctx.init(std::span<const uint8_t, 32>(hp_key, 32));
-    else ctx.init(std::span<const uint8_t, 16>(hp_key, 16));
+    if (hp_len == 32) ctx.init(jpssl::span<const uint8_t, 32>(hp_key, 32));
+    else ctx.init(jpssl::span<const uint8_t, 16>(hp_key, 16));
     uint8_t cipher[16];
     aes_encrypt_block(ctx, sample, cipher);
     memcpy(mask, cipher, mask_len);

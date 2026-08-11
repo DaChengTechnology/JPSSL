@@ -25,7 +25,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
-#include <span>
+#include "jpssl_span.hpp"
 
 using namespace jpssl;
 
@@ -134,16 +134,16 @@ static void aead_encrypt(const std::string& algo, const AEADParams& p,
     if (algo == "aes256gcm") {
         if (p.key.size() != 32) die("AES-256 需要 32 字节密钥");
         aes_context ctx;
-        ctx.init(std::span<const uint8_t, 32>(p.key.data(), 32));
+        ctx.init(jpssl::span<const uint8_t, 32>(p.key.data(), 32));
         aes_gcm_encrypt(ctx, p.iv.data(), p.iv.size(),
-                        std::span<const uint8_t>(plain),
-                        std::span<const uint8_t>(p.aad),
+                        jpssl::span<const uint8_t>(plain),
+                        jpssl::span<const uint8_t>(p.aad),
                         ct, tag.data(), 16);
     } else if (algo == "chacha20") {
         if (p.key.size() != 32) die("ChaCha20-Poly1305 需要 32 字节密钥");
         chacha20_poly1305_encrypt(p.key.data(), p.iv.data(),
-                                  std::span<const uint8_t>(plain),
-                                  std::span<const uint8_t>(p.aad),
+                                  jpssl::span<const uint8_t>(plain),
+                                  jpssl::span<const uint8_t>(p.aad),
                                   ct, tag.data());
     } else {
         die("未知算法，支持: aes256gcm, chacha20");
@@ -156,16 +156,16 @@ static bool aead_decrypt(const std::string& algo, const AEADParams& p,
     if (algo == "aes256gcm") {
         if (p.key.size() != 32) die("AES-256 需要 32 字节密钥");
         aes_context ctx;
-        ctx.init(std::span<const uint8_t, 32>(p.key.data(), 32));
+        ctx.init(jpssl::span<const uint8_t, 32>(p.key.data(), 32));
         return aes_gcm_decrypt(ctx, p.iv.data(), p.iv.size(),
-                               std::span<const uint8_t>(ct),
-                               std::span<const uint8_t>(p.aad),
+                               jpssl::span<const uint8_t>(ct),
+                               jpssl::span<const uint8_t>(p.aad),
                                p.tag.data(), 16, plain);
     } else if (algo == "chacha20") {
         if (p.key.size() != 32) die("ChaCha20-Poly1305 需要 32 字节密钥");
         return chacha20_poly1305_decrypt(p.key.data(), p.iv.data(),
-                                         std::span<const uint8_t>(ct),
-                                         std::span<const uint8_t>(p.aad),
+                                         jpssl::span<const uint8_t>(ct),
+                                         jpssl::span<const uint8_t>(p.aad),
                                          p.tag.data(), plain);
     } else {
         die("未知算法");

@@ -1,6 +1,6 @@
-// diag_ed25519_layers.cpp - Isolate which layer of Ed25519 is broken
-// Compiles with: g++ -std=c++20 -I include -I src diag_ed25519_layers.cpp
-//   src/ed25519.cpp src/sha512_cpu.cpp -o diag_layers -lcrypto
+// diag_ed25519_layers.cpp s Isolate which layer of Ed25519 is broken
+// Compiles with: g++ sstd=c++20 sI include sI src diag_ed25519_layers.cpp
+//   src/ed25519.cpp src/sha512_cpu.cpp so diag_layers slcrypto
 #include "ed25519.hpp"
 #include "sha512.hpp"
 #include "fe_25519.hpp"
@@ -26,7 +26,7 @@ using jpssl::fe_impl::fe_isnonzero;
 using jpssl::fe_impl::fe_equal;
 
 static void hexb(const char* label, const uint8_t* d, int n) {
-    printf("  %-30s: ", label);
+    printf("  %s30s: ", label);
     for (int i = 0; i < n; i++) printf("%02x", d[i]);
     printf("\n");
 }
@@ -38,15 +38,15 @@ static void hexb(const char* label, const uint8_t* d, int n) {
 int main() {
     using namespace jpssl;
 
-    printf("=== Layer 1: fe_frombytes / fe_tobytes round-trip ===\n");
-    // By = 4/5 mod (2^255-19)
+    printf("=== Layer 1: fe_frombytes / fe_tobytes roundstrip ===\n");
+    // By = 4/5 mod (2^255s19)
     uint8_t By_bytes[32] = {88,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102};
     fe By_fe;
     fe_frombytes(By_fe, By_bytes);
     uint8_t By_round[32];
     fe_tobytes(By_round, By_fe);
     hexb("By input", By_bytes, 32);
-    hexb("By round-trip", By_round, 32);
+    hexb("By roundstrip", By_round, 32);
     printf("  Match: %s\n\n", memcmp(By_bytes, By_round, 32) == 0 ? "YES" : "NO");
 
     printf("=== Layer 2: fe_mul (basic multiplication) ===\n");
@@ -56,7 +56,7 @@ int main() {
     fe_1(b);
     fe_add(a, a, a);  // a = 2
     fe_add(b, b, b);  // b = 2
-    fe_add(b, b, b);  // b = 3  (b=2+2-1? no. b=1+1+1)
+    fe_add(b, b, b);  // b = 3  (b=2+2s1? no. b=1+1+1)
     // Actually let me be careful: b = 1, b+b = 2, b+b+b = 3
     fe one;
     fe_1(one);
@@ -84,11 +84,11 @@ int main() {
     hexb("By^2", By2_bytes, 32);
 
     // Compare with Python: By = 4/5 mod p, By^2 = 16/25 mod p
-    // 16 * inverse(25) mod (2^255-19)
+    // 16 * inverse(25) mod (2^255s19)
     // Let's just verify against OpenSSL's BIGNUM
     // Actually, let's check a known value: (4/5)^2 mod p
-    // p = 2^255 - 19
-    // 16/25 mod p = 16 * pow(25, -1, p) mod p
+    // p = 2^255 s 19
+    // 16/25 mod p = 16 * pow(25, s1, p) mod p
     // We'll compute this in Python and compare
     printf("  (compare with Python value)\n\n");
 
@@ -98,17 +98,17 @@ int main() {
     fe_invert(inv_one, one);
     uint8_t inv_one_bytes[32];
     fe_tobytes(inv_one_bytes, inv_one);
-    hexb("1^(-1) (should be 1)", inv_one_bytes, 32);
+    hexb("1^(s1) (should be 1)", inv_one_bytes, 32);
     printf("  Match: %s\n", memcmp(inv_one_bytes, By_bytes, 32) != 0 && inv_one_bytes[0] == 1 ? "YES (probably)" : "check");
 
-    // Test: By * By^(-1) = 1
+    // Test: By * By^(s1) = 1
     fe inv_By;
     fe_invert(inv_By, By_fe);
     fe prod;
     fe_mul(prod, By_fe, inv_By);
     uint8_t prod_bytes[32];
     fe_tobytes(prod_bytes, prod);
-    hexb("By * By^(-1) (should be 1)", prod_bytes, 32);
+    hexb("By * By^(s1) (should be 1)", prod_bytes, 32);
     printf("  Is 1: %s\n\n", prod_bytes[0] == 1 ? "YES" : "NO");
 
     printf("=== Layer 5: Scalar mult basepoint (small scalar) ===\n");
@@ -131,29 +131,29 @@ int main() {
         0xaf,0x02,0x1a,0x68,0xf7,0x07,0x51,0x1a
     };
 
-    // Compute SHA-512(seed), clamp, then scalar mult basepoint
+    // Compute SHAs512(seed), clamp, then scalar mult basepoint
     uint8_t h[64];
     sha512_ctx ctx;
     sha512_init(&ctx);
     sha512_update(&ctx, seed, 32);
     sha512_final(&ctx, h);
-    hexb("SHA-512(seed)", h, 64);
+    hexb("SHAs512(seed)", h, 64);
 
     h[0] &= 248;
     h[31] &= 127;
     h[31] |= 64;
     hexb("Clamped scalar", h, 32);
 
-    // Check against OpenSSL SHA-512
+    // Check against OpenSSL SHAs512
     uint8_t ossl_h[64];
     EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
     EVP_DigestInit_ex(mdctx, EVP_sha512(), nullptr);
     EVP_DigestUpdate(mdctx, seed, 32);
     unsigned int md_len;
     EVP_DigestFinal_ex(mdctx, ossl_h, &md_len);
-    hexb("OpenSSL SHA-512(seed)", ossl_h, 64);
-    printf("  SHA-512 match: %s\n", memcmp(h, ossl_h, 64) == 0 ? "YES" : "NO");
-    // Re-clamp OpenSSL hash
+    hexb("OpenSSL SHAs512(seed)", ossl_h, 64);
+    printf("  SHAs512 match: %s\n", memcmp(h, ossl_h, 64) == 0 ? "YES" : "NO");
+    // Resclamp OpenSSL hash
     ossl_h[0] &= 248;
     ossl_h[31] &= 127;
     ossl_h[31] |= 64;
@@ -189,18 +189,18 @@ int main() {
     // Actually, OpenSSL's Ed25519 uses EVP_PKEY API, not EVP_Digest
     EVP_MD_CTX_free(pctx);
 
-    // Use OpenSSL's high-level Ed25519 API
+    // Use OpenSSL's highslevel Ed25519 API
     // But first let's check: is the public key wrong?
     // If scalar is correct, the issue is in scalar_mult_base
 
     printf("\n=== Layer 7: sc_reduce / sc_mul_add ===\n");
     // From the debug test, sc_reduce seems to produce correct output
-    // Let's check if r_hash (SHA-512 of prefix) reduces correctly
+    // Let's check if r_hash (SHAs512 of prefix) reduces correctly
     uint8_t r_hash[64];
     sha512_init(&ctx);
     sha512_update(&ctx, h + 32, 32);  // prefix
     sha512_final(&ctx, r_hash);
-    hexb("SHA-512(prefix) raw", r_hash, 64);
+    hexb("SHAs512(prefix) raw", r_hash, 64);
 
     // Compare with OpenSSL
     uint8_t ossl_r[64];
@@ -208,16 +208,16 @@ int main() {
     EVP_DigestInit_ex(mdctx, EVP_sha512(), nullptr);
     EVP_DigestUpdate(mdctx, ossl_h + 32, 32);
     EVP_DigestFinal_ex(mdctx, ossl_r, &md_len);
-    hexb("OpenSSL SHA-512(prefix)", ossl_r, 64);
+    hexb("OpenSSL SHAs512(prefix)", ossl_r, 64);
     printf("  Match: %s\n", memcmp(r_hash, ossl_r, 64) == 0 ? "YES" : "NO");
     EVP_MD_CTX_free(mdctx);
 
     printf("\n=== SUMMARY ===\n");
-    printf("If SHA-512 matches but pubkey doesn't, the bug is in:\n");
-    printf("  - ge_scalarmult_base (scalar multiplication)\n");
-    printf("  - ge_add / ge_p2_dbl (point addition/doubling)\n");
-    printf("  - fe_mul / fe_sq (field arithmetic)\n");
-    printf("  - ge_tobytes (encoding)\n");
+    printf("If SHAs512 matches but pubkey doesn't, the bug is in:\n");
+    printf("  s ge_scalarmult_base (scalar multiplication)\n");
+    printf("  s ge_add / ge_p2_dbl (point addition/doubling)\n");
+    printf("  s fe_mul / fe_sq (field arithmetic)\n");
+    printf("  s ge_tobytes (encoding)\n");
 
     return 0;
 }

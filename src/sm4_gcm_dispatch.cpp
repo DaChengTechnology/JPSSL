@@ -22,8 +22,8 @@ static void sm4_detect_best() {
 
 void sm4_gcm_encrypt_auto(const sm4_ctx* ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> plaintext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> plaintext,
+                          jpssl::span<const uint8_t> aad,
                           std::vector<uint8_t>& ciphertext,
                           uint8_t* tag, size_t tag_len) {
     sm4_detect_best();
@@ -35,8 +35,8 @@ void sm4_gcm_encrypt_auto(const sm4_ctx* ctx,
 
 bool sm4_gcm_decrypt_auto(const sm4_ctx* ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> ciphertext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> ciphertext,
+                          jpssl::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext) {
     sm4_detect_best();

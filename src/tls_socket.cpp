@@ -130,6 +130,7 @@ void reset_session_preserving_config(tls_session& s) {
 
 // poll 多个 fd（POSIX poll / Windows select）。就绪 fd 的 revents 被设置。
 // 返回就绪数量；0 超时；<0 错误。
+#if JPSSL_HAS_COROUTINE
 static int poll_multi(std::vector<pollfd>& pfds, int timeout_ms) {
 #ifdef _WIN32
     fd_set rfds, wfds;
@@ -183,6 +184,7 @@ struct socket_wait_awaiter {
     }
     void await_resume() noexcept {}
 };
+#endif // JPSSL_HAS_COROUTINE
 
 void set_err(std::string* error, const std::string& msg) {
     if (error) *error = msg;
@@ -243,6 +245,7 @@ bool tls_socket_init(std::string* error) {
 // tls_co_executor —— 单线程 poll 驱动
 // ============================================================================
 
+#if JPSSL_HAS_COROUTINE
 void tls_co_executor::add_waiter(int fd, bool for_write,
                                  std::coroutine_handle<> h) {
     waiters_.push_back({fd, for_write, h});
@@ -289,6 +292,7 @@ bool tls_co_executor::run_once(int timeout_ms) {
 void tls_co_executor::run(int timeout_ms) {
     while (!waiters_.empty()) run_once(timeout_ms);
 }
+#endif // JPSSL_HAS_COROUTINE
 
 // ============================================================================
 // tls_connection
@@ -1189,6 +1193,7 @@ bool tls_connection::recv(std::vector<uint8_t>& out, std::string* error) {
 
 // 协程版：从 socket 读入数据追加到 rbuf_，直到 rbuf_.size() >= min_total。
 // would-block 时挂起等待可读（由执行器恢复），不阻塞线程。
+#if JPSSL_HAS_COROUTINE
 tls_co_task<bool> tls_connection::co_fill_rbuf(size_t min_total,
                                                std::string* error) {
     if (!open_ || sock_ == INVALID_SOCKET_HANDLE) {
@@ -1373,6 +1378,7 @@ tls_co_task<bool> tls_connection::co_recv(std::vector<uint8_t>& out,
     }
     co_return got_app;
 }
+#endif // JPSSL_HAS_COROUTINE
 
 bool tls_connection::set_nonblocking(bool enable, std::string* error) {
     nonblocking_ = enable;

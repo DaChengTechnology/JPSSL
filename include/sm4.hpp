@@ -9,7 +9,7 @@
  */
 #include <cstddef>
 #include <cstdint>
-#include <span>
+#include "jpssl_span.hpp"
 #include <string>
 #include <vector>
 
@@ -49,8 +49,8 @@ void sm4_decrypt_block_neon(const uint32_t rk[32], const uint8_t in[SM4_BLOCK_SI
 
 /// ECB 加密：数据长度必须是 16 字节的倍数
 inline void sm4_ecb_encrypt(const sm4_ctx* ctx,
-                            std::span<const uint8_t> plain,
-                            std::span<uint8_t> cipher) {
+                            jpssl::span<const uint8_t> plain,
+                            jpssl::span<uint8_t> cipher) {
     size_t n = plain.size();
     for (size_t i = 0; i < n; i += SM4_BLOCK_SIZE)
         sm4_encrypt_block(ctx, &plain[i], &cipher[i]);
@@ -58,8 +58,8 @@ inline void sm4_ecb_encrypt(const sm4_ctx* ctx,
 
 /// ECB 解密：数据长度必须是 16 字节的倍数
 inline void sm4_ecb_decrypt(const sm4_ctx* ctx,
-                            std::span<const uint8_t> cipher,
-                            std::span<uint8_t> plain) {
+                            jpssl::span<const uint8_t> cipher,
+                            jpssl::span<uint8_t> plain) {
     size_t n = cipher.size();
     for (size_t i = 0; i < n; i += SM4_BLOCK_SIZE)
         sm4_decrypt_block(ctx, &cipher[i], &plain[i]);
@@ -70,12 +70,12 @@ inline void sm4_ecb_decrypt(const sm4_ctx* ctx,
 /// CBC 加密（PKCS#7 填充），返回密文（out 长度 = (in.size() / 16 + 1) * 16）
 std::vector<uint8_t> sm4_cbc_encrypt(const sm4_ctx* ctx,
                                      const uint8_t iv[SM4_BLOCK_SIZE],
-                                     std::span<const uint8_t> plain);
+                                     jpssl::span<const uint8_t> plain);
 
 /// CBC 解密（去除 PKCS#7 填充），返回明文
 std::vector<uint8_t> sm4_cbc_decrypt(const sm4_ctx* ctx,
                                      const uint8_t iv[SM4_BLOCK_SIZE],
-                                     std::span<const uint8_t> cipher);
+                                     jpssl::span<const uint8_t> cipher);
 
 // ── 便捷 API ────────────────────────────────────────────────────────────
 

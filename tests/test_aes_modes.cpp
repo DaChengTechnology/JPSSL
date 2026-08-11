@@ -26,7 +26,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <span>
+#include "jpssl_span.hpp"
 #include <string>
 #include <vector>
 
@@ -67,9 +67,9 @@ static std::vector<uint8_t> rand_bytes(size_t n) {
 static aes_context make_ctx(const std::vector<uint8_t>& key) {
     aes_context ctx;
     switch (key.size()) {
-        case 16: ctx.init(std::span<const uint8_t, 16>(key.data(), 16)); break;
-        case 24: ctx.init(std::span<const uint8_t, 24>(key.data(), 24)); break;
-        case 32: ctx.init(std::span<const uint8_t, 32>(key.data(), 32)); break;
+        case 16: ctx.init(jpssl::span<const uint8_t, 16>(key.data(), 16)); break;
+        case 24: ctx.init(jpssl::span<const uint8_t, 24>(key.data(), 24)); break;
+        case 32: ctx.init(jpssl::span<const uint8_t, 32>(key.data(), 32)); break;
     }
     return ctx;
 }
@@ -528,10 +528,10 @@ namespace {
 /// 对给定 GCM 加密/解密函数对做一轮完整验证，与软件参考实现一致性由调用方断言。
 struct gcm_pair {
     void (*enc)(const aes_context&, const uint8_t*, size_t,
-                std::span<const uint8_t>, std::span<const uint8_t>,
+                jpssl::span<const uint8_t>, jpssl::span<const uint8_t>,
                 std::vector<uint8_t>&, uint8_t*, size_t);
     bool (*dec)(const aes_context&, const uint8_t*, size_t,
-                std::span<const uint8_t>, std::span<const uint8_t>,
+                jpssl::span<const uint8_t>, jpssl::span<const uint8_t>,
                 const uint8_t*, size_t, std::vector<uint8_t>&);
     const char* label;
 };

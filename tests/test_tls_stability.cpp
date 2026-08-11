@@ -319,7 +319,7 @@ void run_tls12_stress(const CertSet& rsa, const Options& opt, PhaseStats& stats)
         const tls_certificate* cert = rsa.mgr.get_default_certificate();
         if (ok && cert) {
             rsa_encrypt(cert->pub.rsa,
-                        std::span<const uint8_t>(pre_master, 48), encrypted_pms);
+                        jpssl::span<const uint8_t>(pre_master, 48), encrypted_pms);
         } else if (ok) {
             report_fail("TLS1.2 未找到 RSA 证书", i, "rsa");
             ok = false;

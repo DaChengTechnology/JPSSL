@@ -752,7 +752,7 @@ std::vector<uint8_t> tls13_encrypt_early_data(tls_session& s,
     size_t tag_len=tls_aead_tag_len(s.cipher_suite);
     // RFC 8446 5.2：AAD = record �?5 字节（early data record 同样适用�?
     uint8_t aad[5]={0x17,0x03,0x03,(uint8_t)((inner.size()+tag_len)>>8),(uint8_t)(inner.size()+tag_len)};
-    std::span<const uint8_t> aad_span(aad,5);
+    jpssl::span<const uint8_t> aad_span(aad,5);
     // Inline AEAD dispatch
     switch(s.cipher_suite){
         case CipherSuite::TLS_AES_128_GCM_SHA256:

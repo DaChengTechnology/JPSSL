@@ -14,7 +14,7 @@
 #include <immintrin.h>
 #include <cstdint>
 #include <cstring>
-#include <span>
+#include "jpssl_span.hpp"
 
 namespace jpssl {
 
@@ -154,8 +154,8 @@ static void chacha20_blocks8_xor(const uint8_t key[32], uint32_t base_counter,
 /// AVX2 流加密入口
 void chacha20_crypt_avx2(const uint8_t key[32], uint32_t counter,
                          const uint8_t nonce[12],
-                         std::span<const uint8_t> input,
-                         std::span<uint8_t> output) {
+                         jpssl::span<const uint8_t> input,
+                         jpssl::span<uint8_t> output) {
     size_t pos = 0;
 
     // 主循环：每次 512 字节（8 块）

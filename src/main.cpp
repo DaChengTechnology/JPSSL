@@ -77,7 +77,7 @@ static int test_single_block() {
     };
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>{key});
+    ctx.init(jpssl::span<const uint8_t, 16>{key});
 
     print_hex(key, 16, "  Key     ");
     print_hex(plain, 16, "  Plain   ");
@@ -119,7 +119,7 @@ static int test_cpu_ecb() {
     auto plain = random_data(num_blocks * 16);
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key.data(), 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key.data(), 16));
 
     // 加密
     std::vector<uint8_t> cipher(num_blocks * 16);
@@ -153,7 +153,7 @@ static int test_gpu_ecb() {
 
     // CPU 加密作为参考
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key.data(), 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key.data(), 16));
 
     std::vector<uint8_t> cpu_cipher(num_blocks * 16);
     aes_encrypt_ecb(ctx, plain, cpu_cipher);
@@ -212,7 +212,7 @@ static int test_benchmark() {
     auto plain = random_data(num_blocks * 16);
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key.data(), 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key.data(), 16));
 
     std::vector<uint8_t> cipher(num_blocks * 16);
     std::vector<uint8_t> recovered(num_blocks * 16);
@@ -438,11 +438,11 @@ static int test_cbc() {
     };
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     // Encrypt
     std::vector<uint8_t> ct;
-    aes_cbc_encrypt(ctx, iv, std::span<const uint8_t>(plaintext, 64), ct);
+    aes_cbc_encrypt(ctx, iv, jpssl::span<const uint8_t>(plaintext, 64), ct);
 
     if (ct.size() != 80) {
         std::printf("  FAIL: expected 80 bytes ciphertext, got %zu\n", ct.size());
@@ -472,7 +472,7 @@ static int test_cbc() {
     auto rdata  = random_data(12345);  // arbitrary length
 
     aes_context rctx;
-    rctx.init(std::span<const uint8_t, 16>(rkey.data(), 16));
+    rctx.init(jpssl::span<const uint8_t, 16>(rkey.data(), 16));
 
     std::vector<uint8_t> rct;
     aes_cbc_encrypt(rctx, riv.data(), rdata, rct);
@@ -515,20 +515,20 @@ static int test_gcm() {
     };
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     // Encrypt
     std::vector<uint8_t> ct;
     uint8_t tag[16];
     aes_gcm_encrypt(ctx, iv, 12,
-                    std::span<const uint8_t>(plaintext, std::strlen((const char*)plaintext)),
-                    std::span<const uint8_t>(aad, std::strlen((const char*)aad)),
+                    jpssl::span<const uint8_t>(plaintext, std::strlen((const char*)plaintext)),
+                    jpssl::span<const uint8_t>(aad, std::strlen((const char*)aad)),
                     ct, tag, 16);
 
     // Decrypt and verify
     std::vector<uint8_t> pt;
     bool ok = aes_gcm_decrypt(ctx, iv, 12, ct,
-                              std::span<const uint8_t>(aad, std::strlen((const char*)aad)),
+                              jpssl::span<const uint8_t>(aad, std::strlen((const char*)aad)),
                               tag, 16, pt);
     if (!ok) {
         std::printf("  FAIL: GCM tag verification failed\n");
@@ -546,7 +546,7 @@ static int test_gcm() {
     wrong_tag[0] ^= 0xFF;
     std::vector<uint8_t> dummy;
     if (aes_gcm_decrypt(ctx, iv, 12, ct,
-                        std::span<const uint8_t>(aad, std::strlen((const char*)aad)),
+                        jpssl::span<const uint8_t>(aad, std::strlen((const char*)aad)),
                         wrong_tag, 16, dummy)) {
         std::printf("  FAIL: GCM should reject wrong tag\n");
         return 1;
@@ -555,7 +555,7 @@ static int test_gcm() {
     // Test: wrong AAD should fail
     const uint8_t wrong_aad[] = "Wrong AAD";
     if (aes_gcm_decrypt(ctx, iv, 12, ct,
-                        std::span<const uint8_t>(wrong_aad, std::strlen((const char*)wrong_aad)),
+                        jpssl::span<const uint8_t>(wrong_aad, std::strlen((const char*)wrong_aad)),
                         tag, 16, dummy)) {
         std::printf("  FAIL: GCM should reject wrong AAD\n");
         return 1;
@@ -564,10 +564,10 @@ static int test_gcm() {
     // Test: empty AAD
     std::vector<uint8_t> ct2;
     uint8_t tag2[16];
-    aes_gcm_encrypt(ctx, iv, 12, std::span<const uint8_t>(plaintext, std::strlen((const char*)plaintext)),
-                    std::span<const uint8_t>{}, ct2, tag2, 16);
+    aes_gcm_encrypt(ctx, iv, 12, jpssl::span<const uint8_t>(plaintext, std::strlen((const char*)plaintext)),
+                    jpssl::span<const uint8_t>{}, ct2, tag2, 16);
     std::vector<uint8_t> pt2;
-    if (!aes_gcm_decrypt(ctx, iv, 12, ct2, std::span<const uint8_t>{}, tag2, 16, pt2)) {
+    if (!aes_gcm_decrypt(ctx, iv, 12, ct2, jpssl::span<const uint8_t>{}, tag2, 16, pt2)) {
         std::printf("  FAIL: GCM with empty AAD failed\n");
         return 1;
     }
@@ -575,12 +575,12 @@ static int test_gcm() {
     // Test: empty plaintext (tag-only)
     std::vector<uint8_t> ct3;
     uint8_t tag3[16];
-    aes_gcm_encrypt(ctx, iv, 12, std::span<const uint8_t>{},
-                    std::span<const uint8_t>(aad, std::strlen((const char*)aad)),
+    aes_gcm_encrypt(ctx, iv, 12, jpssl::span<const uint8_t>{},
+                    jpssl::span<const uint8_t>(aad, std::strlen((const char*)aad)),
                     ct3, tag3, 16);
     std::vector<uint8_t> pt3;
     if (!aes_gcm_decrypt(ctx, iv, 12, ct3,
-                         std::span<const uint8_t>(aad, std::strlen((const char*)aad)),
+                         jpssl::span<const uint8_t>(aad, std::strlen((const char*)aad)),
                          tag3, 16, pt3)) {
         std::printf("  FAIL: GCM with empty plaintext failed\n");
         return 1;
@@ -597,7 +597,7 @@ static int test_gcm() {
     auto raad  = random_data(500);
 
     aes_context rctx;
-    rctx.init(std::span<const uint8_t, 16>(rkey.data(), 16));
+    rctx.init(jpssl::span<const uint8_t, 16>(rkey.data(), 16));
 
     std::vector<uint8_t> rct;
     uint8_t rtag[16];
@@ -635,7 +635,7 @@ static int test_gpu_cbc() {
     };
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     // Generate test data and encrypt with CPU CBC
     auto pt_data = random_data(10000);
@@ -706,10 +706,10 @@ static int test_chacha20_block() {
     // Verify self-consistency: encrypt zero → keystream, decrypt recovers zero
     uint8_t zeros[64] = {};
     uint8_t ct[64], recovered[64];
-    chacha20_crypt(key, counter, nonce, std::span<const uint8_t>(zeros, 64),
-                   std::span<uint8_t>(ct, 64));
-    chacha20_crypt(key, counter, nonce, std::span<const uint8_t>(ct, 64),
-                   std::span<uint8_t>(recovered, 64));
+    chacha20_crypt(key, counter, nonce, jpssl::span<const uint8_t>(zeros, 64),
+                   jpssl::span<uint8_t>(ct, 64));
+    chacha20_crypt(key, counter, nonce, jpssl::span<const uint8_t>(ct, 64),
+                   jpssl::span<uint8_t>(recovered, 64));
     if (std::memcmp(zeros, recovered, 64) != 0) {
         std::printf("  FAIL: ChaCha20 block self-consistency\n");
         return 1;
@@ -775,19 +775,19 @@ static int test_chacha20_poly1305_aead() {
     };
     const char* plaintext_str = "Ladies and Gentlemen of the class of '99: "
         "If I could offer you only one tip for the future, sunscreen would be it.";
-    std::span<const uint8_t> plaintext(
+    jpssl::span<const uint8_t> plaintext(
         (const uint8_t*)plaintext_str, std::strlen(plaintext_str));
 
     // Encrypt
     std::vector<uint8_t> ct;
     uint8_t tag[16];
     chacha20_poly1305_encrypt(key, nonce, plaintext,
-                              std::span<const uint8_t>(aad, 12), ct, tag);
+                              jpssl::span<const uint8_t>(aad, 12), ct, tag);
 
     // Decrypt with correct tag
     std::vector<uint8_t> pt;
     if (!chacha20_poly1305_decrypt(key, nonce, ct,
-                                   std::span<const uint8_t>(aad, 12), tag, pt)) {
+                                   jpssl::span<const uint8_t>(aad, 12), tag, pt)) {
         std::printf("  FAIL: AEAD decrypt tag verification failed\n");
         return 1;
     }
@@ -802,7 +802,7 @@ static int test_chacha20_poly1305_aead() {
     bad_tag[0] ^= 0xFF;
     std::vector<uint8_t> dummy;
     if (chacha20_poly1305_decrypt(key, nonce, ct,
-                                  std::span<const uint8_t>(aad, 12), bad_tag, dummy)) {
+                                  jpssl::span<const uint8_t>(aad, 12), bad_tag, dummy)) {
         std::printf("  FAIL: should reject wrong tag\n");
         return 1;
     }
@@ -810,7 +810,7 @@ static int test_chacha20_poly1305_aead() {
     // Wrong AAD should fail
     const uint8_t bad_aad[1] = {0x00};
     if (chacha20_poly1305_decrypt(key, nonce, ct,
-                                  std::span<const uint8_t>(bad_aad, 1), tag, dummy)) {
+                                  jpssl::span<const uint8_t>(bad_aad, 1), tag, dummy)) {
         std::printf("  FAIL: should reject wrong AAD\n");
         return 1;
     }
@@ -818,10 +818,10 @@ static int test_chacha20_poly1305_aead() {
     // Empty plaintext + AAD test
     std::vector<uint8_t> ct2;
     uint8_t tag2[16];
-    chacha20_poly1305_encrypt(key, nonce, std::span<const uint8_t>{},
-                              std::span<const uint8_t>{}, ct2, tag2);
+    chacha20_poly1305_encrypt(key, nonce, jpssl::span<const uint8_t>{},
+                              jpssl::span<const uint8_t>{}, ct2, tag2);
     std::vector<uint8_t> pt2;
-    if (!chacha20_poly1305_decrypt(key, nonce, ct2, std::span<const uint8_t>{}, tag2, pt2)) {
+    if (!chacha20_poly1305_decrypt(key, nonce, ct2, jpssl::span<const uint8_t>{}, tag2, pt2)) {
         std::printf("  FAIL: empty AEAD round-trip\n");
         return 1;
     }
@@ -1194,7 +1194,7 @@ static int test_x25519() {
 
 int main() {
     std::printf("╔══════════════════════════════════════════════╗\n");
-    std::printf("║   jpssl — AES with C++20 + MUSA GPU         ║\n");
+    std::printf("║   jpssl — AES with C++17 + MUSA GPU         ║\n");
     std::printf("╚══════════════════════════════════════════════╝\n\n");
 
     int failures = 0;

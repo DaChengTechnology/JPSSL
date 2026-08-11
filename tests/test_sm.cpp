@@ -166,8 +166,8 @@ static void test_sm4() {
         uint8_t jp_cipher[32], ossl_cipher[32];
 
         jpssl::sm4_ecb_encrypt(&ctx,
-            std::span<const uint8_t>(plain, 32),
-            std::span<uint8_t>(jp_cipher, 32));
+            jpssl::span<const uint8_t>(plain, 32),
+            jpssl::span<uint8_t>(jp_cipher, 32));
 
         ossl_sm4_ecb_encrypt(key, plain, 32, ossl_cipher);
 
@@ -181,12 +181,12 @@ static void test_sm4() {
         uint8_t cipher[32], jp_plain[32], ossl_plain[32];
 
         jpssl::sm4_ecb_encrypt(&ctx,
-            std::span<const uint8_t>(plain, 32),
-            std::span<uint8_t>(cipher, 32));
+            jpssl::span<const uint8_t>(plain, 32),
+            jpssl::span<uint8_t>(cipher, 32));
 
         jpssl::sm4_ecb_decrypt(&ctx,
-            std::span<const uint8_t>(cipher, 32),
-            std::span<uint8_t>(jp_plain, 32));
+            jpssl::span<const uint8_t>(cipher, 32),
+            jpssl::span<uint8_t>(jp_plain, 32));
 
         ossl_sm4_ecb_decrypt(key, cipher, 32, ossl_plain);
 
@@ -202,9 +202,9 @@ static void test_sm4() {
         size_t msg_len = sizeof(msg) - 1;
 
         auto ct = jpssl::sm4_cbc_encrypt(&ctx, iv,
-            std::span<const uint8_t>(msg, msg_len));
+            jpssl::span<const uint8_t>(msg, msg_len));
         auto pt = jpssl::sm4_cbc_decrypt(&ctx, iv,
-            std::span<const uint8_t>(ct.data(), ct.size()));
+            jpssl::span<const uint8_t>(ct.data(), ct.size()));
 
         ASSERT(pt.size() == msg_len &&
                std::memcmp(pt.data(), msg, msg_len) == 0,
@@ -223,11 +223,11 @@ static void test_sm4() {
         std::memcpy(padded_plain.data(), plain.data(), sz);
 
         jpssl::sm4_ecb_encrypt(&ctx,
-            std::span<const uint8_t>(padded_plain),
-            std::span<uint8_t>(cipher, padded));
+            jpssl::span<const uint8_t>(padded_plain),
+            jpssl::span<uint8_t>(cipher, padded));
         jpssl::sm4_ecb_decrypt(&ctx,
-            std::span<const uint8_t>(cipher, padded),
-            std::span<uint8_t>(recovered, padded));
+            jpssl::span<const uint8_t>(cipher, padded),
+            jpssl::span<uint8_t>(recovered, padded));
 
         bool ok = std::memcmp(padded_plain.data(), recovered, padded) == 0;
         ASSERT(ok, ("SM4 ECB size " + std::to_string(sz)).c_str());
@@ -269,8 +269,8 @@ static void test_sm4_gcm_ossl() {
             std::vector<uint8_t> jp_ct;
             uint8_t jp_tag[16];
             jpssl::sm4_gcm_encrypt(&ctx, iv.data(), iv_len,
-                                   std::span<const uint8_t>(plain),
-                                   std::span<const uint8_t>(aad),
+                                   jpssl::span<const uint8_t>(plain),
+                                   jpssl::span<const uint8_t>(aad),
                                    jp_ct, jp_tag, 16);
 
             // OpenSSL
@@ -298,8 +298,8 @@ static void test_sm4_gcm_ossl() {
             // jpssl decrypts OpenSSL ciphertext
             std::vector<uint8_t> pt2;
             bool dec = jpssl::sm4_gcm_decrypt(&ctx, iv.data(), iv_len,
-                                              std::span<const uint8_t>(ossl_ct.data(), len),
-                                              std::span<const uint8_t>(aad),
+                                              jpssl::span<const uint8_t>(ossl_ct.data(), len),
+                                              jpssl::span<const uint8_t>(aad),
                                               ossl_tag, 16, pt2);
             ASSERT(dec && pt2 == plain, (label + " decrypt").c_str());
         }

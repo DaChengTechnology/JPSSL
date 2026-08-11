@@ -169,8 +169,8 @@ static inline __m128i inc_counter_n(__m128i c, int n) {
 /// 就地/直写加密核心：密文写入 out（容量 >= plaintext.size()）
 static void avx512_gcm_encrypt_impl(const aes_context& ctx,
                                      const uint8_t* iv, size_t iv_len,
-                                     std::span<const uint8_t> plaintext,
-                                     std::span<const uint8_t> aad,
+                                     jpssl::span<const uint8_t> plaintext,
+                                     jpssl::span<const uint8_t> aad,
                                      uint8_t* out,
                                      uint8_t* tag, size_t tag_len) {
     const __m128i* rk128 = (const __m128i*)ctx.enc_rk.data();
@@ -316,8 +316,8 @@ static void avx512_gcm_encrypt_impl(const aes_context& ctx,
 /// 就地/直写解密核心：明文写入 out（容量 >= ciphertext.size()）
 static bool avx512_gcm_decrypt_impl(const aes_context& ctx,
                                      const uint8_t* iv, size_t iv_len,
-                                     std::span<const uint8_t> ciphertext,
-                                     std::span<const uint8_t> aad,
+                                     jpssl::span<const uint8_t> ciphertext,
+                                     jpssl::span<const uint8_t> aad,
                                      const uint8_t* tag, size_t tag_len,
                                      uint8_t* out) {
     const __m128i* rk128 = (const __m128i*)ctx.enc_rk.data();
@@ -465,8 +465,8 @@ static bool avx512_gcm_available() {
 
 void aes_gcm_encrypt_avx512(const aes_context& ctx,
                             const uint8_t* iv, size_t iv_len,
-                            std::span<const uint8_t> plaintext,
-                            std::span<const uint8_t> aad,
+                            jpssl::span<const uint8_t> plaintext,
+                            jpssl::span<const uint8_t> aad,
                             std::vector<uint8_t>& ciphertext,
                             uint8_t* tag, size_t tag_len) {
 #if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX512)
@@ -482,8 +482,8 @@ void aes_gcm_encrypt_avx512(const aes_context& ctx,
 
 bool aes_gcm_decrypt_avx512(const aes_context& ctx,
                             const uint8_t* iv, size_t iv_len,
-                            std::span<const uint8_t> ciphertext,
-                            std::span<const uint8_t> aad,
+                            jpssl::span<const uint8_t> ciphertext,
+                            jpssl::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext) {
 #if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX512)
@@ -500,12 +500,12 @@ bool aes_gcm_decrypt_avx512(const aes_context& ctx,
 void aes_gcm_encrypt_avx512_inplace(const aes_context& ctx,
                                     const uint8_t* iv, size_t iv_len,
                                     uint8_t* buf, size_t data_len,
-                                    std::span<const uint8_t> aad,
+                                    jpssl::span<const uint8_t> aad,
                                     uint8_t* tag, size_t tag_len) {
 #if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX512)
     if (avx512_gcm_available()) {
         avx512_gcm_encrypt_impl(ctx, iv, iv_len,
-                                std::span<const uint8_t>(buf, data_len), aad, buf,
+                                jpssl::span<const uint8_t>(buf, data_len), aad, buf,
                                 tag, tag_len);
         return;
     }
@@ -517,12 +517,12 @@ void aes_gcm_encrypt_avx512_inplace(const aes_context& ctx,
 bool aes_gcm_decrypt_avx512_inplace(const aes_context& ctx,
                                     const uint8_t* iv, size_t iv_len,
                                     uint8_t* buf, size_t data_len,
-                                    std::span<const uint8_t> aad,
+                                    jpssl::span<const uint8_t> aad,
                                     const uint8_t* tag, size_t tag_len) {
 #if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX512)
     if (avx512_gcm_available()) {
         return avx512_gcm_decrypt_impl(ctx, iv, iv_len,
-                                       std::span<const uint8_t>(buf, data_len), aad,
+                                       jpssl::span<const uint8_t>(buf, data_len), aad,
                                        tag, tag_len, buf);
     }
 #endif

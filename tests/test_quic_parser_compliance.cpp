@@ -98,13 +98,13 @@ void quic_initial_aead_seal(const quic_packet_keys& k, uint64_t pn,
     quic_aead_nonce(k.iv, pn, nonce);
     aes_context ctx;
     if (k.key_len == 32)
-        ctx.init(std::span<const uint8_t, 32>(k.key, 32));
+        ctx.init(jpssl::span<const uint8_t, 32>(k.key, 32));
     else
-        ctx.init(std::span<const uint8_t, 16>(k.key, 16));
+        ctx.init(jpssl::span<const uint8_t, 16>(k.key, 16));
     uint8_t tag[16];
     aes_gcm_encrypt(ctx, nonce, 12,
-                    std::span<const uint8_t>(pt, pt_len),
-                    std::span<const uint8_t>(aad, aad_len),
+                    jpssl::span<const uint8_t>(pt, pt_len),
+                    jpssl::span<const uint8_t>(aad, aad_len),
                     out, tag, 16);
     out.insert(out.end(), tag, tag + 16);
 }

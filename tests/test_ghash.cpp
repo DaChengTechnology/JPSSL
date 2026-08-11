@@ -56,7 +56,7 @@ void test_gf128_identity() {
         0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08
     };
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     // H = AES_encrypt(K, 0^128)
     uint8_t H[16], zero[16] = {};
@@ -86,7 +86,7 @@ void test_gf128_zero() {
         0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08
     };
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     uint8_t H[16], zero[16] = {};
     aes_encrypt_block(ctx, zero, H);
@@ -111,7 +111,7 @@ void test_gf128_commutative() {
         0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff
     };
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(seed, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(seed, 16));
 
     uint8_t counter[16] = {};
     for (int t = 0; t < 10; ++t) {
@@ -145,7 +145,7 @@ void test_gf128_associative() {
         0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08
     };
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     uint8_t H[16], zero[16] = {};
     aes_encrypt_block(ctx, zero, H);
@@ -182,7 +182,7 @@ void test_ghash_single_block() {
         0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08
     };
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     uint8_t H[16], zero[16] = {};
     aes_encrypt_block(ctx, zero, H);
@@ -194,7 +194,7 @@ void test_ghash_single_block() {
     };
 
     uint8_t gh_out[16];
-    ghash(H, std::span<const uint8_t>(X, 16), gh_out);
+    ghash(H, jpssl::span<const uint8_t>(X, 16), gh_out);
 
     uint8_t expected[16];
     gf128_mul(X, H, expected);
@@ -205,7 +205,7 @@ void test_ghash_single_block() {
     uint8_t one_block[16] = {};
     one_block[0] = 0x80;  // x^0 = 1 (bit-reflected: byte 0 bit 7)
     uint8_t gh_one[16];
-    ghash(H, std::span<const uint8_t>(one_block, 16), gh_one);
+    ghash(H, jpssl::span<const uint8_t>(one_block, 16), gh_one);
     CHECK("GHASH(H, [1]) == H", bytes_eq(gh_one, H, 16));
 }
 
@@ -220,7 +220,7 @@ void test_ghash_multi_block() {
         0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08
     };
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     uint8_t H[16], zero[16] = {};
     aes_encrypt_block(ctx, zero, H);
@@ -241,7 +241,7 @@ void test_ghash_multi_block() {
     std::memcpy(combined + 16, X2, 16);
 
     uint8_t gh_out[16];
-    ghash(H, std::span<const uint8_t>(combined, 32), gh_out);
+    ghash(H, jpssl::span<const uint8_t>(combined, 32), gh_out);
 
     // Manual: Y1 = X1 * H, Y2 = (Y1 ⊕ X2) * H
     uint8_t y1[16], y1_xor_x2[16], expected[16];
@@ -263,7 +263,7 @@ void test_ghash_unaligned() {
         0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08
     };
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     uint8_t H[16], zero[16] = {};
     aes_encrypt_block(ctx, zero, H);
@@ -276,7 +276,7 @@ void test_ghash_unaligned() {
     };
 
     uint8_t gh_out[16];
-    ghash(H, std::span<const uint8_t>(data, 20), gh_out);
+    ghash(H, jpssl::span<const uint8_t>(data, 20), gh_out);
 
     // Manual: X1 full, X2 padded
     uint8_t x2_padded[16] = {};
@@ -301,13 +301,13 @@ void test_ghash_empty() {
         0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08
     };
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     uint8_t H[16], zero[16] = {};
     aes_encrypt_block(ctx, zero, H);
 
     uint8_t gh_out[16];
-    ghash(H, std::span<const uint8_t>(), gh_out);
+    ghash(H, jpssl::span<const uint8_t>(), gh_out);
 
     // GHASH of empty input: no blocks, so Y_0 = 0
     CHECK("GHASH(empty) == 0", bytes_eq(gh_out, zero, 16));
@@ -332,13 +332,13 @@ void test_nist_gcm_vectors() {
         };
 
         aes_context ctx;
-        ctx.init(std::span<const uint8_t, 16>(K, 16));
+        ctx.init(jpssl::span<const uint8_t, 16>(K, 16));
 
         uint8_t tag[16];
         std::vector<uint8_t> ct;
         aes_gcm_encrypt(ctx, IV, 12,
-                        std::span<const uint8_t>(P, 0),
-                        std::span<const uint8_t>(A, 0),
+                        jpssl::span<const uint8_t>(P, 0),
+                        jpssl::span<const uint8_t>(A, 0),
                         ct, tag, 16);
 
         CHECK("NIST TC1: tag match", bytes_eq(tag, expected_tag, 16));
@@ -372,13 +372,13 @@ void test_nist_gcm_vectors() {
         };
 
         aes_context ctx;
-        ctx.init(std::span<const uint8_t, 16>(K, 16));
+        ctx.init(jpssl::span<const uint8_t, 16>(K, 16));
 
         uint8_t tag[16];
         std::vector<uint8_t> ct;
         aes_gcm_encrypt(ctx, IV, 12,
-                        std::span<const uint8_t>(P, sizeof(P)),
-                        std::span<const uint8_t>(A, sizeof(A)),
+                        jpssl::span<const uint8_t>(P, sizeof(P)),
+                        jpssl::span<const uint8_t>(A, sizeof(A)),
                         ct, tag, 16);
 
         CHECK("TC2: ciphertext length == plaintext length",
@@ -387,8 +387,8 @@ void test_nist_gcm_vectors() {
         // Verify decryption (self-consistency)
         std::vector<uint8_t> pt;
         bool dec_ok = aes_gcm_decrypt(ctx, IV, 12,
-                                      std::span<const uint8_t>(ct.data(), ct.size()),
-                                      std::span<const uint8_t>(A, sizeof(A)),
+                                      jpssl::span<const uint8_t>(ct.data(), ct.size()),
+                                      jpssl::span<const uint8_t>(A, sizeof(A)),
                                       tag, 16, pt);
         CHECK("TC2: decrypt succeeds", dec_ok);
         CHECK("TC2: roundtrip matches", pt.size() == sizeof(P) &&
@@ -422,21 +422,21 @@ void test_gcm_roundtrip() {
         uint8_t aad_data[] = "test aad data for GCM roundtrip verification";
 
         aes_context ctx;
-        ctx.init(std::span<const uint8_t, 16>(K, 16));
+        ctx.init(jpssl::span<const uint8_t, 16>(K, 16));
 
         // Encrypt
         uint8_t tag[16];
         std::vector<uint8_t> ct;
         aes_gcm_encrypt(ctx, IV, 12,
-                        std::span<const uint8_t>(pt.data(), pt.size()),
-                        std::span<const uint8_t>(aad_data, sizeof(aad_data) - 1),
+                        jpssl::span<const uint8_t>(pt.data(), pt.size()),
+                        jpssl::span<const uint8_t>(aad_data, sizeof(aad_data) - 1),
                         ct, tag, 16);
 
         // Decrypt
         std::vector<uint8_t> recovered;
         bool ok = aes_gcm_decrypt(ctx, IV, 12,
-                                  std::span<const uint8_t>(ct.data(), ct.size()),
-                                  std::span<const uint8_t>(aad_data, sizeof(aad_data) - 1),
+                                  jpssl::span<const uint8_t>(ct.data(), ct.size()),
+                                  jpssl::span<const uint8_t>(aad_data, sizeof(aad_data) - 1),
                                   tag, 16, recovered);
 
         char name[64];
@@ -451,8 +451,8 @@ void test_gcm_roundtrip() {
             bad_tag[0] ^= 0xFF;
             std::vector<uint8_t> dummy;
             bool bad_ok = aes_gcm_decrypt(ctx, IV, 12,
-                                          std::span<const uint8_t>(ct.data(), ct.size()),
-                                          std::span<const uint8_t>(aad_data, sizeof(aad_data) - 1),
+                                          jpssl::span<const uint8_t>(ct.data(), ct.size()),
+                                          jpssl::span<const uint8_t>(aad_data, sizeof(aad_data) - 1),
                                           bad_tag, 16, dummy);
             snprintf(name, sizeof(name), "Tampered tag rejected pt_len=%zu", pt_len);
             CHECK(name, !bad_ok);

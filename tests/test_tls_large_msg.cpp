@@ -22,7 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
-#include <span>
+#include "jpssl_span.hpp"
 #include <string>
 #include <thread>
 #include <vector>
@@ -151,7 +151,7 @@ static void test_tls12_large_message() {
     uint8_t encrypted_pms[256];
     const tls_certificate* cert_ptr = cert_mgr.get_default_certificate();
     TEST("TLS1.2 RSA 证书存在", cert_ptr != nullptr);
-    rsa_encrypt(cert_ptr->pub.rsa, std::span<const uint8_t>(pre_master, 48), encrypted_pms);
+    rsa_encrypt(cert_ptr->pub.rsa, jpssl::span<const uint8_t>(pre_master, 48), encrypted_pms);
 
     std::vector<uint8_t> server_resp;
     uint8_t decrypted_pms[48];

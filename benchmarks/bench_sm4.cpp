@@ -26,7 +26,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <span>
+#include "jpssl_span.hpp"
 #include <vector>
 
 using namespace jpssl;
@@ -288,7 +288,7 @@ static void bench_aes128_reference() {
 
     // jpssl AES-128-GCM (same library, for in-library reference)
     aes_context actx;
-    actx.init(std::span<const uint8_t, 16>(key, 16));
+    actx.init(jpssl::span<const uint8_t, 16>(key, 16));
     std::vector<uint8_t> jp_ct, jp_pt;
     uint8_t jp_tag[16];
     aes_gcm_encrypt_auto(actx, iv, 12, plain, {}, jp_ct, jp_tag, 16);

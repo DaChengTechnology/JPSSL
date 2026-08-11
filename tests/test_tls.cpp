@@ -15,7 +15,7 @@
 #include <string>
 #include <memory>
 #include <cstdlib>
-#include <span>
+#include "jpssl_span.hpp"
 
 using namespace jpssl::tls;
 using namespace jpssl;
@@ -282,7 +282,7 @@ void test_tls12_full_handshake() {
     for (int i = 0; i < 48; ++i) pre_master[i] = (uint8_t)(rand() % 256);
     pre_master[0] = 0x03; pre_master[1] = 0x03;
     uint8_t encrypted_pms[256];
-    rsa_encrypt(server_pub, std::span<const uint8_t>(pre_master, 48), encrypted_pms);
+    rsa_encrypt(server_pub, jpssl::span<const uint8_t>(pre_master, 48), encrypted_pms);
 
     // ── 服务端处理（RSA 解密 pre_master_secret） ──
     tls_session server;

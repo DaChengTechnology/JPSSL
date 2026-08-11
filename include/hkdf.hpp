@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <span>
+#include "jpssl_span.hpp"
 namespace jpssl {
 
 // ── HKDF-SHA256 ──

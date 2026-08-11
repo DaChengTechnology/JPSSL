@@ -16,7 +16,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <span>
+#include "jpssl_span.hpp"
 
 namespace jpssl {
 
@@ -91,8 +91,8 @@ static void chacha20_4blocks(const uint8_t key[32], uint32_t counter,
 
 void chacha20_crypt_neon(const uint8_t key[32], uint32_t counter,
                          const uint8_t nonce[12],
-                         std::span<const uint8_t> input,
-                         std::span<uint8_t> output) {
+                         jpssl::span<const uint8_t> input,
+                         jpssl::span<uint8_t> output) {
     size_t pos = 0;
     while (input.size() - pos >= 256) {
         uint8_t ks[256];

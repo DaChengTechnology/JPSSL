@@ -13,7 +13,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <span>
+#include "jpssl_span.hpp"
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -59,7 +59,7 @@ constexpr uint8_t gf28_mul(uint8_t a, uint8_t b) {
 }
 
 /// GF(2^8) 乘法逆元
-consteval uint8_t gf28_inv(uint8_t a) {
+    constexpr uint8_t gf28_inv(uint8_t a) {
     if (a == 0) return 0;
     // 使用扩展欧几里得或费马小定理：a^(254) = a^(-1) in GF(2^8)
     uint8_t r = 1;
@@ -72,7 +72,7 @@ consteval uint8_t gf28_inv(uint8_t a) {
 }
 
 /// 编译期生成 S-Box（256 字节）
-consteval std::array<uint8_t, 256> make_sbox() {
+    constexpr std::array<uint8_t, 256> make_sbox() {
     std::array<uint8_t, 256> sbox{};
     for (int i = 0; i < 256; ++i) {
         uint8_t inv = gf28_inv(static_cast<uint8_t>(i));
@@ -89,7 +89,7 @@ consteval std::array<uint8_t, 256> make_sbox() {
 }
 
 /// 编译期生成逆 S-Box
-consteval std::array<uint8_t, 256> make_inv_sbox(const std::array<uint8_t, 256>& sbox) {
+    constexpr std::array<uint8_t, 256> make_inv_sbox(const std::array<uint8_t, 256>& sbox) {
     std::array<uint8_t, 256> inv{};
     for (int i = 0; i < 256; ++i) {
         inv[sbox[i]] = static_cast<uint8_t>(i);
@@ -104,7 +104,7 @@ inline constexpr auto SBOX = make_sbox();
 inline constexpr auto INV_SBOX = make_inv_sbox(SBOX);
 
 /// 轮常数 Rcon（用于密钥扩展）
-consteval std::array<uint8_t, 16> make_rcon() {
+    constexpr std::array<uint8_t, 16> make_rcon() {
     std::array<uint8_t, 16> rcon{};
     uint8_t x = 1;
     for (int i = 1; i < 16; ++i) {
@@ -236,12 +236,12 @@ struct aes_context {
     int rounds;
 
     /// 从原始密钥初始化
-    void init(std::span<const uint8_t, 16> key) { init_impl(key, AesKeySize::AES_128); }
-    void init(std::span<const uint8_t, 24> key) { init_impl(key, AesKeySize::AES_192); }
-    void init(std::span<const uint8_t, 32> key) { init_impl(key, AesKeySize::AES_256); }
+    void init(jpssl::span<const uint8_t, 16> key) { init_impl(key, AesKeySize::AES_128); }
+    void init(jpssl::span<const uint8_t, 24> key) { init_impl(key, AesKeySize::AES_192); }
+    void init(jpssl::span<const uint8_t, 32> key) { init_impl(key, AesKeySize::AES_256); }
 
 private:
-    void init_impl(std::span<const uint8_t> key, AesKeySize ks);
+    void init_impl(jpssl::span<const uint8_t> key, AesKeySize ks);
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -260,13 +260,13 @@ void aes_decrypt_block(const aes_context& ctx, const uint8_t cipher[16], uint8_t
 /// ECB 模式加密（CPU）
 /// input / output 长度必须为 16 的倍数
 void aes_encrypt_ecb(const aes_context& ctx,
-                     std::span<const uint8_t> input,
-                     std::span<uint8_t> output);
+                     jpssl::span<const uint8_t> input,
+                     jpssl::span<uint8_t> output);
 
 /// ECB 模式解密（CPU）
 void aes_decrypt_ecb(const aes_context& ctx,
-                     std::span<const uint8_t> input,
-                     std::span<uint8_t> output);
+                     jpssl::span<const uint8_t> input,
+                     jpssl::span<uint8_t> output);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  ECB + PKCS7/PKCS5 填充模式（AES-128/192/256）
@@ -281,73 +281,73 @@ void aes_decrypt_ecb(const aes_context& ctx,
 /// @param plaintext  明文（任意长度）
 /// @param ciphertext 输出密文（自动调整大小，长度为 16 的倍数）
 void aes_encrypt_ecb_pkcs7(const aes_context& ctx,
-                            std::span<const uint8_t> plaintext,
+                            jpssl::span<const uint8_t> plaintext,
                             std::vector<uint8_t>& ciphertext);
 
 /// ECB + PKCS7 解密（自动分派，自动去填充）
 /// @return true 成功, false 填充验证失败
 bool aes_decrypt_ecb_pkcs7(const aes_context& ctx,
-                            std::span<const uint8_t> ciphertext,
+                            jpssl::span<const uint8_t> ciphertext,
                             std::vector<uint8_t>& plaintext);
 
 /// ECB + PKCS7 加密（纯标量实现，无 AES-NI）
 void aes_encrypt_ecb_pkcs7_sw(const aes_context& ctx,
-                               std::span<const uint8_t> plaintext,
+                               jpssl::span<const uint8_t> plaintext,
                                std::vector<uint8_t>& ciphertext);
 
 /// ECB + PKCS7 解密（纯标量实现，自动去填充）
 bool aes_decrypt_ecb_pkcs7_sw(const aes_context& ctx,
-                               std::span<const uint8_t> ciphertext,
+                               jpssl::span<const uint8_t> ciphertext,
                                std::vector<uint8_t>& plaintext);
 
 /// ECB + PKCS7 加密（AES-NI 硬件加速；CPU 不支持时回退到 _sw）
 void aes_encrypt_ecb_pkcs7_aesni(const aes_context& ctx,
-                                  std::span<const uint8_t> plaintext,
+                                  jpssl::span<const uint8_t> plaintext,
                                   std::vector<uint8_t>& ciphertext);
 
 /// ECB + PKCS7 解密（AES-NI 硬件加速；CPU 不支持时回退到 _sw）
 bool aes_decrypt_ecb_pkcs7_aesni(const aes_context& ctx,
-                                  std::span<const uint8_t> ciphertext,
+                                  jpssl::span<const uint8_t> ciphertext,
                                   std::vector<uint8_t>& plaintext);
 
 /// ECB + PKCS5 加密（自动分派；PKCS5 在 AES 下与 PKCS7 等价）
 inline void aes_encrypt_ecb_pkcs5(const aes_context& ctx,
-                                   std::span<const uint8_t> plaintext,
+                                   jpssl::span<const uint8_t> plaintext,
                                    std::vector<uint8_t>& ciphertext) {
     aes_encrypt_ecb_pkcs7(ctx, plaintext, ciphertext);
 }
 
 /// ECB + PKCS5 解密（自动分派；PKCS5 在 AES 下与 PKCS7 等价）
 inline bool aes_decrypt_ecb_pkcs5(const aes_context& ctx,
-                                   std::span<const uint8_t> ciphertext,
+                                   jpssl::span<const uint8_t> ciphertext,
                                    std::vector<uint8_t>& plaintext) {
     return aes_decrypt_ecb_pkcs7(ctx, ciphertext, plaintext);
 }
 
 /// ECB + PKCS5 加密（纯标量实现）
 inline void aes_encrypt_ecb_pkcs5_sw(const aes_context& ctx,
-                                      std::span<const uint8_t> plaintext,
+                                      jpssl::span<const uint8_t> plaintext,
                                       std::vector<uint8_t>& ciphertext) {
     aes_encrypt_ecb_pkcs7_sw(ctx, plaintext, ciphertext);
 }
 
 /// ECB + PKCS5 解密（纯标量实现）
 inline bool aes_decrypt_ecb_pkcs5_sw(const aes_context& ctx,
-                                      std::span<const uint8_t> ciphertext,
+                                      jpssl::span<const uint8_t> ciphertext,
                                       std::vector<uint8_t>& plaintext) {
     return aes_decrypt_ecb_pkcs7_sw(ctx, ciphertext, plaintext);
 }
 
 /// ECB + PKCS5 加密（AES-NI 硬件加速）
 inline void aes_encrypt_ecb_pkcs5_aesni(const aes_context& ctx,
-                                         std::span<const uint8_t> plaintext,
+                                         jpssl::span<const uint8_t> plaintext,
                                          std::vector<uint8_t>& ciphertext) {
     aes_encrypt_ecb_pkcs7_aesni(ctx, plaintext, ciphertext);
 }
 
 /// ECB + PKCS5 解密（AES-NI 硬件加速）
 inline bool aes_decrypt_ecb_pkcs5_aesni(const aes_context& ctx,
-                                         std::span<const uint8_t> ciphertext,
+                                         jpssl::span<const uint8_t> ciphertext,
                                          std::vector<uint8_t>& plaintext) {
     return aes_decrypt_ecb_pkcs7_aesni(ctx, ciphertext, plaintext);
 }
@@ -375,10 +375,10 @@ void musa_aes_decrypt_ecb(const uint8_t* input, uint8_t* output, size_t num_bloc
 // ═══════════════════════════════════════════════════════════════════════
 
 /// PKCS7 填充：返回填充后的数据（自动添加 1-16 字节填充）
-std::vector<uint8_t> pkcs7_pad(std::span<const uint8_t> data);
+std::vector<uint8_t> pkcs7_pad(jpssl::span<const uint8_t> data);
 
 /// PKCS7 去填充：返回去填充后的数据，失败抛出 std::runtime_error
-std::vector<uint8_t> pkcs7_unpad(std::span<const uint8_t> data);
+std::vector<uint8_t> pkcs7_unpad(jpssl::span<const uint8_t> data);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  CBC 模式（CPU 端）
@@ -391,38 +391,38 @@ std::vector<uint8_t> pkcs7_unpad(std::span<const uint8_t> data);
 /// @param ciphertext 输出密文（自动调整大小）
 void aes_cbc_encrypt(const aes_context& ctx,
                      const uint8_t iv[16],
-                     std::span<const uint8_t> plaintext,
+                     jpssl::span<const uint8_t> plaintext,
                      std::vector<uint8_t>& ciphertext);
 
 /// CBC 解密（自动 PKCS7 去填充）
 /// @return true 成功, false 填充验证失败
 bool aes_cbc_decrypt(const aes_context& ctx,
                      const uint8_t iv[16],
-                     std::span<const uint8_t> ciphertext,
+                     jpssl::span<const uint8_t> ciphertext,
                      std::vector<uint8_t>& plaintext);
 
 /// CBC 加密（纯标量实现，无 AES-NI，自动 PKCS7 填充）
 void aes_cbc_encrypt_sw(const aes_context& ctx,
                         const uint8_t iv[16],
-                        std::span<const uint8_t> plaintext,
+                        jpssl::span<const uint8_t> plaintext,
                         std::vector<uint8_t>& ciphertext);
 
 /// CBC 解密（纯标量实现，自动 PKCS7 去填充）
 bool aes_cbc_decrypt_sw(const aes_context& ctx,
                         const uint8_t iv[16],
-                        std::span<const uint8_t> ciphertext,
+                        jpssl::span<const uint8_t> ciphertext,
                         std::vector<uint8_t>& plaintext);
 
 /// CBC 加密（AES-NI 硬件加速；CPU 不支持时回退到 _sw）
 void aes_cbc_encrypt_aesni(const aes_context& ctx,
                            const uint8_t iv[16],
-                           std::span<const uint8_t> plaintext,
+                           jpssl::span<const uint8_t> plaintext,
                            std::vector<uint8_t>& ciphertext);
 
 /// CBC 解密（AES-NI 硬件加速；CPU 不支持时回退到 _sw）
 bool aes_cbc_decrypt_aesni(const aes_context& ctx,
                            const uint8_t iv[16],
-                           std::span<const uint8_t> ciphertext,
+                           jpssl::span<const uint8_t> ciphertext,
                            std::vector<uint8_t>& plaintext);
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -449,7 +449,7 @@ void gf128_mul(const uint8_t x[16], const uint8_t y[16], uint8_t out[16]);
 /// @param H    hash subkey = AES_encrypt(K, 0^128)（128-bit，大端序）
 /// @param data GHASH 输入（如 AAD || ciphertext || len_block），大端序
 /// @param out  GHASH 输出（128-bit，大端序）
-void ghash(const uint8_t H[16], std::span<const uint8_t> data, uint8_t out[16]);
+void ghash(const uint8_t H[16], jpssl::span<const uint8_t> data, uint8_t out[16]);
 
 /// GHASH 增量（流式）计算上下文
 /// 与一次性 ghash 语义一致：data 分块喂入，末尾不足 16 字节的块在
@@ -479,7 +479,7 @@ void ghash_final(ghash_ctx* ctx, uint8_t out[16]);
 /// @param data 密文（或明文）
 /// @param out  GHASH 输出（128-bit）
 void gcm_ghash(const uint8_t H[16],
-               std::span<const uint8_t> aad, std::span<const uint8_t> data,
+               jpssl::span<const uint8_t> aad, jpssl::span<const uint8_t> data,
                uint8_t out[16]);
 
 /// GCM 加密（带 AAD + 认证标签）
@@ -492,8 +492,8 @@ void gcm_ghash(const uint8_t H[16],
 /// @param tag_len   标签长度（推荐 12/13/14/15/16，默认 16）
 void aes_gcm_encrypt(const aes_context& ctx,
                      const uint8_t* iv, size_t iv_len,
-                     std::span<const uint8_t> plaintext,
-                     std::span<const uint8_t> aad,
+                     jpssl::span<const uint8_t> plaintext,
+                     jpssl::span<const uint8_t> aad,
                      std::vector<uint8_t>& ciphertext,
                      uint8_t* tag, size_t tag_len = 16);
 
@@ -501,40 +501,40 @@ void aes_gcm_encrypt(const aes_context& ctx,
 /// @return true 标签验证通过, false 验证失败（输出不应被使用）
 bool aes_gcm_decrypt(const aes_context& ctx,
                      const uint8_t* iv, size_t iv_len,
-                     std::span<const uint8_t> ciphertext,
-                     std::span<const uint8_t> aad,
+                     jpssl::span<const uint8_t> ciphertext,
+                     jpssl::span<const uint8_t> aad,
                      const uint8_t* tag, size_t tag_len,
                      std::vector<uint8_t>& plaintext);
 
 /// GCM 加密（纯标量实现，无 AES-NI；GHASH 使用软件 GF(2^128) 乘法）
 void aes_gcm_encrypt_sw(const aes_context& ctx,
                          const uint8_t* iv, size_t iv_len,
-                         std::span<const uint8_t> plaintext,
-                         std::span<const uint8_t> aad,
+                         jpssl::span<const uint8_t> plaintext,
+                         jpssl::span<const uint8_t> aad,
                          std::vector<uint8_t>& ciphertext,
                          uint8_t* tag, size_t tag_len = 16);
 
 /// GCM 解密（纯标量实现）
 bool aes_gcm_decrypt_sw(const aes_context& ctx,
                          const uint8_t* iv, size_t iv_len,
-                         std::span<const uint8_t> ciphertext,
-                         std::span<const uint8_t> aad,
+                         jpssl::span<const uint8_t> ciphertext,
+                         jpssl::span<const uint8_t> aad,
                          const uint8_t* tag, size_t tag_len,
                          std::vector<uint8_t>& plaintext);
 
 /// GCM 加密（AES-NI 硬件加速 CTR；GHASH 仍用软件实现，CPU 不支持时回退到 _sw）
 void aes_gcm_encrypt_aesni(const aes_context& ctx,
                             const uint8_t* iv, size_t iv_len,
-                            std::span<const uint8_t> plaintext,
-                            std::span<const uint8_t> aad,
+                            jpssl::span<const uint8_t> plaintext,
+                            jpssl::span<const uint8_t> aad,
                             std::vector<uint8_t>& ciphertext,
                             uint8_t* tag, size_t tag_len = 16);
 
 /// GCM 解密（AES-NI 硬件加速 CTR；CPU 不支持时回退到 _sw）
 bool aes_gcm_decrypt_aesni(const aes_context& ctx,
                             const uint8_t* iv, size_t iv_len,
-                            std::span<const uint8_t> ciphertext,
-                            std::span<const uint8_t> aad,
+                            jpssl::span<const uint8_t> ciphertext,
+                            jpssl::span<const uint8_t> aad,
                             const uint8_t* tag, size_t tag_len,
                             std::vector<uint8_t>& plaintext);
 
@@ -547,16 +547,16 @@ bool aes_gcm_decrypt_aesni(const aes_context& ctx,
 /// 自动分派：如果 CPU 不支持 AVX2，回退到软件实现
 void aes_gcm_encrypt_avx2(const aes_context& ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> plaintext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> plaintext,
+                          jpssl::span<const uint8_t> aad,
                           std::vector<uint8_t>& ciphertext,
                           uint8_t* tag, size_t tag_len = 16);
 
 /// AVX2 GCM 解密
 bool aes_gcm_decrypt_avx2(const aes_context& ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> ciphertext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> ciphertext,
+                          jpssl::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext);
 #endif // JP_AVX2
@@ -566,16 +566,16 @@ bool aes_gcm_decrypt_avx2(const aes_context& ctx,
 /// 自动分派：如果 CPU 不支持 AVX512，回退到 AVX2 / 软件
 void aes_gcm_encrypt_avx512(const aes_context& ctx,
                             const uint8_t* iv, size_t iv_len,
-                            std::span<const uint8_t> plaintext,
-                            std::span<const uint8_t> aad,
+                            jpssl::span<const uint8_t> plaintext,
+                            jpssl::span<const uint8_t> aad,
                             std::vector<uint8_t>& ciphertext,
                             uint8_t* tag, size_t tag_len = 16);
 
 /// AVX512 GCM 解密
 bool aes_gcm_decrypt_avx512(const aes_context& ctx,
                             const uint8_t* iv, size_t iv_len,
-                            std::span<const uint8_t> ciphertext,
-                            std::span<const uint8_t> aad,
+                            jpssl::span<const uint8_t> ciphertext,
+                            jpssl::span<const uint8_t> aad,
                             const uint8_t* tag, size_t tag_len,
                             std::vector<uint8_t>& plaintext);
 #endif // JP_AVX512
@@ -586,16 +586,16 @@ bool aes_gcm_decrypt_avx512(const aes_context& ctx,
 /// 不满足条件时回退到软件实现
 void aes_gcm_encrypt_vaes(const aes_context& ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> plaintext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> plaintext,
+                          jpssl::span<const uint8_t> aad,
                           std::vector<uint8_t>& ciphertext,
                           uint8_t* tag, size_t tag_len = 16);
 
 /// VAES GCM 解密
 bool aes_gcm_decrypt_vaes(const aes_context& ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> ciphertext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> ciphertext,
+                          jpssl::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext);
 #endif // __x86_64__
@@ -604,16 +604,16 @@ bool aes_gcm_decrypt_vaes(const aes_context& ctx,
 /// ARM NEON AES-GCM 加密（AESE + PMULL，4 块并行；不满足条件时回退软件）
 void aes_gcm_encrypt_neon(const aes_context& ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> plaintext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> plaintext,
+                          jpssl::span<const uint8_t> aad,
                           std::vector<uint8_t>& ciphertext,
                           uint8_t* tag, size_t tag_len = 16);
 
 /// ARM NEON AES-GCM 解密
 bool aes_gcm_decrypt_neon(const aes_context& ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> ciphertext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> ciphertext,
+                          jpssl::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext);
 #endif
@@ -622,16 +622,16 @@ bool aes_gcm_decrypt_neon(const aes_context& ctx,
 /// 统一入口，内部根据 CPU 特性自动分派
 void aes_gcm_encrypt_auto(const aes_context& ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> plaintext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> plaintext,
+                          jpssl::span<const uint8_t> aad,
                           std::vector<uint8_t>& ciphertext,
                           uint8_t* tag, size_t tag_len = 16);
 
 /// GCM 解密 — 自动选择最优实现
 bool aes_gcm_decrypt_auto(const aes_context& ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> ciphertext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> ciphertext,
+                          jpssl::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext);
 
@@ -651,8 +651,8 @@ bool aes_gcm_decrypt_auto(const aes_context& ctx,
 /// @param tag_len     标签长度（4/6/8/10/12/14/16）
 void aes_ccm_encrypt(const aes_context& ctx,
                      const uint8_t* nonce, size_t nonce_len,
-                     std::span<const uint8_t> plaintext,
-                     std::span<const uint8_t> aad,
+                     jpssl::span<const uint8_t> plaintext,
+                     jpssl::span<const uint8_t> aad,
                      std::vector<uint8_t>& ciphertext,
                      uint8_t* tag, size_t tag_len);
 
@@ -660,8 +660,8 @@ void aes_ccm_encrypt(const aes_context& ctx,
 /// @return true 标签验证通过, false 验证失败（输出不应被使用）
 bool aes_ccm_decrypt(const aes_context& ctx,
                      const uint8_t* nonce, size_t nonce_len,
-                     std::span<const uint8_t> ciphertext,
-                     std::span<const uint8_t> aad,
+                     jpssl::span<const uint8_t> ciphertext,
+                     jpssl::span<const uint8_t> aad,
                      const uint8_t* tag, size_t tag_len,
                      std::vector<uint8_t>& plaintext);
 

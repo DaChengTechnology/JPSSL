@@ -180,13 +180,13 @@ void test_aes_gcm_consistency() {
     size_t pt_len = sizeof(plaintext);
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     // jpssl AES-GCM: ciphertext is a vector reference
     std::vector<uint8_t> jp_ct;
     uint8_t jp_tag[16];
-    aes_gcm_encrypt(ctx, iv, 12, std::span<const uint8_t>(plaintext, pt_len),
-                   std::span<const uint8_t>(aad, sizeof(aad)), jp_ct, jp_tag, 16);
+    aes_gcm_encrypt(ctx, iv, 12, jpssl::span<const uint8_t>(plaintext, pt_len),
+                   jpssl::span<const uint8_t>(aad, sizeof(aad)), jp_ct, jp_tag, 16);
 
     // OpenSSL AES-GCM
     EVP_CIPHER_CTX* evp_ctx = EVP_CIPHER_CTX_new();
@@ -219,8 +219,8 @@ void test_aes_gcm_consistency() {
     // Verify jpssl decrypt
     std::vector<uint8_t> jp_dec;
     bool jp_ok = aes_gcm_decrypt(ctx, iv, 12,
-                                 std::span<const uint8_t>(jp_ct.data(), jp_ct.size()),
-                                 std::span<const uint8_t>(aad, sizeof(aad)),
+                                 jpssl::span<const uint8_t>(jp_ct.data(), jp_ct.size()),
+                                 jpssl::span<const uint8_t>(aad, sizeof(aad)),
                                  jp_tag, 16, jp_dec);
     TEST("jpssl AES-GCM decrypt success", jp_ok);
     bool dec_equal = jp_dec.size() == pt_len &&
@@ -284,13 +284,13 @@ void benchmark_aes_gcm_throughput() {
 
     // ── jpssl AES-GCM ──
     aes_context jp_ctx;
-    jp_ctx.init(std::span<const uint8_t, 16>(key, 16));
+    jp_ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     auto t0 = high_resolution_clock::now();
     std::vector<uint8_t> jp_cipher;
     uint8_t jp_tag[16];
-    aes_gcm_encrypt_auto(jp_ctx, iv, 12, std::span<const uint8_t>(plain),
-                   std::span<const uint8_t>(), jp_cipher, jp_tag, 16);
+    aes_gcm_encrypt_auto(jp_ctx, iv, 12, jpssl::span<const uint8_t>(plain),
+                   jpssl::span<const uint8_t>(), jp_cipher, jp_tag, 16);
     auto t1 = high_resolution_clock::now();
     double jp_ms = duration<double, std::milli>(t1 - t0).count();
     double jp_gbps = (total_bytes) / (jp_ms / 1000.0) / 1e9;

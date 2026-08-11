@@ -21,7 +21,7 @@
 
 #include <algorithm>
 #include <cstring>
-#include <span>
+#include "jpssl_span.hpp"
 #include <vector>
 
 namespace jpssl {
@@ -221,8 +221,8 @@ static void build_j0_neon(const uint8_t* iv, size_t iv_len, uint8x16_t H,
 
 static void neon_gcm_encrypt_impl(const aes_context& ctx,
                                   const uint8_t* iv, size_t iv_len,
-                                  std::span<const uint8_t> plaintext,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> plaintext,
+                                  jpssl::span<const uint8_t> aad,
                                   uint8_t* out,
                                   uint8_t* tag, size_t tag_len) {
     const uint8_t* rk = ctx.enc_rk.data();
@@ -327,8 +327,8 @@ static void neon_gcm_encrypt_impl(const aes_context& ctx,
 
 static bool neon_gcm_decrypt_impl(const aes_context& ctx,
                                   const uint8_t* iv, size_t iv_len,
-                                  std::span<const uint8_t> ciphertext,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> ciphertext,
+                                  jpssl::span<const uint8_t> aad,
                                   const uint8_t* tag, size_t tag_len,
                                   uint8_t* out) {
     const uint8_t* enc_rk = ctx.enc_rk.data();
@@ -428,8 +428,8 @@ static bool neon_gcm_available() {
 
 void aes_gcm_encrypt_neon(const aes_context& ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> plaintext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> plaintext,
+                          jpssl::span<const uint8_t> aad,
                           std::vector<uint8_t>& ciphertext,
                           uint8_t* tag, size_t tag_len) {
     if (neon_gcm_available()) {
@@ -443,8 +443,8 @@ void aes_gcm_encrypt_neon(const aes_context& ctx,
 
 bool aes_gcm_decrypt_neon(const aes_context& ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> ciphertext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> ciphertext,
+                          jpssl::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext) {
     if (neon_gcm_available()) {
@@ -458,16 +458,16 @@ bool aes_gcm_decrypt_neon(const aes_context& ctx,
 void aes_gcm_encrypt_neon_inplace(const aes_context& ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> aad,
                                   uint8_t* tag, size_t tag_len) {
     if (neon_gcm_available()) {
         neon_gcm_encrypt_impl(ctx, iv, iv_len,
-                              std::span<const uint8_t>(buf, data_len), aad, buf,
+                              jpssl::span<const uint8_t>(buf, data_len), aad, buf,
                               tag, tag_len);
         return;
     }
     std::vector<uint8_t> ct(data_len);
-    aes_gcm_encrypt(ctx, iv, iv_len, std::span<const uint8_t>(buf, data_len), aad,
+    aes_gcm_encrypt(ctx, iv, iv_len, jpssl::span<const uint8_t>(buf, data_len), aad,
                     ct, tag, tag_len);
     std::memcpy(buf, ct.data(), data_len);
 }
@@ -475,15 +475,15 @@ void aes_gcm_encrypt_neon_inplace(const aes_context& ctx,
 bool aes_gcm_decrypt_neon_inplace(const aes_context& ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> aad,
                                   const uint8_t* tag, size_t tag_len) {
     if (neon_gcm_available()) {
         return neon_gcm_decrypt_impl(ctx, iv, iv_len,
-                                     std::span<const uint8_t>(buf, data_len), aad,
+                                     jpssl::span<const uint8_t>(buf, data_len), aad,
                                      tag, tag_len, buf);
     }
     std::vector<uint8_t> pt(data_len);
-    bool ok = aes_gcm_decrypt(ctx, iv, iv_len, std::span<const uint8_t>(buf, data_len),
+    bool ok = aes_gcm_decrypt(ctx, iv, iv_len, jpssl::span<const uint8_t>(buf, data_len),
                               aad, tag, tag_len, pt);
     if (ok) std::memcpy(buf, pt.data(), data_len);
     return ok;

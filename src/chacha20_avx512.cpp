@@ -13,7 +13,7 @@
 #include <immintrin.h>
 #include <cstdint>
 #include <cstring>
-#include <span>
+#include "jpssl_span.hpp"
 
 namespace jpssl {
 
@@ -107,8 +107,8 @@ static void chacha20_blocks16(const uint8_t key[32], uint32_t base_counter,
 /// AVX512 流加密入口
 void chacha20_crypt_avx512(const uint8_t key[32], uint32_t counter,
                            const uint8_t nonce[12],
-                           std::span<const uint8_t> input,
-                           std::span<uint8_t> output) {
+                           jpssl::span<const uint8_t> input,
+                           jpssl::span<uint8_t> output) {
     uint8_t keystream[1024];
     size_t pos = 0;
 

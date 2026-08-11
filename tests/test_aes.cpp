@@ -90,7 +90,7 @@ void test_block_encrypt() {
         };
 
         aes_context ctx;
-        ctx.init(std::span<const uint8_t, 16>(key, 16));
+        ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
         uint8_t ct[16];
         aes_encrypt_block(ctx, pt, ct);
@@ -123,7 +123,7 @@ void test_block_encrypt() {
         AES_encrypt(pt, ossl_ct, &ossl_key);
 
         aes_context ctx;
-        ctx.init(std::span<const uint8_t, 24>(key, 24));
+        ctx.init(jpssl::span<const uint8_t, 24>(key, 24));
         uint8_t ct[16];
         aes_encrypt_block(ctx, pt, ct);
 
@@ -151,7 +151,7 @@ void test_block_encrypt() {
         };
 
         aes_context ctx;
-        ctx.init(std::span<const uint8_t, 32>(key, 32));
+        ctx.init(jpssl::span<const uint8_t, 32>(key, 32));
 
         uint8_t ct[16];
         aes_encrypt_block(ctx, pt, ct);
@@ -174,7 +174,7 @@ void test_block_encrypt() {
         const uint8_t pt[16] = {};
 
         aes_context ctx;
-        ctx.init(std::span<const uint8_t, 16>(key, 16));
+        ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
         uint8_t ct[16], rt[16];
         aes_encrypt_block(ctx, pt, ct);
         aes_decrypt_block(ctx, ct, rt);
@@ -201,7 +201,7 @@ void test_ecb() {
     };
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     // Single block
     {
@@ -219,13 +219,13 @@ void test_ecb() {
         for (int i = 0; i < 32; ++i) pt[i] = (uint8_t)i;
         uint8_t ct[32], rt[32];
 
-        aes_encrypt_ecb(ctx, std::span<const uint8_t>(pt, 32),
-                         std::span<uint8_t>(ct, 32));
+        aes_encrypt_ecb(ctx, jpssl::span<const uint8_t>(pt, 32),
+                         jpssl::span<uint8_t>(ct, 32));
         // Verify blocks encrypted independently
         CHECK("ECB block0 != block1", memcmp(ct, ct + 16, 16) != 0);
 
-        aes_decrypt_ecb(ctx, std::span<const uint8_t>(ct, 32),
-                         std::span<uint8_t>(rt, 32));
+        aes_decrypt_ecb(ctx, jpssl::span<const uint8_t>(ct, 32),
+                         jpssl::span<uint8_t>(rt, 32));
         CHECK("ECB 2-block roundtrip", memcmp(rt, pt, 32) == 0);
     }
 
@@ -234,8 +234,8 @@ void test_ecb() {
         uint8_t pt[32];
         for (int i = 0; i < 32; ++i) pt[i] = (uint8_t)(i + 0x80);
         uint8_t ct_jp[32];
-        aes_encrypt_ecb(ctx, std::span<const uint8_t>(pt, 32),
-                         std::span<uint8_t>(ct_jp, 32));
+        aes_encrypt_ecb(ctx, jpssl::span<const uint8_t>(pt, 32),
+                         jpssl::span<uint8_t>(ct_jp, 32));
 
         AES_KEY ossl_key;
         AES_set_encrypt_key(key, 128, &ossl_key);
@@ -256,7 +256,7 @@ void test_pkcs7() {
     // Empty → 16 bytes of 0x10
     {
         uint8_t empty[1];
-        auto padded = pkcs7_pad(std::span<const uint8_t>(empty, 0));
+        auto padded = pkcs7_pad(jpssl::span<const uint8_t>(empty, 0));
         CHECK("PKCS7 empty → 16 bytes 0x10", padded.size() == 16 &&
               std::all_of(padded.begin(), padded.end(), [](uint8_t b){ return b == 0x10; }));
         auto unpadded = pkcs7_unpad(padded);
@@ -266,7 +266,7 @@ void test_pkcs7() {
     // 1 byte → 16 bytes (15 pad bytes)
     {
         uint8_t d[] = {0x42};
-        auto padded = pkcs7_pad(std::span<const uint8_t>(d, 1));
+        auto padded = pkcs7_pad(jpssl::span<const uint8_t>(d, 1));
         CHECK("PKCS7 1→16 len=16", padded.size() == 16);
         CHECK("PKCS7 1→16 last=0x0f", padded[15] == 0x0f);
         auto unpadded = pkcs7_unpad(padded);
@@ -277,7 +277,7 @@ void test_pkcs7() {
     {
         uint8_t d[15];
         for (int i = 0; i < 15; ++i) d[i] = (uint8_t)i;
-        auto padded = pkcs7_pad(std::span<const uint8_t>(d, 15));
+        auto padded = pkcs7_pad(jpssl::span<const uint8_t>(d, 15));
         CHECK("PKCS7 15→16 last=0x01", padded.size() == 16 && padded[15] == 0x01);
         auto unpadded = pkcs7_unpad(padded);
         CHECK("PKCS7 unpad 15→15", unpadded.size() == 15);
@@ -287,7 +287,7 @@ void test_pkcs7() {
     {
         uint8_t d[16];
         for (int i = 0; i < 16; ++i) d[i] = (uint8_t)i;
-        auto padded = pkcs7_pad(std::span<const uint8_t>(d, 16));
+        auto padded = pkcs7_pad(jpssl::span<const uint8_t>(d, 16));
         CHECK("PKCS7 16→32 len=32", padded.size() == 32);
         CHECK("PKCS7 16→32 all-last=0x10", padded[31] == 0x10 && padded[16] == 0x10);
         auto unpadded = pkcs7_unpad(padded);
@@ -298,7 +298,7 @@ void test_pkcs7() {
     {
         uint8_t d[17];
         for (int i = 0; i < 17; ++i) d[i] = (uint8_t)i;
-        auto padded = pkcs7_pad(std::span<const uint8_t>(d, 17));
+        auto padded = pkcs7_pad(jpssl::span<const uint8_t>(d, 17));
         CHECK("PKCS7 17→32 last=0x0f", padded.size() == 32 && padded[31] == 0x0f);
         auto unpadded = pkcs7_unpad(padded);
         CHECK("PKCS7 unpad 17→17", unpadded.size() == 17);
@@ -309,7 +309,7 @@ void test_pkcs7() {
         uint8_t bad[] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
                          0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0xff};
         bool caught = false;
-        try { pkcs7_unpad(std::span<const uint8_t>(bad, 16)); }
+        try { pkcs7_unpad(jpssl::span<const uint8_t>(bad, 16)); }
         catch (const std::runtime_error&) { caught = true; }
         CHECK("PKCS7 unpad bad padding throws", caught);
     }
@@ -331,7 +331,7 @@ void test_cbc() {
     };
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     // Roundtrip: various sizes
     const size_t sizes[] = {0, 1, 15, 16, 17, 31, 32, 64, 128, 255};
@@ -403,7 +403,7 @@ void test_gcm() {
     };
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(K, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(K, 16));
 
     // Roundtrip: various plaintext sizes, with AAD
     const size_t pt_sizes[] = {0, 1, 15, 16, 17, 31, 32, 64, 256};
@@ -464,16 +464,16 @@ void test_gcm() {
         std::vector<uint8_t> ct;
         uint8_t tag8[16], tag16[16];
 
-        aes_gcm_encrypt(ctx, iv8, 8, std::span<const uint8_t>(pt, 16),
-                        std::span<const uint8_t>(), ct, tag8, 16);
+        aes_gcm_encrypt(ctx, iv8, 8, jpssl::span<const uint8_t>(pt, 16),
+                        jpssl::span<const uint8_t>(), ct, tag8, 16);
         std::vector<uint8_t> rt;
         CHECK("GCM IV len=8 roundtrip",
-              aes_gcm_decrypt(ctx, iv8, 8, ct, std::span<const uint8_t>(), tag8, 16, rt));
+              aes_gcm_decrypt(ctx, iv8, 8, ct, jpssl::span<const uint8_t>(), tag8, 16, rt));
 
-        aes_gcm_encrypt(ctx, iv16, 16, std::span<const uint8_t>(pt, 16),
-                        std::span<const uint8_t>(), ct, tag16, 16);
+        aes_gcm_encrypt(ctx, iv16, 16, jpssl::span<const uint8_t>(pt, 16),
+                        jpssl::span<const uint8_t>(), ct, tag16, 16);
         CHECK("GCM IV len=16 roundtrip",
-              aes_gcm_decrypt(ctx, iv16, 16, ct, std::span<const uint8_t>(), tag16, 16, rt));
+              aes_gcm_decrypt(ctx, iv16, 16, ct, jpssl::span<const uint8_t>(), tag16, 16, rt));
     }
 
     // Tag length variants
@@ -482,12 +482,12 @@ void test_gcm() {
         for (size_t tl = 12; tl <= 16; ++tl) {
             std::vector<uint8_t> ct;
             uint8_t tag[16] = {};
-            aes_gcm_encrypt(ctx, IV, 12, std::span<const uint8_t>(pt, 16),
-                            std::span<const uint8_t>(), ct, tag, tl);
+            aes_gcm_encrypt(ctx, IV, 12, jpssl::span<const uint8_t>(pt, 16),
+                            jpssl::span<const uint8_t>(), ct, tag, tl);
             std::vector<uint8_t> rt;
             char name[64];
             snprintf(name, sizeof(name), "GCM tag_len=%zu roundtrip", tl);
-            CHECK(name, aes_gcm_decrypt(ctx, IV, 12, ct, std::span<const uint8_t>(),
+            CHECK(name, aes_gcm_decrypt(ctx, IV, 12, ct, jpssl::span<const uint8_t>(),
                                         tag, tl, rt));
         }
     }
@@ -498,11 +498,11 @@ void test_gcm() {
         for (int i = 0; i < 32; ++i) pt[i] = (uint8_t)i;
         std::vector<uint8_t> ct;
         uint8_t tag[16];
-        aes_gcm_encrypt(ctx, IV, 12, std::span<const uint8_t>(pt, 32),
-                        std::span<const uint8_t>(), ct, tag, 16);
+        aes_gcm_encrypt(ctx, IV, 12, jpssl::span<const uint8_t>(pt, 32),
+                        jpssl::span<const uint8_t>(), ct, tag, 16);
         std::vector<uint8_t> rt;
         CHECK("GCM empty AAD roundtrip",
-              aes_gcm_decrypt(ctx, IV, 12, ct, std::span<const uint8_t>(), tag, 16, rt) &&
+              aes_gcm_decrypt(ctx, IV, 12, ct, jpssl::span<const uint8_t>(), tag, 16, rt) &&
               rt == std::vector<uint8_t>(pt, pt + 32));
     }
 
@@ -514,8 +514,8 @@ void test_gcm() {
 
         std::vector<uint8_t> ct_jp;
         uint8_t tag_jp[16];
-        aes_gcm_encrypt(ctx, IV, 12, std::span<const uint8_t>(pt, 32),
-                        std::span<const uint8_t>((const uint8_t*)aad, strlen(aad)),
+        aes_gcm_encrypt(ctx, IV, 12, jpssl::span<const uint8_t>(pt, 32),
+                        jpssl::span<const uint8_t>((const uint8_t*)aad, strlen(aad)),
                         ct_jp, tag_jp, 16);
 
         // OpenSSL
@@ -547,11 +547,11 @@ void test_gcm() {
         };
 
         aes_context ctx0;
-        ctx0.init(std::span<const uint8_t, 16>(K0, 16));
+        ctx0.init(jpssl::span<const uint8_t, 16>(K0, 16));
         std::vector<uint8_t> ct;
         uint8_t tag[16];
         aes_gcm_encrypt(ctx0, IV0, 12,
-                        std::span<const uint8_t>(), std::span<const uint8_t>(),
+                        jpssl::span<const uint8_t>(), jpssl::span<const uint8_t>(),
                         ct, tag, 16);
         CHECK("GCM NIST TC1 tag", memcmp(tag, expected_tag, 16) == 0);
         CHECK("GCM NIST TC1 empty ct", ct.empty());

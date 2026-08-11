@@ -33,7 +33,16 @@
 
 #include "tls.hpp"
 
+// JPSSL coroutine support: available with C++20, disabled below.
+#if defined(__cpp_impl_coroutine) && defined(__cpp_lib_coroutine)
+#define JPSSL_HAS_COROUTINE 1
+#else
+#define JPSSL_HAS_COROUTINE 0
+#endif
+
+#if JPSSL_HAS_COROUTINE
 #include <coroutine>
+#endif
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -78,6 +87,7 @@ class tls_listener;
 /// 泛型协程任务。co_await 后得到返回值 T。
 /// 顶层任务（无人 co_await）用局部变量持有，完成（含挂起等待时）
 /// 由析构清理协程帧；嵌套任务由外层 co_await 的 await_resume 清理。
+#if JPSSL_HAS_COROUTINE
 template <typename T>
 struct tls_co_task {
     struct promise_type {
@@ -227,6 +237,7 @@ private:
     };
     std::vector<waiter> waiters_;
 };
+#endif // JPSSL_HAS_COROUTINE
 
 // ============================================================================
 // TLS over TCP 连接（客户端或服务端，握手完成后即可收发应用数据）
@@ -355,6 +366,7 @@ public:
     // ---- 协程 I/O（C++20 coroutine）----
     /// 绑定协程执行器。co_send()/co_recv() 前必须调用（多个连接可共享
     /// 一个执行器）。协程 I/O 要求连接处于非阻塞模式（set_nonblocking(true)）。
+#if JPSSL_HAS_COROUTINE
     void attach_co_executor(tls_co_executor* ex) { executor_ = ex; }
     tls_co_executor* co_executor() const { return executor_; }
 
@@ -370,6 +382,7 @@ public:
     /// 致命错误 / 收到 alert。
     tls_co_task<bool> co_recv(std::vector<uint8_t>& out,
                               std::string* error = nullptr);
+#endif // JPSSL_HAS_COROUTINE
 
     void close();
     bool is_open() const { return open_; }
@@ -407,10 +420,12 @@ private:
     bool more_data_pending() const;
     /// 协程版：从 socket 读入数据追加到 rbuf_，直到 rbuf_.size() >= min_total。
     /// would-block 时挂起等待可读（由执行器恢复）。
+#if JPSSL_HAS_COROUTINE
     tls_co_task<bool> co_fill_rbuf(size_t min_total, std::string* error);
     /// 协程版：读取一条完整 TLS record（从 rbuf_ 消费，续读无缝）。
     tls_co_task<bool> co_read_record(uint8_t& type, std::vector<uint8_t>& payload,
                                      std::string* error);
+#endif // JPSSL_HAS_COROUTINE
 
     void set_tcp_nodelay();
 
@@ -425,7 +440,9 @@ private:
     TLSVersion tls_version_ = TLSVersion::V13; // 客户端握手版本（默认 TLS 1.3）
     tls_session session_;
     std::vector<uint8_t> rbuf_;   // 接收缓冲（处理半包）
+#if JPSSL_HAS_COROUTINE
     tls_co_executor* executor_ = nullptr; // 协程执行器（co_send/co_recv 用）
+#endif // JPSSL_HAS_COROUTINE
 };
 
 // ============================================================================

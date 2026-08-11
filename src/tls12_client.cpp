@@ -466,7 +466,7 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
         premaster.assign(pre_master_secret, pre_master_secret + pms_len);
         if (client_key_exchange && server_cert) {
             uint8_t encrypted[256];
-            rsa_encrypt(server_cert->pub.rsa, std::span<const uint8_t>(premaster), encrypted);
+            rsa_encrypt(server_cert->pub.rsa, jpssl::span<const uint8_t>(premaster), encrypted);
             cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
             cke.push_back(0); cke.push_back((uint8_t)(258 >> 8)); cke.push_back((uint8_t)258);
             cke.push_back(0x01); cke.push_back(0x00);

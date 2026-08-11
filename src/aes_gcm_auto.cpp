@@ -49,8 +49,8 @@ static void detect_best() {
 
 void aes_gcm_encrypt_auto(const aes_context& ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> plaintext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> plaintext,
+                          jpssl::span<const uint8_t> aad,
                           std::vector<uint8_t>& ciphertext,
                           uint8_t* tag, size_t tag_len) {
     detect_best();
@@ -83,8 +83,8 @@ void aes_gcm_encrypt_auto(const aes_context& ctx,
 
 bool aes_gcm_decrypt_auto(const aes_context& ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> ciphertext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> ciphertext,
+                          jpssl::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext) {
     detect_best();
@@ -121,7 +121,7 @@ bool aes_gcm_decrypt_auto(const aes_context& ctx,
 void aes_gcm_encrypt_inplace(const aes_context& ctx,
                              const uint8_t* iv, size_t iv_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              uint8_t* tag, size_t tag_len) {
     detect_best();
     switch (g_best_level) {
@@ -150,7 +150,7 @@ void aes_gcm_encrypt_inplace(const aes_context& ctx,
     }
     // 软件回退：临时向量（无 SIMD 后端，仅保证正确性）
     std::vector<uint8_t> ct(data_len);
-    aes_gcm_encrypt(ctx, iv, iv_len, std::span<const uint8_t>(buf, data_len), aad,
+    aes_gcm_encrypt(ctx, iv, iv_len, jpssl::span<const uint8_t>(buf, data_len), aad,
                     ct, tag, tag_len);
     std::memcpy(buf, ct.data(), data_len);
 }
@@ -158,7 +158,7 @@ void aes_gcm_encrypt_inplace(const aes_context& ctx,
 bool aes_gcm_decrypt_inplace(const aes_context& ctx,
                              const uint8_t* iv, size_t iv_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              const uint8_t* tag, size_t tag_len) {
     detect_best();
     switch (g_best_level) {
@@ -186,7 +186,7 @@ bool aes_gcm_decrypt_inplace(const aes_context& ctx,
             break;
     }
     std::vector<uint8_t> pt(data_len);
-    bool ok = aes_gcm_decrypt(ctx, iv, iv_len, std::span<const uint8_t>(buf, data_len),
+    bool ok = aes_gcm_decrypt(ctx, iv, iv_len, jpssl::span<const uint8_t>(buf, data_len),
                               aad, tag, tag_len, pt);
     if (ok) std::memcpy(buf, pt.data(), data_len);
     return ok;

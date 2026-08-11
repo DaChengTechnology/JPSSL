@@ -1,7 +1,7 @@
 package io.github.jpssl;
 
 /**
- * jpssl — C++20 高性能密码学库（ARMv8/AArch64）的 Android JNI 封装。
+ * jpssl — C++17 高性能密码学库（ARMv8/AArch64）的 Android JNI 封装。
  *
  * <p>静态 native 方法直接绑定 libjpssl.so（内部链接 libjpssl_cpu），
  * 由 {@code JNI_OnLoad → RegisterNatives} 注册，导出 Java/Kotlin 符号。

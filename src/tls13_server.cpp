@@ -648,40 +648,40 @@ bool tls13_decrypt_early_data(tls_session& s, const uint8_t* record, size_t reco
 
     std::vector<uint8_t> inner;
     bool ok = false;
-    std::span<const uint8_t> aad_span(record, 5);
+    jpssl::span<const uint8_t> aad_span(record, 5);
     switch(s.cipher_suite){
         case CipherSuite::TLS_AES_128_GCM_SHA256:
         case CipherSuite::TLS_AES_256_GCM_SHA384: {
             aes_context ctx;
             aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
-            ok = aes_gcm_decrypt_auto(ctx, nonce, 12, std::span<const uint8_t>(ciphertext,ct_len),
+            ok = aes_gcm_decrypt_auto(ctx, nonce, 12, jpssl::span<const uint8_t>(ciphertext,ct_len),
                                  aad_span, tag, 16, inner);
             break;
         }
         case CipherSuite::TLS_CHACHA20_POLY1305_SHA256:
             ok = chacha20_poly1305_decrypt(s.client_early_write_key, nonce,
-                                           std::span<const uint8_t>(ciphertext,ct_len),
+                                           jpssl::span<const uint8_t>(ciphertext,ct_len),
                                            aad_span, tag, inner);
             break;
         case CipherSuite::TLS_AES_128_CCM_SHA256:
         case CipherSuite::TLS_AES_128_CCM_8_SHA256: {
             aes_context ctx;
             aes_ctx_init(ctx, s.client_early_write_key, aes_key_len(s.cipher_suite));
-            ok = aes_ccm_decrypt(ctx, nonce, 12, std::span<const uint8_t>(ciphertext,ct_len),
+            ok = aes_ccm_decrypt(ctx, nonce, 12, jpssl::span<const uint8_t>(ciphertext,ct_len),
                                  aad_span, tag, tag_len, inner);
             break;
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, s.client_early_write_key);
             ok = sm4_gcm_decrypt(&s.sm4, nonce, 12,
-                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 jpssl::span<const uint8_t>(ciphertext,ct_len),
                                  aad_span, tag, 16, inner);
             break;
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, s.client_early_write_key);
             ok = sm4_ccm_decrypt(&s.sm4, nonce, 12,
-                                 std::span<const uint8_t>(ciphertext,ct_len),
+                                 jpssl::span<const uint8_t>(ciphertext,ct_len),
                                  aad_span, tag, 16, inner);
             break;
         }

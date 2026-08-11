@@ -14,7 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <span>
+#include "jpssl_span.hpp"
 #include <vector>
 
 namespace jpssl {
@@ -54,8 +54,8 @@ void chacha20_block(const uint8_t key[32], uint32_t counter,
 /// @param output   密文（或明文），与 input 等长
 void chacha20_crypt(const uint8_t key[32], uint32_t counter,
                     const uint8_t nonce[12],
-                    std::span<const uint8_t> input,
-                    std::span<uint8_t> output);
+                    jpssl::span<const uint8_t> input,
+                    jpssl::span<uint8_t> output);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Poly1305 底层
@@ -66,7 +66,7 @@ void chacha20_crypt(const uint8_t key[32], uint32_t counter,
 /// @param msg  待认证消息
 /// @param tag  输出 16 字节认证标签
 void poly1305_mac(const uint8_t key[32],
-                  std::span<const uint8_t> msg,
+                  jpssl::span<const uint8_t> msg,
                   uint8_t tag[16]);
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -105,8 +105,8 @@ void finish(const State& st, const uint8_t key[32], uint8_t tag[16]);
 void chacha20_poly1305_encrypt(
     const uint8_t key[32],
     const uint8_t nonce[12],
-    std::span<const uint8_t> plaintext,
-    std::span<const uint8_t> aad,
+    jpssl::span<const uint8_t> plaintext,
+    jpssl::span<const uint8_t> aad,
     std::vector<uint8_t>& ciphertext,
     uint8_t tag[16]);
 
@@ -115,8 +115,8 @@ void chacha20_poly1305_encrypt(
 bool chacha20_poly1305_decrypt(
     const uint8_t key[32],
     const uint8_t nonce[12],
-    std::span<const uint8_t> ciphertext,
-    std::span<const uint8_t> aad,
+    jpssl::span<const uint8_t> ciphertext,
+    jpssl::span<const uint8_t> aad,
     const uint8_t tag[16],
     std::vector<uint8_t>& plaintext);
 
@@ -132,23 +132,23 @@ bool chacha20_poly1305_decrypt(
 // SIMD 加速实现（chacha20_avx2.cpp / chacha20_avx512.cpp，运行时扩展检测后调用）
 void chacha20_crypt_avx2(const uint8_t key[32], uint32_t counter,
                          const uint8_t nonce[12],
-                         std::span<const uint8_t> input,
-                         std::span<uint8_t> output);
+                         jpssl::span<const uint8_t> input,
+                         jpssl::span<uint8_t> output);
 void chacha20_crypt_avx512(const uint8_t key[32], uint32_t counter,
                            const uint8_t nonce[12],
-                           std::span<const uint8_t> input,
-                           std::span<uint8_t> output);
+                           jpssl::span<const uint8_t> input,
+                           jpssl::span<uint8_t> output);
 #if defined(JP_NEON) && defined(__aarch64__)
 /// ARM NEON 加速流加密（chacha20_neon.cpp，4 块并行）
 void chacha20_crypt_neon(const uint8_t key[32], uint32_t counter,
                          const uint8_t nonce[12],
-                         std::span<const uint8_t> input,
-                         std::span<uint8_t> output);
+                         jpssl::span<const uint8_t> input,
+                         jpssl::span<uint8_t> output);
 #endif
 
 inline void chacha20_stream_xor(const uint8_t key[32], const uint8_t nonce[12],
-                                std::span<const uint8_t> input,
-                                std::span<uint8_t> output) {
+                                jpssl::span<const uint8_t> input,
+                                jpssl::span<uint8_t> output) {
     chacha20_crypt(key, 0, nonce, input, output);
 }
 
@@ -168,10 +168,10 @@ void musa_chacha20_pool_keystream(musa_chacha20_pool* pool, uint8_t* keystream,
 void musa_chacha20_pool_xor(musa_chacha20_pool* pool, const uint8_t* input,
                             uint8_t* output, size_t num_blocks, uint32_t base_counter);
 void musa_chacha20_pool_aead_encrypt(musa_chacha20_pool* pool, const uint8_t nonce[12],
-                                     std::span<const uint8_t> pt, std::span<const uint8_t> aad,
+                                     jpssl::span<const uint8_t> pt, jpssl::span<const uint8_t> aad,
                                      std::vector<uint8_t>& ct, uint8_t tag[16]);
 bool musa_chacha20_pool_aead_decrypt(musa_chacha20_pool* pool, const uint8_t nonce[12],
-                                     std::span<const uint8_t> ct, std::span<const uint8_t> aad,
+                                     jpssl::span<const uint8_t> ct, jpssl::span<const uint8_t> aad,
                                      const uint8_t tag[16], std::vector<uint8_t>& pt);
 #endif
 

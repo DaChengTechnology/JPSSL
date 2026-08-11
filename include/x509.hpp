@@ -20,7 +20,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
-#include <span>
+#include "jpssl_span.hpp"
 #include <optional>
 #include <ctime>
 

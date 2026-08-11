@@ -1087,8 +1087,8 @@ std::optional<std::vector<uint8_t>> aes_cbc_decrypt(const uint8_t* key, size_t k
     if (cipher_len == 0 || cipher_len % 16 != 0) return std::nullopt;
     if (key_len != 16 && key_len != 32) return std::nullopt;
     aes_context ctx;
-    if (key_len == 16) ctx.init(std::span<const uint8_t, 16>(key, 16));
-    else               ctx.init(std::span<const uint8_t, 32>(key, 32));
+    if (key_len == 16) ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
+    else               ctx.init(jpssl::span<const uint8_t, 32>(key, 32));
 
     std::vector<uint8_t> out(cipher_len);
     uint8_t prev[16];

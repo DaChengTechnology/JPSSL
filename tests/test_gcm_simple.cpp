@@ -2,7 +2,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
-#include <span>
+#include "jpssl_span.hpp"
 using namespace jpssl;
 
 int main() {
@@ -13,13 +13,13 @@ int main() {
     size_t pt_len = strlen(plaintext);
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t,16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t,16>(key, 16));
 
     std::vector<uint8_t> ct;
     uint8_t tag[16];
     aes_gcm_encrypt(ctx, iv, 12,
-                    std::span<const uint8_t>((const uint8_t*)plaintext, pt_len),
-                    std::span<const uint8_t>(),
+                    jpssl::span<const uint8_t>((const uint8_t*)plaintext, pt_len),
+                    jpssl::span<const uint8_t>(),
                     ct, tag, 16);
 
     printf("Encrypted %zu bytes, tag: ", pt_len);
@@ -29,8 +29,8 @@ int main() {
     // 解密
     std::vector<uint8_t> pt_out;
     bool ok = aes_gcm_decrypt(ctx, iv, 12,
-                              std::span<const uint8_t>(ct.data(), ct.size()),
-                              std::span<const uint8_t>(),
+                              jpssl::span<const uint8_t>(ct.data(), ct.size()),
+                              jpssl::span<const uint8_t>(),
                               tag, 16, pt_out);
     printf("Decrypt ok=%d, size=%zu\n", ok, pt_out.size());
     if (ok) {
@@ -49,14 +49,14 @@ int main() {
     std::vector<uint8_t> ct2;
     uint8_t tag2[16];
     aes_gcm_encrypt(ctx, iv, 12,
-                    std::span<const uint8_t>(inner.data(), inner.size()),
-                    std::span<const uint8_t>(),
+                    jpssl::span<const uint8_t>(inner.data(), inner.size()),
+                    jpssl::span<const uint8_t>(),
                     ct2, tag2, 16);
 
     std::vector<uint8_t> inner_out;
     bool ok2 = aes_gcm_decrypt(ctx, iv, 12,
-                               std::span<const uint8_t>(ct2.data(), ct2.size()),
-                               std::span<const uint8_t>(),
+                               jpssl::span<const uint8_t>(ct2.data(), ct2.size()),
+                               jpssl::span<const uint8_t>(),
                                tag2, 16, inner_out);
     printf("Inner decrypt ok=%d, size=%zu\n", ok2, inner_out.size());
     if (ok2) {

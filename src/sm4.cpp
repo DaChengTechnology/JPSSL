@@ -204,7 +204,7 @@ void sm4_decrypt_block(const sm4_ctx* ctx, const uint8_t cipher[SM4_BLOCK_SIZE],
 
 std::vector<uint8_t> sm4_cbc_encrypt(const sm4_ctx* ctx,
                                      const uint8_t iv[SM4_BLOCK_SIZE],
-                                     std::span<const uint8_t> plain) {
+                                     jpssl::span<const uint8_t> plain) {
     size_t n = plain.size();
     // PKCS#7 填充
     size_t pad = SM4_BLOCK_SIZE - (n % SM4_BLOCK_SIZE);
@@ -239,7 +239,7 @@ std::vector<uint8_t> sm4_cbc_encrypt(const sm4_ctx* ctx,
 
 std::vector<uint8_t> sm4_cbc_decrypt(const sm4_ctx* ctx,
                                      const uint8_t iv[SM4_BLOCK_SIZE],
-                                     std::span<const uint8_t> cipher) {
+                                     jpssl::span<const uint8_t> cipher) {
     size_t n = cipher.size();
     if (n == 0 || n % SM4_BLOCK_SIZE != 0)
         throw std::runtime_error("sm4_cbc_decrypt: ciphertext length must be multiple of 16");

@@ -35,7 +35,7 @@
 
 #include <cstdlib>
 #include <cstring>
-#include <span>
+#include "jpssl_span.hpp"
 #include <string>
 #include <vector>
 #include <memory>
@@ -205,9 +205,9 @@ struct jp_aes_ctx { aes_context c; };
 extern "C" jp_aes_ctx* jp_aes_init(const uint8_t* key, size_t key_len) {
     try {
         auto* c = new jp_aes_ctx();
-        if (key_len == 16) c->c.init(std::span<const uint8_t, 16>(key, 16));
-        else if (key_len == 24) c->c.init(std::span<const uint8_t, 24>(key, 24));
-        else if (key_len == 32) c->c.init(std::span<const uint8_t, 32>(key, 32));
+        if (key_len == 16) c->c.init(jpssl::span<const uint8_t, 16>(key, 16));
+        else if (key_len == 24) c->c.init(jpssl::span<const uint8_t, 24>(key, 24));
+        else if (key_len == 32) c->c.init(jpssl::span<const uint8_t, 32>(key, 32));
         else { delete c; return nullptr; }
         return c;
     } catch (...) { return nullptr; }
@@ -216,18 +216,18 @@ extern "C" void jp_aes_free(jp_aes_ctx* c) { delete c; }
 extern "C" void jp_aes_encrypt_block(jp_aes_ctx* c, const uint8_t in[16], uint8_t out[16]) { aes_encrypt_block(c->c, in, out); }
 extern "C" void jp_aes_decrypt_block(jp_aes_ctx* c, const uint8_t in[16], uint8_t out[16]) { aes_decrypt_block(c->c, in, out); }
 extern "C" int jp_aes_ecb_encrypt(jp_aes_ctx* c, const uint8_t* in, uint8_t* out, size_t len) {
-    try { if (len % 16) return 0; aes_encrypt_ecb(c->c, std::span<const uint8_t>(in, len), std::span<uint8_t>(out, len)); return 1; }
+    try { if (len % 16) return 0; aes_encrypt_ecb(c->c, jpssl::span<const uint8_t>(in, len), jpssl::span<uint8_t>(out, len)); return 1; }
     catch (...) { return 0; }
 }
 extern "C" int jp_aes_ecb_decrypt(jp_aes_ctx* c, const uint8_t* in, uint8_t* out, size_t len) {
-    try { if (len % 16) return 0; aes_decrypt_ecb(c->c, std::span<const uint8_t>(in, len), std::span<uint8_t>(out, len)); return 1; }
+    try { if (len % 16) return 0; aes_decrypt_ecb(c->c, jpssl::span<const uint8_t>(in, len), jpssl::span<uint8_t>(out, len)); return 1; }
     catch (...) { return 0; }
 }
 extern "C" int jp_aes_cbc_encrypt(jp_aes_ctx* c, const uint8_t iv[16], const uint8_t* in, size_t in_len,
                                   uint8_t** out, size_t* out_len) {
     try {
         std::vector<uint8_t> ct;
-        aes_cbc_encrypt(c->c, iv, std::span<const uint8_t>(in, in_len), ct);
+        aes_cbc_encrypt(c->c, iv, jpssl::span<const uint8_t>(in, in_len), ct);
         uint8_t* p = static_cast<uint8_t*>(std::malloc(ct.size() ? ct.size() : 1));
         if (!p) return 0;
         std::memcpy(p, ct.data(), ct.size());
@@ -239,7 +239,7 @@ extern "C" int jp_aes_cbc_decrypt(jp_aes_ctx* c, const uint8_t iv[16], const uin
                                   uint8_t** out, size_t* out_len) {
     try {
         std::vector<uint8_t> pt;
-        if (!aes_cbc_decrypt(c->c, iv, std::span<const uint8_t>(in, in_len), pt)) return 0;
+        if (!aes_cbc_decrypt(c->c, iv, jpssl::span<const uint8_t>(in, in_len), pt)) return 0;
         uint8_t* p = static_cast<uint8_t*>(std::malloc(pt.size() ? pt.size() : 1));
         if (!p) return 0;
         std::memcpy(p, pt.data(), pt.size());
@@ -254,8 +254,8 @@ extern "C" int jp_aes_gcm_encrypt(jp_aes_ctx* c, const uint8_t* iv, size_t iv_le
     try {
         std::vector<uint8_t> ctv;
         aes_gcm_encrypt_auto(c->c, iv, iv_len,
-                             std::span<const uint8_t>(pt, pt_len),
-                             std::span<const uint8_t>(aad, aad_len),
+                             jpssl::span<const uint8_t>(pt, pt_len),
+                             jpssl::span<const uint8_t>(aad, aad_len),
                              ctv, tag, tag_len);
         std::memcpy(ct, ctv.data(), pt_len);
         return 1;
@@ -269,8 +269,8 @@ extern "C" int jp_aes_gcm_decrypt(jp_aes_ctx* c, const uint8_t* iv, size_t iv_le
     try {
         std::vector<uint8_t> ptv;
         if (!aes_gcm_decrypt_auto(c->c, iv, iv_len,
-                                  std::span<const uint8_t>(ct, ct_len),
-                                  std::span<const uint8_t>(aad, aad_len),
+                                  jpssl::span<const uint8_t>(ct, ct_len),
+                                  jpssl::span<const uint8_t>(aad, aad_len),
                                   tag, tag_len, ptv)) return 0;
         std::memcpy(pt, ptv.data(), ct_len);
         return 1;
@@ -283,8 +283,8 @@ extern "C" int jp_aes_ccm_encrypt(jp_aes_ctx* c, const uint8_t* nonce, size_t no
     try {
         std::vector<uint8_t> ctv;
         aes_ccm_encrypt(c->c, nonce, nonce_len,
-                        std::span<const uint8_t>(pt, pt_len),
-                        std::span<const uint8_t>(aad, aad_len),
+                        jpssl::span<const uint8_t>(pt, pt_len),
+                        jpssl::span<const uint8_t>(aad, aad_len),
                         ctv, tag, tag_len);
         std::memcpy(ct, ctv.data(), pt_len);
         return 1;
@@ -298,8 +298,8 @@ extern "C" int jp_aes_ccm_decrypt(jp_aes_ctx* c, const uint8_t* nonce, size_t no
     try {
         std::vector<uint8_t> ptv;
         if (!aes_ccm_decrypt(c->c, nonce, nonce_len,
-                             std::span<const uint8_t>(ct, ct_len),
-                             std::span<const uint8_t>(aad, aad_len),
+                             jpssl::span<const uint8_t>(ct, ct_len),
+                             jpssl::span<const uint8_t>(aad, aad_len),
                              tag, tag_len, ptv)) return 0;
         std::memcpy(pt, ptv.data(), ct_len);
         return 1;
@@ -307,11 +307,11 @@ extern "C" int jp_aes_ccm_decrypt(jp_aes_ctx* c, const uint8_t* nonce, size_t no
 }
 extern "C" void jp_gf128_mul(const uint8_t x[16], const uint8_t y[16], uint8_t out[16]) { gf128_mul(x, y, out); }
 extern "C" void jp_ghash(const uint8_t H[16], const uint8_t* data, size_t len, uint8_t out[16]) {
-    ghash(H, std::span<const uint8_t>(data, len), out);
+    ghash(H, jpssl::span<const uint8_t>(data, len), out);
 }
 extern "C" void jp_gcm_ghash(const uint8_t H[16], const uint8_t* aad, size_t aad_len,
                              const uint8_t* data, size_t data_len, uint8_t out[16]) {
-    gcm_ghash(H, std::span<const uint8_t>(aad, aad_len), std::span<const uint8_t>(data, data_len), out);
+    gcm_ghash(H, jpssl::span<const uint8_t>(aad, aad_len), jpssl::span<const uint8_t>(data, data_len), out);
 }
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -323,10 +323,10 @@ extern "C" void jp_chacha20_block(const uint8_t key[32], uint32_t counter, const
 }
 extern "C" void jp_chacha20_xor(const uint8_t key[32], uint32_t counter, const uint8_t nonce[12],
                                 const uint8_t* in, uint8_t* out, size_t len) {
-    chacha20_crypt(key, counter, nonce, std::span<const uint8_t>(in, len), std::span<uint8_t>(out, len));
+    chacha20_crypt(key, counter, nonce, jpssl::span<const uint8_t>(in, len), jpssl::span<uint8_t>(out, len));
 }
 extern "C" void jp_poly1305_mac(const uint8_t key[32], const uint8_t* msg, size_t msg_len, uint8_t tag[16]) {
-    poly1305_mac(key, std::span<const uint8_t>(msg, msg_len), tag);
+    poly1305_mac(key, jpssl::span<const uint8_t>(msg, msg_len), tag);
 }
 extern "C" int jp_chacha20_poly1305_encrypt(const uint8_t key[32], const uint8_t nonce[12],
                                             const uint8_t* pt, size_t pt_len,
@@ -335,8 +335,8 @@ extern "C" int jp_chacha20_poly1305_encrypt(const uint8_t key[32], const uint8_t
     try {
         std::vector<uint8_t> ctv;
         chacha20_poly1305_encrypt(key, nonce,
-                                  std::span<const uint8_t>(pt, pt_len),
-                                  std::span<const uint8_t>(aad, aad_len),
+                                  jpssl::span<const uint8_t>(pt, pt_len),
+                                  jpssl::span<const uint8_t>(aad, aad_len),
                                   ctv, tag);
         std::memcpy(ct, ctv.data(), pt_len);
         return 1;
@@ -349,8 +349,8 @@ extern "C" int jp_chacha20_poly1305_decrypt(const uint8_t key[32], const uint8_t
     try {
         std::vector<uint8_t> ptv;
         if (!chacha20_poly1305_decrypt(key, nonce,
-                                       std::span<const uint8_t>(ct, ct_len),
-                                       std::span<const uint8_t>(aad, aad_len),
+                                       jpssl::span<const uint8_t>(ct, ct_len),
+                                       jpssl::span<const uint8_t>(aad, aad_len),
                                        tag, ptv)) return 0;
         std::memcpy(pt, ptv.data(), ct_len);
         return 1;
@@ -376,7 +376,7 @@ extern "C" void jp_sm4_decrypt_block(const jp_sm4_ctx* c, const uint8_t in[16], 
 extern "C" int jp_sm4_cbc_encrypt(const jp_sm4_ctx* c, const uint8_t iv[16], const uint8_t* in, size_t in_len,
                                   uint8_t** out, size_t* out_len) {
     try {
-        auto ct = sm4_cbc_encrypt(&c->c, iv, std::span<const uint8_t>(in, in_len));
+        auto ct = sm4_cbc_encrypt(&c->c, iv, jpssl::span<const uint8_t>(in, in_len));
         uint8_t* p = static_cast<uint8_t*>(std::malloc(ct.size() ? ct.size() : 1));
         if (!p) return 0;
         std::memcpy(p, ct.data(), ct.size());
@@ -387,7 +387,7 @@ extern "C" int jp_sm4_cbc_encrypt(const jp_sm4_ctx* c, const uint8_t iv[16], con
 extern "C" int jp_sm4_cbc_decrypt(const jp_sm4_ctx* c, const uint8_t iv[16], const uint8_t* in, size_t in_len,
                                   uint8_t** out, size_t* out_len) {
     try {
-        auto pt = sm4_cbc_decrypt(&c->c, iv, std::span<const uint8_t>(in, in_len));
+        auto pt = sm4_cbc_decrypt(&c->c, iv, jpssl::span<const uint8_t>(in, in_len));
         uint8_t* p = static_cast<uint8_t*>(std::malloc(pt.size() ? pt.size() : 1));
         if (!p) return 0;
         std::memcpy(p, pt.data(), pt.size());
@@ -402,8 +402,8 @@ extern "C" int jp_sm4_gcm_encrypt(const jp_sm4_ctx* c, const uint8_t* iv, size_t
     try {
         std::vector<uint8_t> ctv;
         sm4_gcm_encrypt_auto(&c->c, iv, iv_len,
-                             std::span<const uint8_t>(pt, pt_len),
-                             std::span<const uint8_t>(aad, aad_len),
+                             jpssl::span<const uint8_t>(pt, pt_len),
+                             jpssl::span<const uint8_t>(aad, aad_len),
                              ctv, tag, tag_len);
         std::memcpy(ct, ctv.data(), pt_len);
         return 1;
@@ -416,8 +416,8 @@ extern "C" int jp_sm4_gcm_decrypt(const jp_sm4_ctx* c, const uint8_t* iv, size_t
     try {
         std::vector<uint8_t> ptv;
         if (!sm4_gcm_decrypt_auto(&c->c, iv, iv_len,
-                                  std::span<const uint8_t>(ct, ct_len),
-                                  std::span<const uint8_t>(aad, aad_len),
+                                  jpssl::span<const uint8_t>(ct, ct_len),
+                                  jpssl::span<const uint8_t>(aad, aad_len),
                                   tag, tag_len, ptv)) return 0;
         std::memcpy(pt, ptv.data(), ct_len);
         return 1;
@@ -430,8 +430,8 @@ extern "C" int jp_sm4_ccm_encrypt(const jp_sm4_ctx* c, const uint8_t* nonce, siz
     try {
         std::vector<uint8_t> ctv;
         sm4_ccm_encrypt(&c->c, nonce, nonce_len,
-                        std::span<const uint8_t>(pt, pt_len),
-                        std::span<const uint8_t>(aad, aad_len),
+                        jpssl::span<const uint8_t>(pt, pt_len),
+                        jpssl::span<const uint8_t>(aad, aad_len),
                         ctv, tag, tag_len);
         std::memcpy(ct, ctv.data(), pt_len);
         return 1;
@@ -444,8 +444,8 @@ extern "C" int jp_sm4_ccm_decrypt(const jp_sm4_ctx* c, const uint8_t* nonce, siz
     try {
         std::vector<uint8_t> ptv;
         if (!sm4_ccm_decrypt(&c->c, nonce, nonce_len,
-                             std::span<const uint8_t>(ct, ct_len),
-                             std::span<const uint8_t>(aad, aad_len),
+                             jpssl::span<const uint8_t>(ct, ct_len),
+                             jpssl::span<const uint8_t>(aad, aad_len),
                              tag, tag_len, ptv)) return 0;
         std::memcpy(pt, ptv.data(), ct_len);
         return 1;
@@ -631,7 +631,7 @@ extern "C" int jp_rsa4096_priv_from_bytes(jp_rsa4096_priv* priv, const uint8_t* 
 }
 
 extern "C" int jp_rsa2048_encrypt(const jp_rsa_pub* pub, const uint8_t* msg, size_t msg_len, uint8_t ct[256]) {
-    try { rsa_encrypt(to_pub(pub), std::span<const uint8_t>(msg, msg_len), ct); return 1; }
+    try { rsa_encrypt(to_pub(pub), jpssl::span<const uint8_t>(msg, msg_len), ct); return 1; }
     catch (...) { return 0; }
 }
 extern "C" int jp_rsa2048_decrypt(const jp_rsa_priv* priv, const uint8_t ct[256], uint8_t** out, size_t* out_len) {
@@ -646,7 +646,7 @@ extern "C" int jp_rsa2048_decrypt(const jp_rsa_priv* priv, const uint8_t ct[256]
     } catch (...) { return 0; }
 }
 extern "C" int jp_rsa4096_encrypt(const jp_rsa4096_pub* pub, const uint8_t* msg, size_t msg_len, uint8_t ct[512]) {
-    try { rsa4096_encrypt(to_pub4096(pub), std::span<const uint8_t>(msg, msg_len), ct); return 1; }
+    try { rsa4096_encrypt(to_pub4096(pub), jpssl::span<const uint8_t>(msg, msg_len), ct); return 1; }
     catch (...) { return 0; }
 }
 extern "C" int jp_rsa4096_decrypt(const jp_rsa4096_priv* priv, const uint8_t ct[512], uint8_t** out, size_t* out_len) {
@@ -662,7 +662,7 @@ extern "C" int jp_rsa4096_decrypt(const jp_rsa4096_priv* priv, const uint8_t ct[
 }
 
 extern "C" int jp_rsa2048_oaep_encrypt(const jp_rsa_pub* pub, const uint8_t* msg, size_t msg_len, uint8_t ct[256]) {
-    try { return rsaes_oaep_encrypt(to_pub(pub), std::span<const uint8_t>(msg, msg_len), nullptr, 0, ct) ? 1 : 0; }
+    try { return rsaes_oaep_encrypt(to_pub(pub), jpssl::span<const uint8_t>(msg, msg_len), nullptr, 0, ct) ? 1 : 0; }
     catch (...) { return 0; }
 }
 extern "C" int jp_rsa2048_oaep_decrypt(const jp_rsa_priv* priv, const uint8_t ct[256], uint8_t** out, size_t* out_len) {

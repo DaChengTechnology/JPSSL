@@ -3,7 +3,7 @@
 #include "cipher_inplace.hpp"   // 内部：零拷贝 AEAD 声明（TLS 记录层专用）
 #include <cstring>
 #include <vector>
-#include <span>
+#include "jpssl_span.hpp"
 
 namespace jpssl {
 
@@ -122,7 +122,7 @@ struct sm4_mac_stream {
 static void sm4_ccm_encrypt_impl(const sm4_ctx* ctx,
                                  const uint8_t* nonce, size_t nonce_len,
                                  const uint8_t* pt, size_t pt_len,
-                                 std::span<const uint8_t> aad,
+                                 jpssl::span<const uint8_t> aad,
                                  uint8_t* out, uint8_t* tag, size_t tag_len) {
     uint8_t b0[16], ctr0[16];
     sm4_ccm_format_b0(b0, !aad.empty(), pt_len, 15 - nonce_len, nonce, nonce_len);
@@ -157,7 +157,7 @@ static void sm4_ccm_encrypt_impl(const sm4_ctx* ctx,
 static bool sm4_ccm_decrypt_impl(const sm4_ctx* ctx,
                                  const uint8_t* nonce, size_t nonce_len,
                                  const uint8_t* ct, size_t ct_len,
-                                 std::span<const uint8_t> aad,
+                                 jpssl::span<const uint8_t> aad,
                                  const uint8_t* tag, size_t tag_len,
                                  uint8_t* out) {
     uint8_t b0[16], ctr0[16];
@@ -201,7 +201,7 @@ static bool sm4_ccm_decrypt_impl(const sm4_ctx* ctx,
 void sm4_ccm_encrypt_inplace(const sm4_ctx* ctx,
                              const uint8_t* nonce, size_t nonce_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              uint8_t* tag, size_t tag_len) {
     sm4_ccm_encrypt_impl(ctx, nonce, nonce_len, buf, data_len, aad, buf, tag, tag_len);
 }
@@ -209,7 +209,7 @@ void sm4_ccm_encrypt_inplace(const sm4_ctx* ctx,
 bool sm4_ccm_decrypt_inplace(const sm4_ctx* ctx,
                              const uint8_t* nonce, size_t nonce_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              const uint8_t* tag, size_t tag_len) {
     return sm4_ccm_decrypt_impl(ctx, nonce, nonce_len, buf, data_len, aad, tag, tag_len,
                                 buf);
@@ -219,8 +219,8 @@ bool sm4_ccm_decrypt_inplace(const sm4_ctx* ctx,
 
 void sm4_ccm_encrypt(const sm4_ctx* ctx,
                      const uint8_t* nonce, size_t nonce_len,
-                     std::span<const uint8_t> plaintext,
-                     std::span<const uint8_t> aad,
+                     jpssl::span<const uint8_t> plaintext,
+                     jpssl::span<const uint8_t> aad,
                      std::vector<uint8_t>& ciphertext,
                      uint8_t* tag, size_t tag_len) {
     // CCM parameters: L=2 (3-byte length), M=16
@@ -276,8 +276,8 @@ void sm4_ccm_encrypt(const sm4_ctx* ctx,
 
 bool sm4_ccm_decrypt(const sm4_ctx* ctx,
                      const uint8_t* nonce, size_t nonce_len,
-                     std::span<const uint8_t> ciphertext,
-                     std::span<const uint8_t> aad,
+                     jpssl::span<const uint8_t> ciphertext,
+                     jpssl::span<const uint8_t> aad,
                      const uint8_t* tag, size_t tag_len,
                      std::vector<uint8_t>& plaintext) {
     int L = (nonce_len == 12) ? 3 : (int)(15 - nonce_len);

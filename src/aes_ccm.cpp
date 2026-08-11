@@ -167,7 +167,7 @@ static void ccm_build_b0(uint8_t B0[16], const uint8_t* nonce, size_t nonce_len,
 static void aes_ccm_encrypt_impl(const aes_context& ctx,
                                  const uint8_t* nonce, size_t nonce_len,
                                  const uint8_t* pt, size_t pt_len,
-                                 std::span<const uint8_t> aad,
+                                 jpssl::span<const uint8_t> aad,
                                  uint8_t* out, uint8_t* tag, size_t tag_len) {
     size_t q = 15 - nonce_len;
     uint8_t B0[16], ctr0[16];
@@ -356,8 +356,8 @@ static void aes_ccm_encrypt_impl(const aes_context& ctx,
 
 void aes_ccm_encrypt(const aes_context& ctx,
                      const uint8_t* nonce, size_t nonce_len,
-                     std::span<const uint8_t> plaintext,
-                     std::span<const uint8_t> aad,
+                     jpssl::span<const uint8_t> plaintext,
+                     jpssl::span<const uint8_t> aad,
                      std::vector<uint8_t>& ciphertext,
                      uint8_t* tag, size_t tag_len) {
     size_t q = 15 - nonce_len;
@@ -380,14 +380,14 @@ void aes_ccm_encrypt(const aes_context& ctx,
 static bool aes_ccm_decrypt_impl(const aes_context& ctx,
                                  const uint8_t* nonce, size_t nonce_len,
                                  const uint8_t* ct, size_t ct_len,
-                                 std::span<const uint8_t> aad,
+                                 jpssl::span<const uint8_t> aad,
                                  const uint8_t* tag, size_t tag_len,
                                  uint8_t* out);
 
 void aes_ccm_encrypt_inplace(const aes_context& ctx,
                              const uint8_t* nonce, size_t nonce_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              uint8_t* tag, size_t tag_len) {
     size_t q = 15 - nonce_len;
     if (tag_len < 4 || tag_len > 16 || tag_len % 2 != 0)
@@ -403,7 +403,7 @@ void aes_ccm_encrypt_inplace(const aes_context& ctx,
 bool aes_ccm_decrypt_inplace(const aes_context& ctx,
                              const uint8_t* nonce, size_t nonce_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              const uint8_t* tag, size_t tag_len) {
     size_t q = 15 - nonce_len;
     if (tag_len < 4 || tag_len > 16 || tag_len % 2 != 0) return false;
@@ -422,7 +422,7 @@ bool aes_ccm_decrypt_inplace(const aes_context& ctx,
 static bool aes_ccm_decrypt_impl(const aes_context& ctx,
                                  const uint8_t* nonce, size_t nonce_len,
                                  const uint8_t* ct, size_t ct_len,
-                                 std::span<const uint8_t> aad,
+                                 jpssl::span<const uint8_t> aad,
                                  const uint8_t* tag, size_t tag_len,
                                  uint8_t* out) {
     size_t q = 15 - nonce_len;
@@ -617,8 +617,8 @@ static bool aes_ccm_decrypt_impl(const aes_context& ctx,
 
 bool aes_ccm_decrypt(const aes_context& ctx,
                      const uint8_t* nonce, size_t nonce_len,
-                     std::span<const uint8_t> ciphertext,
-                     std::span<const uint8_t> aad,
+                     jpssl::span<const uint8_t> ciphertext,
+                     jpssl::span<const uint8_t> aad,
                      const uint8_t* tag, size_t tag_len,
                      std::vector<uint8_t>& plaintext) {
     size_t q = 15 - nonce_len;

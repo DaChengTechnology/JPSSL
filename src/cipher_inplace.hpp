@@ -16,7 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <span>
+#include "jpssl_span.hpp"
 
 namespace jpssl {
 
@@ -26,14 +26,14 @@ namespace jpssl {
 void aes_gcm_encrypt_inplace(const aes_context& ctx,
                              const uint8_t* iv, size_t iv_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              uint8_t* tag, size_t tag_len = 16);
 
 /// 就地解密：buf 同时作为密文输入与明文输出（容量 >= data_len）
 bool aes_gcm_decrypt_inplace(const aes_context& ctx,
                              const uint8_t* iv, size_t iv_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              const uint8_t* tag, size_t tag_len);
 
 // ── AES-CCM ──
@@ -41,25 +41,25 @@ bool aes_gcm_decrypt_inplace(const aes_context& ctx,
 void aes_ccm_encrypt_inplace(const aes_context& ctx,
                              const uint8_t* nonce, size_t nonce_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              uint8_t* tag, size_t tag_len);
 
 bool aes_ccm_decrypt_inplace(const aes_context& ctx,
                              const uint8_t* nonce, size_t nonce_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              const uint8_t* tag, size_t tag_len);
 
 // ── ChaCha20-Poly1305 ──
 
 void chacha20_poly1305_encrypt_inplace(const uint8_t key[32], const uint8_t nonce[12],
                                        uint8_t* buf, size_t data_len,
-                                       std::span<const uint8_t> aad,
+                                       jpssl::span<const uint8_t> aad,
                                        uint8_t tag[16]);
 
 bool chacha20_poly1305_decrypt_inplace(const uint8_t key[32], const uint8_t nonce[12],
                                        uint8_t* buf, size_t data_len,
-                                       std::span<const uint8_t> aad,
+                                       jpssl::span<const uint8_t> aad,
                                        const uint8_t tag[16]);
 
 // ── SM4-GCM ──
@@ -67,13 +67,13 @@ bool chacha20_poly1305_decrypt_inplace(const uint8_t key[32], const uint8_t nonc
 void sm4_gcm_encrypt_inplace(const sm4_ctx* ctx,
                              const uint8_t* iv, size_t iv_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              uint8_t* tag, size_t tag_len = 16);
 
 bool sm4_gcm_decrypt_inplace(const sm4_ctx* ctx,
                              const uint8_t* iv, size_t iv_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              const uint8_t* tag, size_t tag_len);
 
 // ── SM4-CCM ──
@@ -81,13 +81,13 @@ bool sm4_gcm_decrypt_inplace(const sm4_ctx* ctx,
 void sm4_ccm_encrypt_inplace(const sm4_ctx* ctx,
                              const uint8_t* nonce, size_t nonce_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              uint8_t* tag, size_t tag_len);
 
 bool sm4_ccm_decrypt_inplace(const sm4_ctx* ctx,
                              const uint8_t* nonce, size_t nonce_len,
                              uint8_t* buf, size_t data_len,
-                             std::span<const uint8_t> aad,
+                             jpssl::span<const uint8_t> aad,
                              const uint8_t* tag, size_t tag_len);
 
 // ── GCM 后端就地入口（aes_gcm_auto 分派内部使用，不对外）──
@@ -95,34 +95,34 @@ bool sm4_ccm_decrypt_inplace(const sm4_ctx* ctx,
 void aes_gcm_encrypt_avx2_inplace(const aes_context& ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> aad,
                                   uint8_t* tag, size_t tag_len = 16);
 bool aes_gcm_decrypt_avx2_inplace(const aes_context& ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> aad,
                                   const uint8_t* tag, size_t tag_len);
 
 void aes_gcm_encrypt_vaes_inplace(const aes_context& ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> aad,
                                   uint8_t* tag, size_t tag_len = 16);
 bool aes_gcm_decrypt_vaes_inplace(const aes_context& ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> aad,
                                   const uint8_t* tag, size_t tag_len);
 
 void aes_gcm_encrypt_avx512_inplace(const aes_context& ctx,
                                     const uint8_t* iv, size_t iv_len,
                                     uint8_t* buf, size_t data_len,
-                                    std::span<const uint8_t> aad,
+                                    jpssl::span<const uint8_t> aad,
                                     uint8_t* tag, size_t tag_len = 16);
 bool aes_gcm_decrypt_avx512_inplace(const aes_context& ctx,
                                     const uint8_t* iv, size_t iv_len,
                                     uint8_t* buf, size_t data_len,
-                                    std::span<const uint8_t> aad,
+                                    jpssl::span<const uint8_t> aad,
                                     const uint8_t* tag, size_t tag_len);
 
 #if defined(JP_NEON) && defined(__aarch64__)
@@ -130,12 +130,12 @@ bool aes_gcm_decrypt_avx512_inplace(const aes_context& ctx,
 void aes_gcm_encrypt_neon_inplace(const aes_context& ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> aad,
                                   uint8_t* tag, size_t tag_len = 16);
 bool aes_gcm_decrypt_neon_inplace(const aes_context& ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> aad,
                                   const uint8_t* tag, size_t tag_len);
 #endif
 

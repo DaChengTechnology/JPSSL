@@ -2,7 +2,7 @@
 /** sm3.hpp — SM3 密码杂凑算法（GM/T 0004-2012） */
 #include <cstddef>
 #include <cstdint>
-#include <span>
+#include "jpssl_span.hpp"
 #include <string>
 #include <cstdio>
 

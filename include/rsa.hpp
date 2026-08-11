@@ -4,7 +4,7 @@
  */
 #include <cstddef>
 #include <cstdint>
-#include <span>
+#include "jpssl_span.hpp"
 #include <vector>
 
 namespace jpssl {
@@ -96,11 +96,11 @@ struct rsa4096_crt_key {
 };
 
 bool rsa_keygen(rsa_public_key&,rsa_private_key&);
-void rsa_encrypt(const rsa_public_key&,std::span<const uint8_t>,uint8_t*);
+void rsa_encrypt(const rsa_public_key&,jpssl::span<const uint8_t>,uint8_t*);
 bool rsa_decrypt(const rsa_private_key&,const uint8_t*,std::vector<uint8_t>&);
 
 bool rsa4096_keygen(rsa4096_public_key&,rsa4096_private_key&);
-void rsa4096_encrypt(const rsa4096_public_key&,std::span<const uint8_t>,uint8_t*);
+void rsa4096_encrypt(const rsa4096_public_key&,jpssl::span<const uint8_t>,uint8_t*);
 bool rsa4096_decrypt(const rsa4096_private_key&,const uint8_t*,std::vector<uint8_t>&);
 
 // ── Montgomery 上下文 ─────────────────────────────────────────────────
@@ -199,7 +199,7 @@ size_t musa4096_crt_batch_decrypt(const rsa4096_crt_key&, const uint8_t* cts, ui
 bool rsa4096_crt_decrypt(const rsa4096_crt_key&, const uint8_t* ct, std::vector<uint8_t>& pt);
 
 /// §7.1  RSAES-OAEP (SHA-256)
-bool rsaes_oaep_encrypt(const rsa_public_key&, std::span<const uint8_t> msg,
+bool rsaes_oaep_encrypt(const rsa_public_key&, jpssl::span<const uint8_t> msg,
                         const uint8_t* label, size_t labelLen, uint8_t ct[256]);
 bool rsaes_oaep_decrypt(const rsa_crt_key&, const uint8_t ct[256],
                         const uint8_t* label, size_t labelLen,

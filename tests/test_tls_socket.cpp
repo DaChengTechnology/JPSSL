@@ -317,6 +317,7 @@ static void test_nonblocking() {
 }
 
 // ── 协程 I/O 回环测试 ──────────────────────────────────────────────
+#if JPSSL_HAS_COROUTINE
 struct co_state {
     tls_co_executor ex;
     std::unique_ptr<tls_connection> server_conn;
@@ -405,6 +406,7 @@ static void test_co_io() {
     TEST("co client got server reply", st.client_ok && st.client_got == "co reply");
     listener.close();
 }
+#endif // JPSSL_HAS_COROUTINE
 
 // 客户端 connect 默认只信任系统信任库中的 CA：
 // 自签证书（不在系统信任库）必须被拒绝；显式传入信任库则可成功。
@@ -646,7 +648,9 @@ int main() {
     test_socket_roundtrip();
     test_alpn();
     test_nonblocking();
+#if JPSSL_HAS_COROUTINE
     test_co_io();
+#endif
     test_connect_default_system_trust();
     test_attach_tcp();
     test_attach_borrow();

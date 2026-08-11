@@ -29,8 +29,8 @@ endif()
 include(CTest)
 enable_testing()
 
-# ── C++20 ──────────────────────────────────────────────────────────────
-set(CMAKE_CXX_STANDARD 20)
+# ── C++17 ──────────────────────────────────────────────────────────────
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -104,7 +104,7 @@ if(JP_ENABLE_MUSA AND NOT WIN32 AND NOT JP_OHOS)
         --offload-arch=mp_22
         --offload-arch=mp_31
         -Werror
-        -std=c++20
+        -std=c++17
         -maes
         -mavx2
     )
@@ -518,7 +518,7 @@ if(JP_OHOS)
     target_compile_definitions(jpssl_cpu_shared PUBLIC JP_OHOS)
 endif()
 
-# Link OpenSSL was removed — Ed25519, X25519, SHA-512 are all pure C++20 now
+# Link OpenSSL was removed — Ed25519, X25519, SHA-512 are all pure C++17 now
 # OpenSSL::Crypto kept only on individual test targets that compare vs OpenSSL
 
 # ═══════════════════════════════════════════════════════════════════════

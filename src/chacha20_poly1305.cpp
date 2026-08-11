@@ -126,8 +126,8 @@ void chacha20_block(const uint8_t key[32], uint32_t counter,
 
 void chacha20_crypt(const uint8_t key[32], uint32_t counter,
                     const uint8_t nonce[12],
-                    std::span<const uint8_t> input,
-                    std::span<uint8_t> output) {
+                    jpssl::span<const uint8_t> input,
+                    jpssl::span<uint8_t> output) {
     // 运行时扩展检测：x86 优先 AVX512 → AVX2；ARM 走 NEON；回退标量
 #if defined(JP_AVX512)
     if (cpu_has_avx512()) {
@@ -464,8 +464,8 @@ static void poly1305_feed64(Poly1305State64& st, const uint8_t* p, size_t n) {
 // ciphertext is still in L1 when Poly1305 reads it (no second DRAM pass).
 static void chacha20_crypt_feed_poly(
     const uint8_t key[32], const uint8_t nonce[12],
-    std::span<const uint8_t> in, std::span<uint8_t> out,
-    std::span<const uint8_t> ct, Poly1305State64& st) {
+    jpssl::span<const uint8_t> in, jpssl::span<uint8_t> out,
+    jpssl::span<const uint8_t> ct, Poly1305State64& st) {
     constexpr size_t CH = 4096;  // 64 ChaCha blocks
     const size_t n = in.size();
     size_t pos = 0;
@@ -570,8 +570,8 @@ static void poly1305_finish3(uint64_t h0, uint64_t h1, uint64_t h2,
 // Poly1305 over the AEAD layout AAD || pad(AAD) || ct || pad(ct) || len64 || len64,
 // without building a concatenated message buffer.
 static void poly1305_mac_parts64(const uint8_t key[32],
-                                 std::span<const uint8_t> aad,
-                                 std::span<const uint8_t> ct,
+                                 jpssl::span<const uint8_t> aad,
+                                 jpssl::span<const uint8_t> ct,
                                  uint8_t tag[16]) {
     Poly1305State64 st;
     poly1305_init64(st, key);
@@ -596,7 +596,7 @@ static void poly1305_mac_parts64(const uint8_t key[32],
 }
 
 void poly1305_mac(const uint8_t key[32],
-                  std::span<const uint8_t> msg,
+                  jpssl::span<const uint8_t> msg,
                   uint8_t tag[16]) {
     // Fast 3-limb (44/44/42-bit) Poly1305 over a raw message span:
     // full 16-byte blocks get the 2^128 bit; a final partial block is
@@ -649,8 +649,8 @@ void poly1305_mac(const uint8_t key[32],
 void chacha20_poly1305_encrypt(
     const uint8_t key[32],
     const uint8_t nonce[12],
-    std::span<const uint8_t> plaintext,
-    std::span<const uint8_t> aad,
+    jpssl::span<const uint8_t> plaintext,
+    jpssl::span<const uint8_t> aad,
     std::vector<uint8_t>& ciphertext,
     uint8_t tag[16]) {
     // 1. 用 counter=0 生成 Poly1305 一次性密钥（32 字节）
@@ -678,8 +678,8 @@ void chacha20_poly1305_encrypt(
 bool chacha20_poly1305_decrypt(
     const uint8_t key[32],
     const uint8_t nonce[12],
-    std::span<const uint8_t> ciphertext,
-    std::span<const uint8_t> aad,
+    jpssl::span<const uint8_t> ciphertext,
+    jpssl::span<const uint8_t> aad,
     const uint8_t tag[16],
     std::vector<uint8_t>& plaintext) {
     // 1. 用 counter=0 生成 Poly1305 一次性密钥
@@ -717,7 +717,7 @@ bool chacha20_poly1305_decrypt(
 
 void chacha20_poly1305_encrypt_inplace(const uint8_t key[32], const uint8_t nonce[12],
                                        uint8_t* buf, size_t data_len,
-                                       std::span<const uint8_t> aad,
+                                       jpssl::span<const uint8_t> aad,
                                        uint8_t tag[16]) {
     uint8_t poly_key[64];
     chacha20_block(key, 0, nonce, poly_key);
@@ -727,9 +727,9 @@ void chacha20_poly1305_encrypt_inplace(const uint8_t key[32], const uint8_t nonc
     poly1305_init64(st, poly_key);
     poly1305_feed64(st, aad.data(), aad.size());
     chacha20_crypt_feed_poly(key, nonce,
-                             std::span<const uint8_t>(buf, data_len),
-                             std::span<uint8_t>(buf, data_len),
-                             std::span<const uint8_t>(buf, data_len), st);
+                             jpssl::span<const uint8_t>(buf, data_len),
+                             jpssl::span<uint8_t>(buf, data_len),
+                             jpssl::span<const uint8_t>(buf, data_len), st);
 
     uint8_t lenblock[16];
     poly_store64(lenblock, (uint64_t)aad.size());
@@ -741,7 +741,7 @@ void chacha20_poly1305_encrypt_inplace(const uint8_t key[32], const uint8_t nonc
 
 bool chacha20_poly1305_decrypt_inplace(const uint8_t key[32], const uint8_t nonce[12],
                                        uint8_t* buf, size_t data_len,
-                                       std::span<const uint8_t> aad,
+                                       jpssl::span<const uint8_t> aad,
                                        const uint8_t tag[16]) {
     uint8_t poly_key[64];
     chacha20_block(key, 0, nonce, poly_key);
@@ -765,8 +765,8 @@ bool chacha20_poly1305_decrypt_inplace(const uint8_t key[32], const uint8_t nonc
 
     // 就地解密（先验签后 XOR，安全）
     chacha20_crypt(key, 1, nonce,
-                   std::span<const uint8_t>(buf, data_len),
-                   std::span<uint8_t>(buf, data_len));
+                   jpssl::span<const uint8_t>(buf, data_len),
+                   jpssl::span<uint8_t>(buf, data_len));
     return true;
 }
 
@@ -876,7 +876,7 @@ void musa_chacha20_pool_xor(musa_chacha20_pool* pool,
 
 void musa_chacha20_pool_aead_encrypt(
     musa_chacha20_pool* pool, const uint8_t nonce[12],
-    std::span<const uint8_t> pt, std::span<const uint8_t> aad,
+    jpssl::span<const uint8_t> pt, jpssl::span<const uint8_t> aad,
     std::vector<uint8_t>& ct, uint8_t tag[16])
 {
     if (!pool || !pool->init) return;
@@ -916,7 +916,7 @@ void musa_chacha20_pool_aead_encrypt(
 
 bool musa_chacha20_pool_aead_decrypt(
     musa_chacha20_pool* pool, const uint8_t nonce[12],
-    std::span<const uint8_t> ct, std::span<const uint8_t> aad,
+    jpssl::span<const uint8_t> ct, jpssl::span<const uint8_t> aad,
     const uint8_t tag[16], std::vector<uint8_t>& pt)
 {
     if (!pool || !pool->init) return false;

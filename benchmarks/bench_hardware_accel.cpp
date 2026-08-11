@@ -80,7 +80,7 @@ static void bench_aes128_gcm_paths() {
     RAND_bytes(plain.data(), DATA_SIZE);
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     double sw_enc = 0, sw_dec = 0;
     double avx2_enc = 0, avx2_dec = 0;
@@ -94,12 +94,12 @@ static void bench_aes128_gcm_paths() {
     {
         std::vector<uint8_t> ct; uint8_t tag[16];
         sw_enc = measure_ms([&]{
-            aes_gcm_encrypt(ctx, iv, 12, plain, std::span<const uint8_t>(), ct, tag, 16);
+            aes_gcm_encrypt(ctx, iv, 12, plain, jpssl::span<const uint8_t>(), ct, tag, 16);
         });
         bool ok = false;
         sw_dec = measure_ms([&]{
             std::vector<uint8_t> pt;
-            ok = aes_gcm_decrypt(ctx, iv, 12, ct, std::span<const uint8_t>(), tag, 16, pt);
+            ok = aes_gcm_decrypt(ctx, iv, 12, ct, jpssl::span<const uint8_t>(), tag, 16, pt);
         });
         (void)ok;
     }
@@ -108,12 +108,12 @@ static void bench_aes128_gcm_paths() {
     {
         std::vector<uint8_t> ct; uint8_t tag[16];
         avx2_enc = measure_ms([&]{
-            aes_gcm_encrypt_avx2(ctx, iv, 12, plain, std::span<const uint8_t>(), ct, tag, 16);
+            aes_gcm_encrypt_avx2(ctx, iv, 12, plain, jpssl::span<const uint8_t>(), ct, tag, 16);
         });
         bool ok = false;
         avx2_dec = measure_ms([&]{
             std::vector<uint8_t> pt;
-            ok = aes_gcm_decrypt_avx2(ctx, iv, 12, ct, std::span<const uint8_t>(), tag, 16, pt);
+            ok = aes_gcm_decrypt_avx2(ctx, iv, 12, ct, jpssl::span<const uint8_t>(), tag, 16, pt);
         });
         TEST("AES-128-GCM AVX2 round-trip", ok);
     }
@@ -123,12 +123,12 @@ static void bench_aes128_gcm_paths() {
     {
         std::vector<uint8_t> ct; uint8_t tag[16];
         vaes_enc = measure_ms([&]{
-            aes_gcm_encrypt_vaes(ctx, iv, 12, plain, std::span<const uint8_t>(), ct, tag, 16);
+            aes_gcm_encrypt_vaes(ctx, iv, 12, plain, jpssl::span<const uint8_t>(), ct, tag, 16);
         });
         bool ok = false;
         vaes_dec = measure_ms([&]{
             std::vector<uint8_t> pt;
-            ok = aes_gcm_decrypt_vaes(ctx, iv, 12, ct, std::span<const uint8_t>(), tag, 16, pt);
+            ok = aes_gcm_decrypt_vaes(ctx, iv, 12, ct, jpssl::span<const uint8_t>(), tag, 16, pt);
         });
         TEST("AES-128-GCM VAES round-trip", ok);
     }
@@ -138,12 +138,12 @@ static void bench_aes128_gcm_paths() {
     {
         std::vector<uint8_t> ct; uint8_t tag[16];
         auto_enc = measure_ms([&]{
-            aes_gcm_encrypt_auto(ctx, iv, 12, plain, std::span<const uint8_t>(), ct, tag, 16);
+            aes_gcm_encrypt_auto(ctx, iv, 12, plain, jpssl::span<const uint8_t>(), ct, tag, 16);
         });
         bool ok = false;
         auto_dec = measure_ms([&]{
             std::vector<uint8_t> pt;
-            ok = aes_gcm_decrypt_auto(ctx, iv, 12, ct, std::span<const uint8_t>(), tag, 16, pt);
+            ok = aes_gcm_decrypt_auto(ctx, iv, 12, ct, jpssl::span<const uint8_t>(), tag, 16, pt);
         });
         TEST("AES-128-GCM auto round-trip", ok);
     }
@@ -218,7 +218,7 @@ static void bench_aes256_gcm_paths() {
     RAND_bytes(plain.data(), DATA_SIZE);
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 32>(key, 32));
+    ctx.init(jpssl::span<const uint8_t, 32>(key, 32));
 
     double sw_enc, sw_dec, auto_enc, auto_dec, ossl_enc, ossl_dec;
 
@@ -301,12 +301,12 @@ static void bench_chacha20_paths() {
     {
         std::vector<uint8_t> ct; uint8_t tag[16];
         cpu_enc = measure_ms([&]{
-            chacha20_poly1305_encrypt(key, nonce, plain, std::span<const uint8_t>(), ct, tag);
+            chacha20_poly1305_encrypt(key, nonce, plain, jpssl::span<const uint8_t>(), ct, tag);
         });
         bool ok = false;
         cpu_dec = measure_ms([&]{
             std::vector<uint8_t> pt;
-            ok = chacha20_poly1305_decrypt(key, nonce, ct, std::span<const uint8_t>(), tag, pt);
+            ok = chacha20_poly1305_decrypt(key, nonce, ct, jpssl::span<const uint8_t>(), tag, pt);
         });
         TEST("ChaCha20-Poly1305 CPU round-trip", ok);
     }
@@ -318,12 +318,12 @@ static void bench_chacha20_paths() {
         if (pool) {
             std::vector<uint8_t> ct; uint8_t tag[16];
             gpu_enc = measure_ms([&]{
-                musa_chacha20_pool_aead_encrypt(pool, nonce, plain, std::span<const uint8_t>(), ct, tag);
+                musa_chacha20_pool_aead_encrypt(pool, nonce, plain, jpssl::span<const uint8_t>(), ct, tag);
             });
             bool ok = false;
             gpu_dec = measure_ms([&]{
                 std::vector<uint8_t> pt;
-                ok = musa_chacha20_pool_aead_decrypt(pool, nonce, ct, std::span<const uint8_t>(), tag, pt);
+                ok = musa_chacha20_pool_aead_decrypt(pool, nonce, ct, jpssl::span<const uint8_t>(), tag, pt);
             });
             musa_chacha20_pool_destroy(pool);
             TEST("ChaCha20-Poly1305 GPU pool round-trip", ok);
@@ -527,7 +527,7 @@ static void bench_aesni_vs_software() {
     std::vector<uint8_t> ct(DATA_SIZE);
 
     aes_context ctx;
-    ctx.init(std::span<const uint8_t, 16>(key, 16));
+    ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
 
     double sw_ms = measure_ms([&]{
         for (size_t i = 0; i < DATA_SIZE; i += 16)

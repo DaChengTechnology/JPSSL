@@ -36,8 +36,8 @@ static void test_sm4_gcm_aead() {
     std::vector<uint8_t> ciphertext;
     uint8_t tag[16];
     sm4_gcm_encrypt(&ctx, iv, 12,
-                    std::span<const uint8_t>(plain, sizeof(plain)-1),
-                    std::span<const uint8_t>(aad, sizeof(aad)-1),
+                    jpssl::span<const uint8_t>(plain, sizeof(plain)-1),
+                    jpssl::span<const uint8_t>(aad, sizeof(aad)-1),
                     ciphertext, tag, 16);
 
     TEST("SM4-GCM encrypt non-empty", !ciphertext.empty());
@@ -46,8 +46,8 @@ static void test_sm4_gcm_aead() {
 
     std::vector<uint8_t> recovered;
     bool ok = sm4_gcm_decrypt(&ctx, iv, 12,
-                              std::span<const uint8_t>(ciphertext),
-                              std::span<const uint8_t>(aad, sizeof(aad)-1),
+                              jpssl::span<const uint8_t>(ciphertext),
+                              jpssl::span<const uint8_t>(aad, sizeof(aad)-1),
                               tag, 16, recovered);
 
     TEST("SM4-GCM decrypt success", ok);
@@ -59,8 +59,8 @@ static void test_sm4_gcm_aead() {
     tag[0] ^= 0x01;
     std::vector<uint8_t> dummy;
     bool bad = sm4_gcm_decrypt(&ctx, iv, 12,
-                               std::span<const uint8_t>(ciphertext),
-                               std::span<const uint8_t>(aad, sizeof(aad)-1),
+                               jpssl::span<const uint8_t>(ciphertext),
+                               jpssl::span<const uint8_t>(aad, sizeof(aad)-1),
                                tag, 16, dummy);
     TEST("SM4-GCM rejects tampered tag", !bad);
 }
@@ -75,15 +75,15 @@ static void test_sm4_gcm_empty() {
     std::vector<uint8_t> ct;
     uint8_t tag[16];
     sm4_gcm_encrypt(&ctx, iv, 12,
-                    std::span<const uint8_t>(),
-                    std::span<const uint8_t>(),
+                    jpssl::span<const uint8_t>(),
+                    jpssl::span<const uint8_t>(),
                     ct, tag, 16);
     TEST("SM4-GCM empty encrypt produces empty ciphertext", ct.empty());
 
     std::vector<uint8_t> pt;
     bool ok = sm4_gcm_decrypt(&ctx, iv, 12,
-                              std::span<const uint8_t>(ct),
-                              std::span<const uint8_t>(),
+                              jpssl::span<const uint8_t>(ct),
+                              jpssl::span<const uint8_t>(),
                               tag, 16, pt);
     TEST("SM4-GCM empty decrypt success", ok);
     TEST("SM4-GCM empty decrypt produces empty plaintext", pt.empty());
