@@ -40,13 +40,13 @@ namespace jptest {
 // ================================================================
 
 /// 通过的断言数
-inline int g_pass = 0;
+static int g_pass = 0;
 
 /// 失败的断言数
-inline int g_fail = 0;
+static int g_fail = 0;
 
 /// 最近一次失败断言的消息
-inline std::string g_last_fail_msg;
+static std::string g_last_fail_msg;
 
 // ================================================================
 // 测试注册器

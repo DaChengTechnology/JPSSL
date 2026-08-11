@@ -24,7 +24,8 @@
 #include "jpssl_optional.hpp"
 #include <ctime>
 
-namespace jpssl::x509 {
+namespace jpssl {
+namespace x509 {
 
 // ═══════════════════════════════════════════════════════════════════════
 //  ASN.1 DER 基本类型标记
@@ -54,39 +55,39 @@ enum class ASN1Tag : uint8_t {
 //  OID 常量 (RFC 5280, RFC 8410, RFC 5758, GB/T 35275)
 // ═══════════════════════════════════════════════════════════════════════
 // Signature algorithms
-inline const uint8_t OID_RSA_ENCRYPTION[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x01};  // 1.2.840.113549.1.1.1
-inline const uint8_t OID_SHA256_WITH_RSA[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0B};  // 1.2.840.113549.1.1.11
-inline const uint8_t OID_SHA384_WITH_RSA[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0C};  // 1.2.840.113549.1.1.12
-inline const uint8_t OID_SHA512_WITH_RSA[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0D};  // 1.2.840.113549.1.1.13
-inline const uint8_t OID_EC_PUBLIC_KEY[]        = {0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01};            // 1.2.840.10045.2.1
-inline const uint8_t OID_EC_SECP256R1[]         = {0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07};      // 1.2.840.10045.3.1.7
-inline const uint8_t OID_EC_SECP384R1[]         = {0x2B,0x81,0x04,0x00,0x22};                   // 1.3.132.0.34  (secp384r1)
-inline const uint8_t OID_EC_SECP521R1[]         = {0x2B,0x81,0x04,0x00,0x23};                   // 1.3.132.0.35  (secp521r1)
-inline const uint8_t OID_ECDSA_WITH_SHA256[]    = {0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x02};      // 1.2.840.10045.4.3.2
-inline const uint8_t OID_ECDSA_WITH_SHA384[]    = {0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x03};      // 1.2.840.10045.4.3.3
-inline const uint8_t OID_ECDSA_WITH_SHA512[]    = {0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x04};      // 1.2.840.10045.4.3.4
-inline const uint8_t OID_ED25519[]              = {0x2B,0x65,0x70};                                // 1.3.101.112
-inline const uint8_t OID_ED448[]                = {0x2B,0x65,0x71};                                // 1.3.101.113
+const uint8_t OID_RSA_ENCRYPTION[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x01};  // 1.2.840.113549.1.1.1
+const uint8_t OID_SHA256_WITH_RSA[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0B};  // 1.2.840.113549.1.1.11
+const uint8_t OID_SHA384_WITH_RSA[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0C};  // 1.2.840.113549.1.1.12
+const uint8_t OID_SHA512_WITH_RSA[]      = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0D};  // 1.2.840.113549.1.1.13
+const uint8_t OID_EC_PUBLIC_KEY[]        = {0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01};            // 1.2.840.10045.2.1
+const uint8_t OID_EC_SECP256R1[]         = {0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07};      // 1.2.840.10045.3.1.7
+const uint8_t OID_EC_SECP384R1[]         = {0x2B,0x81,0x04,0x00,0x22};                   // 1.3.132.0.34  (secp384r1)
+const uint8_t OID_EC_SECP521R1[]         = {0x2B,0x81,0x04,0x00,0x23};                   // 1.3.132.0.35  (secp521r1)
+const uint8_t OID_ECDSA_WITH_SHA256[]    = {0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x02};      // 1.2.840.10045.4.3.2
+const uint8_t OID_ECDSA_WITH_SHA384[]    = {0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x03};      // 1.2.840.10045.4.3.3
+const uint8_t OID_ECDSA_WITH_SHA512[]    = {0x2A,0x86,0x48,0xCE,0x3D,0x04,0x03,0x04};      // 1.2.840.10045.4.3.4
+const uint8_t OID_ED25519[]              = {0x2B,0x65,0x70};                                // 1.3.101.112
+const uint8_t OID_ED448[]                = {0x2B,0x65,0x71};                                // 1.3.101.113
 // SM2 / SM3 (GM/T 35275)
 // SM2 curve: 1.2.156.10197.1.301
-inline const uint8_t OID_SM2[]                  = {0x2A,0x81,0x1C,0xCF,0x55,0x01,0x82,0x2D};      // 1.2.156.10197.1.301
+const uint8_t OID_SM2[]                  = {0x2A,0x81,0x1C,0xCF,0x55,0x01,0x82,0x2D};      // 1.2.156.10197.1.301
 // SM2-with-SM3 signature: 1.2.156.10197.1.501
-inline const uint8_t OID_SM2_WITH_SM3[]         = {0x2A,0x81,0x1C,0xCF,0x55,0x01,0x83,0x75};       // 1.2.156.10197.1.501
+const uint8_t OID_SM2_WITH_SM3[]         = {0x2A,0x81,0x1C,0xCF,0x55,0x01,0x83,0x75};       // 1.2.156.10197.1.501
 
 // Extensions
-inline const uint8_t OID_BASIC_CONSTRAINTS[]    = {0x55,0x1D,0x13};                                // 2.5.29.19
-inline const uint8_t OID_KEY_USAGE[]            = {0x55,0x1D,0x0F};                                // 2.5.29.15
-inline const uint8_t OID_EXT_KEY_USAGE[]        = {0x55,0x1D,0x25};                                // 2.5.29.37
-inline const uint8_t OID_SUBJECT_ALT_NAME[]     = {0x55,0x1D,0x11};                                // 2.5.29.17
+const uint8_t OID_BASIC_CONSTRAINTS[]    = {0x55,0x1D,0x13};                                // 2.5.29.19
+const uint8_t OID_KEY_USAGE[]            = {0x55,0x1D,0x0F};                                // 2.5.29.15
+const uint8_t OID_EXT_KEY_USAGE[]        = {0x55,0x1D,0x25};                                // 2.5.29.37
+const uint8_t OID_SUBJECT_ALT_NAME[]     = {0x55,0x1D,0x11};                                // 2.5.29.17
 
 // Extended Key Usage OIDs
-inline const uint8_t OID_EKU_SERVER_AUTH[]      = {0x2B,0x06,0x01,0x05,0x05,0x07,0x03,0x01};      // 1.3.6.1.5.5.7.3.1
-inline const uint8_t OID_EKU_CLIENT_AUTH[]      = {0x2B,0x06,0x01,0x05,0x05,0x07,0x03,0x02};      // 1.3.6.1.5.5.7.3.2
+const uint8_t OID_EKU_SERVER_AUTH[]      = {0x2B,0x06,0x01,0x05,0x05,0x07,0x03,0x01};      // 1.3.6.1.5.5.7.3.1
+const uint8_t OID_EKU_CLIENT_AUTH[]      = {0x2B,0x06,0x01,0x05,0x05,0x07,0x03,0x02};      // 1.3.6.1.5.5.7.3.2
 
 // Name attributes
-inline const uint8_t OID_CN[]                   = {0x55,0x04,0x03};                                // 2.5.4.3  commonName
-inline const uint8_t OID_O[]                    = {0x55,0x04,0x0A};                                // 2.5.4.10 organizationName
-inline const uint8_t OID_C[]                    = {0x55,0x04,0x06};                                // 2.5.4.6  countryName
+const uint8_t OID_CN[]                   = {0x55,0x04,0x03};                                // 2.5.4.3  commonName
+const uint8_t OID_O[]                    = {0x55,0x04,0x0A};                                // 2.5.4.10 organizationName
+const uint8_t OID_C[]                    = {0x55,0x04,0x06};                                // 2.5.4.6  countryName
 
 // ═══════════════════════════════════════════════════════════════════════
 //  密钥类型枚举
@@ -404,4 +405,5 @@ bool oid_equal(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b);
 
 } // namespace der
 
-} // namespace jpssl::x509
+} // namespace x509
+} // namespace jpssl

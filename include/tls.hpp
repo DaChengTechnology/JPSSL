@@ -24,7 +24,8 @@
 #include <vector>
 #include <map>
 #include <memory>
-namespace jpssl::tls {
+namespace jpssl {
+namespace tls {
 
 enum class TLSVersion { V12=0x0303, V13=0x0304 };
 enum class ContentType { CHANGE_CIPHER_SPEC=20, ALERT=21, HANDSHAKE=22, APPLICATION_DATA=23 };
@@ -742,3 +743,4 @@ std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint
 x509::KeyType tls_sig_alg_to_key_type(SignatureAlgorithm sig_alg);
 
 }
+} // namespace jpssl

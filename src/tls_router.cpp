@@ -19,7 +19,8 @@
 #include <cstdlib>
 #include <mutex>
 #include <algorithm>
-namespace jpssl::tls {
+namespace jpssl {
+namespace tls {
 
 
 static const uint8_t RSA_SHA256_DIGEST_INFO[] = {
@@ -947,7 +948,8 @@ tls_trust_store tls_trust_store::from_system() {
     if (loaded) return cached;
 
     // 1) SSL_CERT_FILE 环境变量优先
-    if (const char* env = std::getenv("SSL_CERT_FILE"); env && env[0]) {
+    const char* env = std::getenv("SSL_CERT_FILE");
+    if (env && env[0]) {
         auto ts = from_pem_file(env);
         if (!ts.empty()) { cached = std::move(ts); loaded = true; return cached; }
     }
@@ -2221,4 +2223,5 @@ bool tls_router_server_supports_tls13(const uint8_t* client_hello, size_t ch_len
     return false;
 }
 
-} // namespace jpssl::tls
+} // namespace tls
+} // namespace jpssl

@@ -42,7 +42,7 @@ using std::bad_optional_access;
 namespace jpssl {
 
 struct nullopt_t {
-    explicit nullopt_t(int) noexcept {}
+    explicit constexpr nullopt_t(int) noexcept {}
 };
 constexpr nullopt_t nullopt{0};
 
@@ -165,7 +165,12 @@ private:
         has_ = true;
     }
 
-    typename std::aligned_storage<sizeof(T), alignof(T)>::type storage_;
+    // 自实现对齐存储：避免 MSVC 对扩展对齐使用 std::aligned_storage
+    // 时的静态断言（C++14 模式）。
+    struct storage_type {
+        alignas(T) unsigned char data[sizeof(T)];
+    };
+    storage_type storage_;
     bool has_;
 };
 

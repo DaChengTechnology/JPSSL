@@ -25,7 +25,8 @@
 #include <cstdint>
 #include <vector>
 
-namespace jpssl::tls {
+namespace jpssl {
+namespace tls {
 
 // QUIC varint 编解码（RFC 9000 §16），供传输参数解析及 QUIC 层复用。
 size_t quic_varint_encoded_len(uint64_t v);
@@ -107,4 +108,5 @@ inline bool tls13_process_quic_client_finished(tls_session& s, const uint8_t* da
     return tls_quic_process_client_finished(s, data, len);
 }
 
-} // namespace jpssl::tls
+} // namespace tls
+} // namespace jpssl

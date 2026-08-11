@@ -14,7 +14,8 @@
 #include <cstdlib>
 #include <mutex>
 #include <algorithm>
-namespace jpssl::tls {
+namespace jpssl {
+namespace tls {
 
 // ------------------------------------------------------------
 // 内部辅助函数声明（定义见 tls_router.cpp）——tls.hpp 保持不变
@@ -703,4 +704,5 @@ std::vector<uint8_t> tls13_make_end_of_early_data(){
     return msg;
 }
 
-} // namespace jpssl::tls
+} // namespace tls
+} // namespace jpssl

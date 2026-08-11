@@ -15,7 +15,8 @@
 #include <cstring>
 #include <ctime>
 
-namespace jpssl::ct {
+namespace jpssl {
+namespace ct {
 
 namespace {
 
@@ -1223,4 +1224,5 @@ ct_log::append_entry(merkle_tree_leaf leaf, std::vector<uint8_t> extra_data,
     return sct;
 }
 
-} // namespace jpssl::ct
+} // namespace ct
+} // namespace jpssl

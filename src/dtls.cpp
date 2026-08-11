@@ -32,7 +32,8 @@
 #include <netdb.h>
 #endif
 
-namespace jpssl::dtls {
+namespace jpssl {
+namespace dtls {
 
 using jpssl::tls::CipherSuite;
 using jpssl::tls::NamedGroup;
@@ -2215,4 +2216,5 @@ bool dtls_connection::recv(std::vector<uint8_t>& data) {
     }
 }
 
-} // namespace jpssl::dtls
+} // namespace dtls
+} // namespace jpssl

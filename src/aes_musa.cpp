@@ -84,7 +84,7 @@ musa_aes_pool* musa_aes_pool_create(const aes_context& ctx, size_t init_capacity
 
     // 1. GPU 常量内存初始化
     musa_aes_gpu_init(
-        SBOX.data(), INV_SBOX.data(),
+        SBOX, INV_SBOX,
         ctx.enc_rk.data(), ctx.dec_rk.data(), ctx.rounds);
 
     // 2. 分配设备端缓冲区
@@ -181,7 +181,7 @@ static bool g_legacy_initialized = false;
 
 void musa_aes_init(const aes_context& ctx) {
     musa_aes_gpu_init(
-        SBOX.data(), INV_SBOX.data(),
+        SBOX, INV_SBOX,
         ctx.enc_rk.data(), ctx.dec_rk.data(), ctx.rounds);
     g_legacy_initialized = true;
 }
@@ -359,7 +359,7 @@ static bool g_gcm_initialized = false;
 static void musa_aes_gcm_ensure_init(const aes_context& ctx) {
     if (!g_gcm_initialized) {
         musa_aes_gcm_gpu_init(
-            SBOX.data(), INV_SBOX.data(),
+            SBOX, INV_SBOX,
             ctx.enc_rk.data(), ctx.dec_rk.data(), ctx.rounds);
         g_gcm_initialized = true;
     }
@@ -621,7 +621,7 @@ musa_aes_gcm_pool* musa_aes_gcm_pool_create(const aes_context& ctx, size_t max_d
     pool->capacity = max_data_bytes;
 
     musa_aes_gcm_gpu_init(
-        SBOX.data(), INV_SBOX.data(),
+        SBOX, INV_SBOX,
         ctx.enc_rk.data(), ctx.dec_rk.data(), ctx.rounds);
 
     MUSA_CHECK(musaMalloc(&pool->d_buf, max_data_bytes * 4));  // 4 buffers: pt, ct, ghash, work

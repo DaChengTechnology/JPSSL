@@ -15,7 +15,8 @@
 #include <cstring>
 #include <utility>
 
-namespace jpssl::tls {
+namespace jpssl {
+namespace tls {
 
 // ═══════════════════════════════════════════════════════════════════════
 //  QUIC varint（RFC 9000 §16）：前 2 bit 决定编码长度 1/2/4/8 字节
@@ -345,4 +346,5 @@ bool tls_quic_process_client_finished(tls_session& s, const uint8_t* data, size_
     return tls13_process_client_finished(s, data, len);
 }
 
-} // namespace jpssl::tls
+} // namespace tls
+} // namespace jpssl

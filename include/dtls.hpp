@@ -22,7 +22,8 @@
 #include <vector>
 #include <functional>
 
-namespace jpssl::dtls {
+namespace jpssl {
+namespace dtls {
 
 /// DTLS 协议版本（线格式 16 位版本号）。
 enum class DTLSVersion : uint16_t {
@@ -260,4 +261,5 @@ private:
     uint16_t peer_port_ = 0;
 };
 
-} // namespace jpssl::dtls
+} // namespace dtls
+} // namespace jpssl

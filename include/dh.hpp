@@ -4,7 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace jpssl::dh {
+namespace jpssl {
+namespace dh {
 
 constexpr size_t  FFDHE2048_BYTES      = 256;   // 2048-bit
 constexpr uint16_t FFDHE2048_NAMED_GROUP = 256; // 0x0100（RFC 7919 §2 supported_groups 编码）
@@ -31,4 +32,5 @@ size_t ffdhe2048_shared_minimal(const uint8_t shared[FFDHE2048_BYTES], uint8_t* 
 /// 便捷：把 256 字节大端值解析为 rsa_bignum（零填充）
 rsa_bignum ffdhe2048_bignum(const uint8_t bytes[FFDHE2048_BYTES]);
 
-} // namespace jpssl::dh
+} // namespace dh
+} // namespace jpssl

@@ -62,7 +62,8 @@
 #include <unistd.h>
 #endif
 
-namespace jpssl::tls {
+namespace jpssl {
+namespace tls {
 
 #ifdef _WIN32
 using socket_handle_t = SOCKET;
@@ -524,4 +525,5 @@ private:
     bool would_block_ = false;
 };
 
-} // namespace jpssl::tls
+} // namespace tls
+} // namespace jpssl

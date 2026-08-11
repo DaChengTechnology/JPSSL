@@ -1,4 +1,4 @@
-# jpssl — C++11+ 高性能密码学库（CPU + MUSA GPU）
+# jpssl — C++11+ 高性能密码学库（CPU + MUSA GPU，MSVC 最低 C++14）
 
 跨平台密码学库，支持 **AES**、**ChaCha20-Poly1305**、**RSA**、**TLS 1.2/1.3**（含 0-RTT 与 RFC 8998 国密套件）、**DTLS 1.2/1.3**（RFC 6347/9147 标准数据报 TLS）、**QUIC v1/v2**（RFC 9001/9369 QUIC 所需 TLS 层）、**Ed25519**、**Ed448**、**ECDSA**、**X.509 v3 证书**（RFC 5280），以及 **SM2/SM3/SM4 国密算法**（GM/T 0002/3/4-2012）。提供 CPU 优化（AES-NI/AVX2/VAES/PCLMULQDQ/Montgomery、ARM NEON：AES-GCM / ChaCha20 / SHA-1 / SHA-256 / SHA-512 / SHA-3 / SM3 / SM4）和可选的 MUSA GPU 加速（实验性，默认关闭）。同时提供静态库和动态库两种构建方式。
 

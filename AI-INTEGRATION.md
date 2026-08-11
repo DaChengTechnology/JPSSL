@@ -45,7 +45,7 @@ namespace jpssl::x509 {  // 证书：der 编解码 / pem / 证书链 ...
 
 ## 3. 构建（每个 AI 第一件事）
 
-环境要求：CMake ≥ 3.20，C++11+（默认构建 C++17；已验证 C++11/C++14/C++17/C++20 兼容），GCC 7+ / Clang 7+ / MSVC（VS 2019 16.10+ 或 2022+）；协程 I/O 需 C++20。库本身**不依赖 OpenSSL**（OpenSSL 只用于对比测试）。
+环境要求：CMake ≥ 3.20，C++11+（默认构建 C++17；MSVC 已验证 C++14/C++17/C++20，C++11 语法兼容、真实验证需 GCC/Clang，因 MSVC 无 C++11 模式），GCC 7+ / Clang 7+ / MSVC（VS 2019 16.10+ 或 2022+）；协程 I/O 需 C++20。库本身**不依赖 OpenSSL**（OpenSSL 只用于对比测试）。
 
 ### Linux / macOS
 

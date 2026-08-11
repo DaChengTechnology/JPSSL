@@ -14,7 +14,8 @@
 #include <cstdlib>
 #include <mutex>
 #include <algorithm>
-namespace jpssl::tls {
+namespace jpssl {
+namespace tls {
 
 // ------------------------------------------------------------
 // 内部辅助函数声明（定义见 tls_router.cpp）——tls.hpp 保持不变
@@ -551,4 +552,5 @@ bool tls12_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,
     return true;
 }
 
-} // namespace jpssl::tls
+} // namespace tls
+} // namespace jpssl

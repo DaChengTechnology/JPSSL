@@ -85,12 +85,12 @@ static void test_simd_direct() {
 
             std::string expect;
             expect.resize(((len + 2) / 3) * 4);
-            detail::base64_encode_scalar(data.data(), len, expect.data());
+            detail::base64_encode_scalar(data.data(), len, &expect[0]);
 
             std::string got;
             got.resize(((len + 2) / 3) * 4);
-            const size_t p = detail::base64_encode_avx2(data.data(), len, got.data());
-            detail::base64_encode_scalar(data.data() + p, len - p, got.data() + (p / 3) * 4);
+            const size_t p = detail::base64_encode_avx2(data.data(), len, &got[0]);
+            detail::base64_encode_scalar(data.data() + p, len - p, &got[0] + (p / 3) * 4);
             TEST_MSG("avx2 encode 24*k k=" + std::to_string(k),
                      got == expect, "avx2 encode mismatch");
         }
@@ -101,10 +101,10 @@ static void test_simd_direct() {
             const std::string enc = base64_encode(data);
 
             std::vector<uint8_t> expect((chars / 4) * 3);
-            TEST("avx2 scalar ref", detail::base64_decode_scalar(enc.data(), chars, expect.data()));
+            TEST("avx2 scalar ref", detail::base64_decode_scalar(enc.data(), chars, &expect[0]));
 
             std::vector<uint8_t> got((chars / 4) * 3);
-            const bool ok = detail::base64_decode_avx2(enc.data(), chars, got.data());
+            const bool ok = detail::base64_decode_avx2(enc.data(), chars, &got[0]);
             TEST_MSG("avx2 decode 32*k k=" + std::to_string(k),
                      ok && got == expect, "avx2 decode mismatch");
         }
@@ -123,12 +123,12 @@ static void test_simd_direct() {
 
             std::string expect;
             expect.resize(((len + 2) / 3) * 4);
-            detail::base64_encode_scalar(data.data(), len, expect.data());
+            detail::base64_encode_scalar(data.data(), len, &expect[0]);
 
             std::string got;
             got.resize(((len + 2) / 3) * 4);
-            const size_t p = detail::base64_encode_avx512(data.data(), len, got.data());
-            detail::base64_encode_scalar(data.data() + p, len - p, got.data() + (p / 3) * 4);
+            const size_t p = detail::base64_encode_avx512(data.data(), len, &got[0]);
+            detail::base64_encode_scalar(data.data() + p, len - p, &got[0] + (p / 3) * 4);
             TEST_MSG("avx512 encode 48*k k=" + std::to_string(k),
                      got == expect, "avx512 encode mismatch");
         }
@@ -139,10 +139,10 @@ static void test_simd_direct() {
             const std::string enc = base64_encode(data);
 
             std::vector<uint8_t> expect((chars / 4) * 3);
-            TEST("avx512 scalar ref", detail::base64_decode_scalar(enc.data(), chars, expect.data()));
+            TEST("avx512 scalar ref", detail::base64_decode_scalar(enc.data(), chars, &expect[0]));
 
             std::vector<uint8_t> got((chars / 4) * 3);
-            const bool ok = detail::base64_decode_avx512(enc.data(), chars, got.data());
+            const bool ok = detail::base64_decode_avx512(enc.data(), chars, &got[0]);
             TEST_MSG("avx512 decode 64*k k=" + std::to_string(k),
                      ok && got == expect, "avx512 decode mismatch");
         }

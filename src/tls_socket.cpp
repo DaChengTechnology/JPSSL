@@ -34,7 +34,8 @@ struct pollfd {
 #include <sys/ioctl.h>
 #endif
 
-namespace jpssl::tls {
+namespace jpssl {
+namespace tls {
 
 // 版本选择（定义于 tls_router.cpp）：
 //   客户端按配置选择 TLS 1.2 / TLS 1.3 握手路径；
@@ -1689,4 +1690,5 @@ void tls_listener::close() {
     udp_ = false;
 }
 
-} // namespace jpssl::tls
+} // namespace tls
+} // namespace jpssl

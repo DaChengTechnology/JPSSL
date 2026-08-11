@@ -72,7 +72,7 @@ void run_size(size_t len, std::vector<Row>& rows) {
     // Canonical (unpadded) encoding used by the decode benchmarks.
     std::string canon;
     canon.resize(((len / 3) * 4));
-    detail::base64_encode_scalar(data.data(), (len / 3) * 3, canon.data());
+    detail::base64_encode_scalar(data.data(), (len / 3) * 3, &canon[0]);
 
     std::vector<char> out(enc_len);
     std::vector<uint8_t> dec_out((canon.size() / 4) * 3);
@@ -90,14 +90,14 @@ void run_size(size_t len, std::vector<Row>& rows) {
         detail::base64_encode_scalar(data.data(), len, out.data());
         std::string expect;
         expect.resize(enc_len);
-        detail::base64_encode_scalar(data.data(), len, expect.data());
+        detail::base64_encode_scalar(data.data(), len, &expect[0]);
         if (std::string(out.data(), enc_len) != expect) std::abort();
 
         const double e = bench_bytes([&] {
             detail::base64_encode_scalar(data.data(), len, out.data());
         }, len);
         const double d = bench_bytes([&] {
-            detail::base64_decode_scalar(canon.data(), canon.size(), dec_out.data());
+            detail::base64_decode_scalar(&canon[0], canon.size(), dec_out.data());
         }, ref_dec.size());
         add("scalar", e, d);
     }
@@ -108,7 +108,7 @@ void run_size(size_t len, std::vector<Row>& rows) {
         detail::base64_encode_scalar(data.data() + p, len - p, out.data() + (p / 3) * 4);
         std::string expect;
         expect.resize(enc_len);
-        detail::base64_encode_scalar(data.data(), len, expect.data());
+        detail::base64_encode_scalar(data.data(), len, &expect[0]);
         if (std::string(out.data(), enc_len) != expect) std::abort();
 
         const double e = bench_bytes([&] {
@@ -116,10 +116,10 @@ void run_size(size_t len, std::vector<Row>& rows) {
             detail::base64_encode_scalar(data.data() + q, len - q, out.data() + (q / 3) * 4);
         }, len);
 
-        bool ok = detail::base64_decode_avx2(canon.data(), canon.size(), dec_out.data());
+        bool ok = detail::base64_decode_avx2(&canon[0], canon.size(), dec_out.data());
         if (!ok || dec_out != ref_dec) std::abort();
         const double d = bench_bytes([&] {
-            detail::base64_decode_avx2(canon.data(), canon.size(), dec_out.data());
+            detail::base64_decode_avx2(&canon[0], canon.size(), dec_out.data());
         }, ref_dec.size());
         add("avx2", e, d);
     } else {
@@ -132,7 +132,7 @@ void run_size(size_t len, std::vector<Row>& rows) {
         detail::base64_encode_scalar(data.data() + p, len - p, out.data() + (p / 3) * 4);
         std::string expect;
         expect.resize(enc_len);
-        detail::base64_encode_scalar(data.data(), len, expect.data());
+        detail::base64_encode_scalar(data.data(), len, &expect[0]);
         if (std::string(out.data(), enc_len) != expect) std::abort();
 
         const double e = bench_bytes([&] {
@@ -140,10 +140,10 @@ void run_size(size_t len, std::vector<Row>& rows) {
             detail::base64_encode_scalar(data.data() + q, len - q, out.data() + (q / 3) * 4);
         }, len);
 
-        bool ok = detail::base64_decode_avx512(canon.data(), canon.size(), dec_out.data());
+        bool ok = detail::base64_decode_avx512(&canon[0], canon.size(), dec_out.data());
         if (!ok || dec_out != ref_dec) std::abort();
         const double d = bench_bytes([&] {
-            detail::base64_decode_avx512(canon.data(), canon.size(), dec_out.data());
+            detail::base64_decode_avx512(&canon[0], canon.size(), dec_out.data());
         }, ref_dec.size());
         add("avx512", e, d);
     } else {
@@ -154,7 +154,7 @@ void run_size(size_t len, std::vector<Row>& rows) {
     {
         std::string expect;
         expect.resize(enc_len);
-        detail::base64_encode_scalar(data.data(), len, expect.data());
+        detail::base64_encode_scalar(data.data(), len, &expect[0]);
         if (base64_encode(data) != expect) std::abort();
         if (!base64_decode(canon).has_value() || base64_decode(canon).value() != ref_dec) std::abort();
         const double e = bench_bytes([&] { (void)base64_encode(data); }, len);

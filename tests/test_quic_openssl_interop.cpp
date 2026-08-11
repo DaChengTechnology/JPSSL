@@ -57,9 +57,11 @@ using namespace jpssl::tls;
 
 // tls_quic 内部密钥派生（QUIC 模式会设置 quic_hs_secrets_ready），
 // 供方向 A 在解密服务器 Handshake 包前先由 ServerHello 派生握手密钥。
-namespace jpssl::tls {
+namespace jpssl {
+namespace tls {
 void tls13_derive_handshake_keys(tls_session& s, const uint8_t* shared_secret, size_t shared_len);
-}
+} // namespace tls
+} // namespace jpssl
 
 // ============================================================
 //  平台 socket 适配

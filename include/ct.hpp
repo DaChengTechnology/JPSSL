@@ -30,7 +30,8 @@
 #include <string>
 #include <vector>
 
-namespace jpssl::ct {
+namespace jpssl {
+namespace ct {
 
 // ============================================================================
 // 协议常量
@@ -40,9 +41,9 @@ constexpr size_t CT_LOG_ID_SIZE = 32;   // LogID / issuer_key_hash 长度
 constexpr uint8_t CT_VERSION_V1 = 0;    // 协议版本 v1
 
 // X.509 扩展 OID (DER 编码值, 与 x509.hpp 中 OID_* 常量同格式)
-inline const uint8_t OID_SCT_LIST[]  = {0x2B,0x06,0x01,0x04,0x01,0xD6,0x79,0x02,0x04,0x02}; // 1.3.6.1.4.1.11129.2.4.2
-inline const uint8_t OID_CT_POISON[] = {0x2B,0x06,0x01,0x04,0x01,0xD6,0x79,0x02,0x04,0x03}; // 1.3.6.1.4.1.11129.2.4.3
-inline const uint8_t OID_CT_EKU[]    = {0x2B,0x06,0x01,0x04,0x01,0xD6,0x79,0x02,0x04,0x04}; // 1.3.6.1.4.1.11129.2.4.4
+const uint8_t OID_SCT_LIST[]  = {0x2B,0x06,0x01,0x04,0x01,0xD6,0x79,0x02,0x04,0x02}; // 1.3.6.1.4.1.11129.2.4.2
+const uint8_t OID_CT_POISON[] = {0x2B,0x06,0x01,0x04,0x01,0xD6,0x79,0x02,0x04,0x03}; // 1.3.6.1.4.1.11129.2.4.3
+const uint8_t OID_CT_EKU[]    = {0x2B,0x06,0x01,0x04,0x01,0xD6,0x79,0x02,0x04,0x04}; // 1.3.6.1.4.1.11129.2.4.4
 
 // DigitallySigned 中的算法标识字节。
 // GM/T 草案尚未在公开文本中定稿这两个字节的取值; 本实现取 RFC 6962
@@ -409,4 +410,5 @@ private:
 /// 兼容旧名：ct_log 默认即国密（SM3 + SM2）
 using sm2_ct_log = ct_log;
 
-} // namespace jpssl::ct
+} // namespace ct
+} // namespace jpssl

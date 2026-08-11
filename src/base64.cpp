@@ -95,12 +95,12 @@ std::string base64_encode(const uint8_t* data, size_t len) {
     switch (b64_level()) {
 #ifdef JP_AVX512
     case 2:
-        i = detail::base64_encode_avx512(data, len, out.data());
+        i = detail::base64_encode_avx512(data, len, &out[0]);
         break;
 #endif
 #ifdef JP_AVX2
     case 1:
-        i = detail::base64_encode_avx2(data, len, out.data());
+        i = detail::base64_encode_avx2(data, len, &out[0]);
         break;
 #endif
     default:
@@ -108,7 +108,7 @@ std::string base64_encode(const uint8_t* data, size_t len) {
     }
 
     // SIMD leaves a short tail (including any final '=' padding) for scalar.
-    detail::base64_encode_scalar(data + i, len - i, out.data() + (i / 3) * 4);
+    detail::base64_encode_scalar(data + i, len - i, &out[0] + (i / 3) * 4);
     return out;
 }
 

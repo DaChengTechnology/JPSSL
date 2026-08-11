@@ -54,6 +54,11 @@ else()
     target_link_libraries(bench_cipher_suites PRIVATE jpssl_cpu OpenSSL::Crypto)
 endif()
 
+# TLS 1.3 + RSA-2048 新建连接（完整握手）速率基准
+add_executable(bench_tls13_rsa_handshake bench_tls13_rsa_handshake.cpp)
+target_include_directories(bench_tls13_rsa_handshake PRIVATE ${BENCH_INCLUDE_DIR})
+target_link_libraries(bench_tls13_rsa_handshake PRIVATE jpssl_cpu)
+
 # SM4 vs OpenSSL benchmark
 add_executable(bench_sm4 bench_sm4.cpp)
 target_include_directories(bench_sm4 PRIVATE ${BENCH_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/tests)

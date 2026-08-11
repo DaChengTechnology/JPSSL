@@ -1,7 +1,8 @@
 #include "dh.hpp"
 #include <cstring>
 
-namespace jpssl::dh {
+namespace jpssl {
+namespace dh {
 
 // ffdhe2048 素数 p（RFC 7919 Appendix A.1，2048-bit，g=2）
 const uint8_t ffdhe2048_p[FFDHE2048_BYTES] = {
@@ -82,4 +83,5 @@ size_t ffdhe2048_shared_minimal(const uint8_t shared[FFDHE2048_BYTES], uint8_t* 
     return n;
 }
 
-} // namespace jpssl::dh
+} // namespace dh
+} // namespace jpssl

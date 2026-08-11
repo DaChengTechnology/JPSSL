@@ -14,7 +14,8 @@
 #include <cstdlib>
 #include <mutex>
 #include <algorithm>
-namespace jpssl::tls {
+namespace jpssl {
+namespace tls {
 
 // ------------------------------------------------------------
 // 内部辅助函数声明（定义见 tls_router.cpp）——tls.hpp 保持不变
@@ -781,4 +782,5 @@ bool tls12_process_client_key_exchange(tls_session& s, const uint8_t* encrypted_
 }
 
 
-} // namespace jpssl::tls
+} // namespace tls
+} // namespace jpssl
