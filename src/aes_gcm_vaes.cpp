@@ -85,6 +85,18 @@ static inline __m256i vpclmul_2lane(__m256i a, __m256i b) {
     return r;
 }
 
+/// GCM counter 每 lane 的 32 位 big-endian 字段 +8（进位安全）
+/// dword3 存 big-endian 字节反转值：先 32 位 bswap 成小端整数，+8 的
+/// 进位自然传播（255→256 时进到次高字节），再 bswap 还原
+static inline __m256i counter_add8(__m256i v) {
+    const __m256i bs = _mm256_set_epi8(
+        28,29,30,31, 24,25,26,27, 20,21,22,23, 16,17,18,19,
+        12,13,14,15,  8, 9,10,11,  4, 5, 6, 7,  0, 1, 2, 3);
+    __m256i s = _mm256_shuffle_epi8(v, bs);
+    s = _mm256_add_epi32(s, _mm256_set_epi32(8, 0, 0, 0, 8, 0, 0, 0));  // e7/e3 = 每 lane 的 dword3 +8
+    return _mm256_shuffle_epi8(s, bs);
+}
+
 /// 逐 lane 64-bit 移位（permute + mask；imm 位序：result[i] = v[imm[2i+1:2i]]）
 static inline __m256i lane_sll64(__m256i v) {
     return _mm256_and_si256(_mm256_permute4x64_epi64(v, 0xA0),
@@ -305,7 +317,6 @@ static void vaes_gcm_encrypt_impl(const aes_context& ctx,
         _mm256_set_m128i(c5, c4),
         _mm256_set_m128i(c7, c6),
     };
-    const __m256i inc8 = _mm256_set_epi32(0x08000000, 0, 0, 0, 0x08000000, 0, 0, 0);
 
     size_t i = 0;
     __m256i ct0, ct1, ct2, ct3;  // 上一组密文（YMM 形式）
@@ -350,7 +361,7 @@ static void vaes_gcm_encrypt_impl(const aes_context& ctx,
     }
     for (; i + 8 <= num_blocks8; i += 8) {
         ghash_group();
-        for (int k = 0; k < 4; ++k) yc[k] = _mm256_add_epi32(yc[k], inc8);
+        for (int k = 0; k < 4; ++k) yc[k] = counter_add8(yc[k]);
         enc_group(i);
     }
     if (num_blocks8 >= 8) ghash_group();  // 最后一组密文 → GHASH
@@ -477,7 +488,6 @@ static bool vaes_gcm_decrypt_impl(const aes_context& ctx,
         _mm256_set_m128i(c5, c4),
         _mm256_set_m128i(c7, c6),
     };
-    const __m256i inc8 = _mm256_set_epi32(0x08000000, 0, 0, 0, 0x08000000, 0, 0, 0);
 
     size_t i = 0;
     for (; i + 8 <= num_blocks8; i += 8) {
@@ -497,7 +507,7 @@ static bool vaes_gcm_decrypt_impl(const aes_context& ctx,
         _mm256_storeu_si256((__m256i*)(po + 32), p1);
         _mm256_storeu_si256((__m256i*)(po + 64), p2);
         _mm256_storeu_si256((__m256i*)(po + 96), p3);
-        for (int k = 0; k < 4; ++k) yc[k] = _mm256_add_epi32(yc[k], inc8);
+        for (int k = 0; k < 4; ++k) yc[k] = counter_add8(yc[k]);
     }
 
     __m128i ctr = inc_counter_n(J0, (int)(i + 1));
