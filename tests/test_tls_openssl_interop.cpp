@@ -50,7 +50,7 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <mutex>
 #include <string>
 #include <thread>
@@ -142,7 +142,7 @@ static std::string ossl_errors() {
 
 // jpssl 服务端证书（ECDSA P-256，自持密钥）
 static std::unique_ptr<tls_certificate> make_jpssl_ecdsa_cert() {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "localhost";
     cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     ecdsa_p256_keygen(cert->pub.ecdsa_p256, cert->priv.ecdsa_p256);
@@ -151,7 +151,7 @@ static std::unique_ptr<tls_certificate> make_jpssl_ecdsa_cert() {
 
 // jpssl 服务端证书（RSA-2048，自持密钥）
 static std::unique_ptr<tls_certificate> make_jpssl_rsa_cert() {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "localhost";
     cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
     if (!rsa_keygen(cert->pub.rsa, cert->priv.rsa)) return nullptr;
@@ -160,7 +160,7 @@ static std::unique_ptr<tls_certificate> make_jpssl_rsa_cert() {
 
 // jpssl 服务端证书（SM2，RFC 8998 国密套件要求）
 static std::unique_ptr<tls_certificate> make_jpssl_sm2_cert() {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "localhost";
     cert->sig_alg = SignatureAlgorithm::SM2_SM3;
     sm2_keygen(cert->pub.sm2, cert->priv.sm2);
@@ -684,7 +684,7 @@ static bool interop_tls12_ossl_server_jpssl_client(const tls12_suite_entry& e,
     // jpssl 客户端：预期证书（公钥与 OpenSSL 服务端配对）
     tls_certificate_manager cli_mgr;
     if (need_cert) {
-        auto expect_cert = std::make_unique<tls_certificate>();
+        auto expect_cert = jpssl::make_unique<tls_certificate>();
         expect_cert->subject_name = "localhost";
         if (e.need_ecdsa_cert) {
             expect_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
@@ -934,7 +934,7 @@ static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why) {
 
     // jpssl 客户端：预期证书（公钥与 OpenSSL 服务端配对）
     tls_certificate_manager cli_mgr;
-    auto expect_cert = std::make_unique<tls_certificate>();
+    auto expect_cert = jpssl::make_unique<tls_certificate>();
     expect_cert->subject_name = "localhost";
     expect_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     std::memcpy(expect_cert->pub.ecdsa_p256, xy, 64);

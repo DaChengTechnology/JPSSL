@@ -20,7 +20,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <string>
 #include <thread>
 #include <vector>
@@ -30,7 +30,7 @@ using namespace jpssl::tls;
 
 static std::unique_ptr<tls_certificate> make_ecdsa_cert(const uint8_t pub[64],
                                                         const uint8_t priv[32]) {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "localhost";
     cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     std::memcpy(cert->pub.ecdsa_p256, pub, 64);
@@ -108,7 +108,7 @@ int main() {
 
     // ---- 服务端线程：accept + 握手 → 创建服务端协程 ----
     std::thread server_thread([&] {
-        auto conn = std::make_unique<tls_connection>();
+        auto conn = jpssl::make_unique<tls_connection>();
         std::string e;
         if (!listener.accept(*conn, server_mgr, &e)) {
             std::fprintf(stderr, "server accept failed: %s\n", e.c_str());
@@ -117,18 +117,18 @@ int main() {
         conn->set_nonblocking(true, &e);
         conn->attach_co_executor(&st.ex);
         st.server_conn = std::move(conn);
-        st.server_task = std::make_unique<tls_co_task<void>>(co_server_session(st));
+        st.server_task = jpssl::make_unique<tls_co_task<void>>(co_server_session(st));
     });
 
     // ---- 客户端：connect + 握手 → 创建客户端协程 ----
-    st.client_conn = std::make_unique<tls_connection>();
+    st.client_conn = jpssl::make_unique<tls_connection>();
     if (!st.client_conn->connect("127.0.0.1", port, &client_mgr, &err)) {
         std::fprintf(stderr, "client connect failed: %s\n", err.c_str());
         return 1;
     }
     st.client_conn->set_nonblocking(true, &err);
     st.client_conn->attach_co_executor(&st.ex);
-    st.client_task = std::make_unique<tls_co_task<void>>(co_client_session(st));
+    st.client_task = jpssl::make_unique<tls_co_task<void>>(co_client_session(st));
 
     // 等待服务端协程任务创建完成
     for (int i = 0; i < 100 && !st.server_task; ++i)

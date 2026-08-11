@@ -4,6 +4,7 @@
  * Reuses the library crypto primitives (AES-GCM / ChaCha20 / HKDF / HMAC /
  * X25519 / P-256 / X448 / x509) to implement standard DTLS without OpenSSL.
  */
+#include "jpssl_memory.hpp"
 #include "dtls.hpp"
 #include "sha256.hpp"
 #include "sha512.hpp"
@@ -1128,7 +1129,7 @@ static bool ecdh_derive(dtls_session& s, const uint8_t* peer_pub, size_t peer_le
 }
 
 static std::unique_ptr<tls_certificate> cert_from_x509(const x509::x509_cert& leaf) {
-    auto out = std::make_unique<tls_certificate>();
+    auto out = jpssl::make_unique<tls_certificate>();
     out->subject_name = leaf.common_name();
     out->sig_alg = jpssl::tls::tls_key_type_to_sig_alg(leaf.key_type);
     switch (leaf.key_type) {

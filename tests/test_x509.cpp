@@ -21,7 +21,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <vector>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <string>
 #include <algorithm>
 
@@ -357,7 +357,7 @@ void test_tls_x509_integration() {
 
     // Test with Ed25519
     {
-        auto cert = std::make_unique<tls_certificate>();
+        auto cert = jpssl::make_unique<tls_certificate>();
         cert->subject_name = "tls-ed25519.test";
         cert->sig_alg = SignatureAlgorithm::ED25519;
         ed25519_keygen(cert->pub.ed25519, cert->priv.ed25519);
@@ -376,7 +376,7 @@ void test_tls_x509_integration() {
 
     // Test with ECDSA P-256
     {
-        auto cert = std::make_unique<tls_certificate>();
+        auto cert = jpssl::make_unique<tls_certificate>();
         cert->subject_name = "tls-ecdsa.test";
         cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
         ecdsa_p256_keygen(cert->pub.ecdsa_p256, cert->priv.ecdsa_p256);
@@ -395,7 +395,7 @@ void test_tls_x509_integration() {
 
     // Test with SM2
     {
-        auto cert = std::make_unique<tls_certificate>();
+        auto cert = jpssl::make_unique<tls_certificate>();
         cert->subject_name = "tls-sm2.test";
         cert->sig_alg = SignatureAlgorithm::SM2_SM3;
         sm2_keygen(cert->pub.sm2, cert->priv.sm2);
@@ -413,7 +413,7 @@ void test_tls_x509_integration() {
 
     // Test that tls12_make_certificate works
     {
-        auto cert = std::make_unique<tls_certificate>();
+        auto cert = jpssl::make_unique<tls_certificate>();
         cert->subject_name = "tls12.test";
         cert->sig_alg = SignatureAlgorithm::ED25519;
         ed25519_keygen(cert->pub.ed25519, cert->priv.ed25519);

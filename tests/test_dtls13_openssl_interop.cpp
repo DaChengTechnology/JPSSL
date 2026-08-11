@@ -25,7 +25,7 @@
 #include <cerrno>
 #include <cstring>
 #include <iostream>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <string>
 #include <thread>
 #include <vector>
@@ -82,7 +82,7 @@ static tls_certificate_manager make_jpssl_cert_mgr(const char* dns) {
     b.add_san_dns(dns);
     auto der = b.build_and_sign(x509::KeyType::ECDSA_P256, priv, 32);
     tls_certificate_manager mgr;
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = dns;
     cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     memcpy(cert->pub.ecdsa_p256, pub, 64);

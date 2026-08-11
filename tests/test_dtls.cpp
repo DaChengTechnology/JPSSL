@@ -14,7 +14,7 @@
 #include "ecdsa.hpp"
 #include "ed25519.hpp"
 #include "x509.hpp"
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <cstring>
 #include <thread>
 #include <chrono>
@@ -48,7 +48,7 @@ static tls_certificate_manager make_cert_mgr(const char* dns, tls_trust_store* t
     auto ca_cert = b.build_and_sign(x509::KeyType::ECDSA_P256, priv, 32);
     if (trust) trust->ca_roots.push_back(ca_cert);
     tls_certificate_manager mgr;
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = dns;
     cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     memcpy(cert->pub.ecdsa_p256, pub, 64);
@@ -368,7 +368,7 @@ void test_dtls13_wrong_trust() {
     auto leaf_cert = leaf_b.build_and_sign(x509::KeyType::ECDSA_P256, ca_priv, 32);
 
     tls_certificate_manager cert_mgr;
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "dtls.test";
     cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     memcpy(cert->pub.ecdsa_p256, leaf_pub, 64);

@@ -13,7 +13,7 @@
 #include "dh.hpp"
 #include <vector>
 #include <string>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <cstdlib>
 #include "jpssl_span.hpp"
 
@@ -25,7 +25,7 @@ using namespace jpssl;
 // ========================================================================
 
 void test_ed25519_certificate() {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "ed25519.test";
     cert->sig_alg = SignatureAlgorithm::ED25519;
     ed25519_keygen(cert->pub.ed25519, cert->priv.ed25519);
@@ -51,7 +51,7 @@ void test_ed25519_certificate() {
 // ========================================================================
 
 void test_ecdsa_certificate() {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "ecdsa.test";
     cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     ecdsa_p256_keygen(cert->pub.ecdsa_p256, cert->priv.ecdsa_p256);
@@ -74,7 +74,7 @@ void test_ecdsa_certificate() {
 // ========================================================================
 
 void test_rsa_certificate() {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "rsa.test";
     cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
     rsa_keygen(cert->pub.rsa, cert->priv.rsa);
@@ -102,12 +102,12 @@ void test_rsa_certificate() {
 void test_certificate_manager() {
     tls_certificate_manager mgr;
 
-    auto c1 = std::make_unique<tls_certificate>();
+    auto c1 = jpssl::make_unique<tls_certificate>();
     c1->subject_name = "a.example.com";
     c1->sig_alg = SignatureAlgorithm::ED25519;
     ed25519_keygen(c1->pub.ed25519, c1->priv.ed25519);
 
-    auto c2 = std::make_unique<tls_certificate>();
+    auto c2 = jpssl::make_unique<tls_certificate>();
     c2->subject_name = "b.example.org";
     c2->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     ecdsa_p256_keygen(c2->pub.ecdsa_p256, c2->priv.ecdsa_p256);
@@ -144,7 +144,7 @@ void test_certificate_manager() {
 void test_tls13_full_handshake_ed25519() {
     // ── 准备服务端证书 ──
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::ED25519;
     ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
@@ -218,7 +218,7 @@ void test_tls13_full_handshake_ed25519() {
 void test_tls13_full_handshake_ecdsa() {
     // ── 准备服务端证书 ──
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     ecdsa_p256_keygen(server_cert->pub.ecdsa_p256, server_cert->priv.ecdsa_p256);
@@ -262,7 +262,7 @@ void test_tls13_full_handshake_ecdsa() {
 void test_tls12_full_handshake() {
     // ── 准备服务端证书 ──
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
     rsa_keygen(server_cert->pub.rsa, server_cert->priv.rsa);
@@ -327,13 +327,13 @@ void test_sni_multi_domain() {
     // ── 添加两个不同域名的证书 ──
     tls_certificate_manager mgr;
 
-    auto cert_a = std::make_unique<tls_certificate>();
+    auto cert_a = jpssl::make_unique<tls_certificate>();
     cert_a->subject_name = "a.example.com";
     cert_a->sig_alg = SignatureAlgorithm::ED25519;
     ed25519_keygen(cert_a->pub.ed25519, cert_a->priv.ed25519);
     mgr.add_certificate("a.example.com", std::move(cert_a));
 
-    auto cert_b = std::make_unique<tls_certificate>();
+    auto cert_b = jpssl::make_unique<tls_certificate>();
     cert_b->subject_name = "b.example.com";
     cert_b->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     ecdsa_p256_keygen(cert_b->pub.ecdsa_p256, cert_b->priv.ecdsa_p256);
@@ -384,7 +384,7 @@ void test_sni_multi_domain() {
 
 void test_simplified_handshake_api() {
     tls_certificate_manager cert_mgr;
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->sig_alg = SignatureAlgorithm::ED25519;
     ed25519_keygen(cert->pub.ed25519, cert->priv.ed25519);
     cert_mgr.add_certificate("localhost", std::move(cert));
@@ -425,7 +425,7 @@ void test_simplified_handshake_api() {
 void test_tls13_0rtt() {
     // ── 阶段 1: 完整握手 ──
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::ED25519;
     ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
@@ -560,7 +560,7 @@ static const char* sig_name(SignatureAlgorithm sig) {
 }
 
 static std::unique_ptr<tls_certificate> make_cert_for_sig(SignatureAlgorithm sig) {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "localhost";
     cert->sig_alg = sig;
     switch (sig) {
@@ -820,7 +820,7 @@ void test_signature_algorithm_extensions() {
 
 void test_tls13_full_handshake_ecdsa_p384() {
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP384R1_SHA384;
     ecdsa_p384_keygen(server_cert->pub.ecdsa_p384, server_cert->priv.ecdsa_p384);
@@ -854,7 +854,7 @@ void test_tls13_full_handshake_ecdsa_p384() {
 
 void test_tls13_full_handshake_rsa_pss() {
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::RSA_PSS_RSAE_SHA256;
     rsa_keygen(server_cert->pub.rsa, server_cert->priv.rsa);
@@ -889,7 +889,7 @@ void test_tls13_full_handshake_rsa_pss() {
 // ECDSA P-521 证书的 TLS 1.3 完整握手（签名算法 0x0603，SHA-512）
 void test_tls13_full_handshake_ecdsa_p521() {
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP521R1_SHA512;
     ecdsa_p521_keygen(server_cert->pub.ecdsa_p521, server_cert->priv.ecdsa_p521);
@@ -924,7 +924,7 @@ void test_tls13_full_handshake_ecdsa_p521() {
 // TLS 1.3 完整握手：ECDSA P-256 证书 + secp256r1 ECDHE 密钥交换
 void test_tls13_full_handshake_ecdsa_p256_ecdh() {
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     ecdsa_p256_keygen(server_cert->pub.ecdsa_p256, server_cert->priv.ecdsa_p256);
@@ -960,7 +960,7 @@ void test_tls13_full_handshake_ecdsa_p256_ecdh() {
 // TLS 1.3 完整握手：ECDSA P-384 证书 + secp384r1 ECDHE 密钥交换
 void test_tls13_full_handshake_ecdsa_p384_ecdh() {
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP384R1_SHA384;
     ecdsa_p384_keygen(server_cert->pub.ecdsa_p384, server_cert->priv.ecdsa_p384);
@@ -996,7 +996,7 @@ void test_tls13_full_handshake_ecdsa_p384_ecdh() {
 // RSA-PKCS1 证书在 TLS 1.3 中必须改用 PSS 做 CertificateVerify（RFC 8446）
 void test_tls13_rsa_pkcs1_cert_uses_pss() {
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
     rsa_keygen(server_cert->pub.rsa, server_cert->priv.rsa);
@@ -1025,7 +1025,7 @@ void test_tls13_rejects_unadvertised_scheme() {
     // 服务端 ECDSA P-256 证书，客户端只广告 ed25519 -> 服务端必须中止
     {
         tls_certificate_manager cert_mgr;
-        auto server_cert = std::make_unique<tls_certificate>();
+        auto server_cert = jpssl::make_unique<tls_certificate>();
         server_cert->subject_name = "localhost";
         server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
         ecdsa_p256_keygen(server_cert->pub.ecdsa_p256, server_cert->priv.ecdsa_p256);
@@ -1046,7 +1046,7 @@ void test_tls13_rejects_unadvertised_scheme() {
     // 反向：服务端 Ed25519 证书，客户端只广告 ECDSA -> 中止
     {
         tls_certificate_manager cert_mgr;
-        auto server_cert = std::make_unique<tls_certificate>();
+        auto server_cert = jpssl::make_unique<tls_certificate>();
         server_cert->subject_name = "localhost";
         server_cert->sig_alg = SignatureAlgorithm::ED25519;
         ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
@@ -1070,7 +1070,7 @@ void test_signature_algorithms_cert_enforcement() {
     // 证书链签名方案在客户端 sig_algs_cert 内 -> 握手成功
     {
         tls_certificate_manager cert_mgr;
-        auto server_cert = std::make_unique<tls_certificate>();
+        auto server_cert = jpssl::make_unique<tls_certificate>();
         server_cert->subject_name = "localhost";
         server_cert->sig_alg = SignatureAlgorithm::ED25519;
         ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
@@ -1091,7 +1091,7 @@ void test_signature_algorithms_cert_enforcement() {
     // 证书链签名方案不在客户端 sig_algs_cert 内 -> 服务端中止
     {
         tls_certificate_manager cert_mgr;
-        auto server_cert = std::make_unique<tls_certificate>();
+        auto server_cert = jpssl::make_unique<tls_certificate>();
         server_cert->subject_name = "localhost";
         server_cert->sig_alg = SignatureAlgorithm::ED25519;
         ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
@@ -1116,7 +1116,7 @@ void test_signature_algorithms_cert_enforcement() {
     // 手工构造非子集的 signature_algorithms_cert -> 服务端中止
     {
         tls_certificate_manager cert_mgr;
-        auto server_cert = std::make_unique<tls_certificate>();
+        auto server_cert = jpssl::make_unique<tls_certificate>();
         server_cert->subject_name = "localhost";
         server_cert->sig_alg = SignatureAlgorithm::ED25519;
         ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
@@ -1156,7 +1156,7 @@ void test_signature_algorithms_cert_enforcement() {
 // 线级校验：CertificateVerify 签名的内容是 RFC 8446 上下文串 + 64 个 0x00 + Transcript-Hash
 void test_tls13_cert_verify_rfc8446_content() {
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::ED25519;
     ed25519_keygen(server_cert->pub.ed25519, server_cert->priv.ed25519);
@@ -1231,7 +1231,7 @@ void test_tls13_cert_verify_rfc8446_content() {
 // TLS 1.2 ECDHE：服务端按客户端 signature_algorithms 协商 ServerKeyExchange 签名方案
 void test_tls12_skx_scheme_selection() {
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     ecdsa_p256_keygen(server_cert->pub.ecdsa_p256, server_cert->priv.ecdsa_p256);
@@ -1253,7 +1253,7 @@ void test_tls12_skx_scheme_selection() {
 
 void test_sign_scheme_cert_verify_context() {
     // 直接验证 sign_scheme / verify_scheme 对 RFC 8446 上下文内容的对称性
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "ctx.test";
     cert->sig_alg = SignatureAlgorithm::ED25519;
     ed25519_keygen(cert->pub.ed25519, cert->priv.ed25519);
@@ -1584,7 +1584,7 @@ void test_tls13_robustness_expired_cert() {
     TEST("过期 CA 链验证失败", !chain.success);
 
     // TLS 握手路径：trust store 用过期 CA → 握手失败
-    auto srv_cert = std::make_unique<tls_certificate>();
+    auto srv_cert = jpssl::make_unique<tls_certificate>();
     srv_cert->subject_name = "localhost";
     srv_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     std::memcpy(srv_cert->pub.ecdsa_p256, leaf_pub, 64);
@@ -1707,7 +1707,7 @@ static void fill_random(uint8_t* p, size_t n) {
 // TLS 1.2 DHE-RSA 完整握手（服务端 tls12_make_server_hello_flight + 客户端完整路径）
 void test_tls12_dhe_rsa_handshake() {
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
     rsa_keygen(server_cert->pub.rsa, server_cert->priv.rsa);

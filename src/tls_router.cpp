@@ -6,6 +6,7 @@
  * TLS 1.2/1.3 两端共享的密钥派生与 Finished/消息构造，以及版本选择。
  */
 
+#include "jpssl_memory.hpp"
 #include "tls.hpp"
 #include "dh.hpp"
 #include "sha256.hpp"
@@ -852,7 +853,7 @@ std::unique_ptr<tls_certificate> tls_certificate::from_pem(const std::string& ce
         set_err(err, "certificate/private key key-type mismatch");
         return nullptr;
     }
-    auto out = std::make_unique<tls_certificate>();
+    auto out = jpssl::make_unique<tls_certificate>();
     out->subject_name = c->common_name();
     out->cert_data = c->to_der();
     out->sig_alg = tls_key_type_to_sig_alg(c->key_type);
@@ -892,7 +893,7 @@ std::unique_ptr<tls_certificate> tls_certificate::from_csr_pem(const std::string
         set_err(err, "RSA-4096 private key is not supported in tls_certificate (use RSA-2048)");
         return nullptr;
     }
-    auto out = std::make_unique<tls_certificate>();
+    auto out = jpssl::make_unique<tls_certificate>();
     out->subject_name = csr_common_name(*req);
     // cert_data 留空：握手时�?CSR 主体自动生成自签名证�?
     out->sig_alg = tls_key_type_to_sig_alg(req->key_type);
@@ -1316,7 +1317,7 @@ bool tls13_verify_server_chain(const std::vector<x509::x509_cert>& server_chain,
 
 // 用解析出�?x509 叶子证书构�?tls_certificate（只填公钥，用于 CertificateVerify 验证�?
 std::unique_ptr<tls_certificate> tls_cert_from_x509_leaf(const x509::x509_cert& leaf) {
-    auto out = std::make_unique<tls_certificate>();
+    auto out = jpssl::make_unique<tls_certificate>();
     out->subject_name = leaf.common_name();
     out->sig_alg = tls_key_type_to_sig_alg(leaf.key_type);
     if (!fill_pub(*out, leaf.key_type, leaf.public_key)) return nullptr;

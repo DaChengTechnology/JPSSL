@@ -19,7 +19,7 @@
 #include "x25519.hpp"
 #include <vector>
 #include <string>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <cstring>
 #include <openssl/evp.h>
 #include <openssl/err.h>
@@ -46,7 +46,7 @@ static bool ossl_ed448_verify(const uint8_t pub[57], const uint8_t* msg, size_t 
 // ========================================================================
 
 void test_ed448_certificate() {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "ed448.test";
     cert->sig_alg = SignatureAlgorithm::ED448;
     ed448_generate_keypair(cert->pub.ed448, cert->priv.ed448);
@@ -99,7 +99,7 @@ void test_ed448_openssl_interop() {
 void test_tls13_x448_ed448_handshake() {
     // ── 准备 Ed448 服务端证书 ──
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::ED448;
     ed448_generate_keypair(server_cert->pub.ed448, server_cert->priv.ed448);
@@ -165,7 +165,7 @@ void test_tls13_x448_ed448_handshake() {
 
 void test_tls13_x25519_ed448_hybrid() {
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::ED448;
     ed448_generate_keypair(server_cert->pub.ed448, server_cert->priv.ed448);
@@ -215,21 +215,21 @@ void test_multi_cert_with_ed448() {
     tls_certificate_manager mgr;
 
     // Ed25519 证书
-    auto c1 = std::make_unique<tls_certificate>();
+    auto c1 = jpssl::make_unique<tls_certificate>();
     c1->subject_name = "ed25519.example.com";
     c1->sig_alg = SignatureAlgorithm::ED25519;
     ed25519_keygen(c1->pub.ed25519, c1->priv.ed25519);
     mgr.add_certificate("ed25519.example.com", std::move(c1));
 
     // Ed448 证书
-    auto c2 = std::make_unique<tls_certificate>();
+    auto c2 = jpssl::make_unique<tls_certificate>();
     c2->subject_name = "ed448.example.com";
     c2->sig_alg = SignatureAlgorithm::ED448;
     ed448_generate_keypair(c2->pub.ed448, c2->priv.ed448);
     mgr.add_certificate("ed448.example.com", std::move(c2));
 
     // ECDSA 证书
-    auto c3 = std::make_unique<tls_certificate>();
+    auto c3 = jpssl::make_unique<tls_certificate>();
     c3->subject_name = "ecdsa.example.com";
     c3->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     ecdsa_p256_keygen(c3->pub.ecdsa_p256, c3->priv.ecdsa_p256);
@@ -279,7 +279,7 @@ void test_multi_cert_with_ed448() {
 
 void test_tampered_handshake_fails() {
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::ED448;
     ed448_generate_keypair(server_cert->pub.ed448, server_cert->priv.ed448);
@@ -311,7 +311,7 @@ void test_tampered_handshake_fails() {
 
 void test_simplified_x448_ed448() {
     tls_certificate_manager cert_mgr;
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->sig_alg = SignatureAlgorithm::ED448;
     ed448_generate_keypair(cert->pub.ed448, cert->priv.ed448);
     cert_mgr.add_certificate("localhost", std::move(cert));

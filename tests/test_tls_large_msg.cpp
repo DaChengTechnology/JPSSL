@@ -21,7 +21,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include "jpssl_span.hpp"
 #include <string>
 #include <thread>
@@ -68,7 +68,7 @@ static size_t count_records(const std::vector<uint8_t>& buf) {
 }
 
 static std::unique_ptr<tls_certificate> make_ed25519_cert() {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "localhost";
     cert->sig_alg = SignatureAlgorithm::ED25519;
     ed25519_keygen(cert->pub.ed25519, cert->priv.ed25519);

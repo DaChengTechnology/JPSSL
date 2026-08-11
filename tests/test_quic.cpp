@@ -19,7 +19,7 @@
 #include "x509.hpp"
 #include <vector>
 #include <string>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <cstring>
 #include <cstdlib>
 #include <cctype>
@@ -330,7 +330,7 @@ static tls_certificate_manager make_quic_cert_mgr(tls_trust_store* trust, const 
     if (trust) trust->ca_roots.push_back(ca_cert);
 
     tls_certificate_manager mgr;
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = dns;
     cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     memcpy(cert->pub.ecdsa_p256, pub, 64);

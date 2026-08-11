@@ -17,7 +17,14 @@
 #include <iterator>
 #include <type_traits>
 
-#if defined(__cpp_lib_span) && __cpp_lib_span >= 202002L
+// 使用语言版本而非特性测试宏，避免 MSVC 在低标准模式下误判。
+#if defined(_MSVC_LANG)
+#define JPSSL_SPAN_CPLUSPLUS _MSVC_LANG
+#else
+#define JPSSL_SPAN_CPLUSPLUS __cplusplus
+#endif
+
+#if JPSSL_SPAN_CPLUSPLUS >= 202002L
 
 #include <span>
 
@@ -27,6 +34,8 @@ template <typename T, std::size_t Extent = std::dynamic_extent>
 using span = std::span<T, Extent>;
 
 } // namespace jpssl
+
+#undef JPSSL_SPAN_CPLUSPLUS
 
 #else
 

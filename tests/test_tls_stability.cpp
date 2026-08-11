@@ -42,7 +42,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <mutex>
 #include <string>
 #include <thread>
@@ -179,7 +179,7 @@ struct CertSet {
 };
 
 void add_cert(CertSet& cs, SignatureAlgorithm alg) {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "localhost";
     cert->sig_alg = alg;
     switch (alg) {

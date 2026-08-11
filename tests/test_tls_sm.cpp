@@ -7,7 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <cassert>
 
 using namespace jpssl::tls;
@@ -95,7 +95,7 @@ static void test_tls13_sm_handshake() {
 
     // 创建 SM2 服务端证书
     tls_certificate_manager cert_mgr;
-    auto server_cert = std::make_unique<tls_certificate>();
+    auto server_cert = jpssl::make_unique<tls_certificate>();
     server_cert->subject_name = "localhost";
     server_cert->sig_alg = SignatureAlgorithm::SM2_SM3;
     sm2_keygen(server_cert->pub.sm2, server_cert->priv.sm2);

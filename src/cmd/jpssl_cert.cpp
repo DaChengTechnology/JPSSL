@@ -25,7 +25,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
-#include <memory>
+#include "jpssl_memory.hpp"
 
 using namespace jpssl;
 using namespace jpssl::x509;
@@ -398,7 +398,7 @@ static void cmd_tlsgen(int argc, char** argv) {
     }
     check_days(days);
 
-    auto tls_cert = std::make_unique<tls_certificate>();
+    auto tls_cert = jpssl::make_unique<tls_certificate>();
     tls_cert->subject_name = cn;
 
     if (key_type == "ed25519") {

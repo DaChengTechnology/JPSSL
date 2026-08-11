@@ -21,7 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <string>
 #include <vector>
 
@@ -91,7 +91,7 @@ static server_state setup_state() {
     st.precert_der = precert.to_der();
 
     // 内存国际 CT 日志：接受 CA 根，记录预证书
-    st.log = std::make_unique<ct_log>(CtHashAlg::SHA256, CtSigAlg::ECDSA_P256,
+    st.log = jpssl::make_unique<ct_log>(CtHashAlg::SHA256, CtSigAlg::ECDSA_P256,
                                       log_priv, st.log_pub);
     st.log->accept_root(st.ca_der);
     std::string err;
@@ -225,7 +225,7 @@ int main(int argc, char** argv) {
 
     // 服务器证书管理器：CN=localhost，密钥为 leaf 密钥，cert_data 为带 SCT 的最终证书
     tls_certificate_manager cert_mgr;
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "localhost";
     cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     std::memcpy(cert->pub.ecdsa_p256, st.leaf_pub, 64);

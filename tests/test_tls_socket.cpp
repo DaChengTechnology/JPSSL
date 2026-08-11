@@ -16,7 +16,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <string>
 #include <thread>
 #include <vector>
@@ -33,7 +33,7 @@ static int pass = 0, fail = 0;
 
 static std::unique_ptr<tls_certificate> make_server_cert(const uint8_t pub[64],
                                                          const uint8_t priv[32]) {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "localhost";
     cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     std::memcpy(cert->pub.ecdsa_p256, pub, 64);
@@ -370,22 +370,22 @@ static void test_co_io() {
 
     // 服务端线程：同步 accept + 握手，然后创建协程任务挂到共享执行器
     std::thread server_thread([&] {
-        auto conn = std::make_unique<tls_connection>();
+        auto conn = jpssl::make_unique<tls_connection>();
         std::string e;
         if (!listener.accept(*conn, server_mgr, &e)) return;
         conn->set_nonblocking(true, &e);
         conn->attach_co_executor(&st.ex);
         st.server_conn = std::move(conn);
-        st.server_task = std::make_unique<tls_co_task<void>>(co_server_session(st));
+        st.server_task = jpssl::make_unique<tls_co_task<void>>(co_server_session(st));
     });
 
     // 客户端：同步 connect + 握手，再协程收发
-    st.client_conn = std::make_unique<tls_connection>();
+    st.client_conn = jpssl::make_unique<tls_connection>();
     TEST("co client connect+handshake",
          st.client_conn->connect("127.0.0.1", port, &client_mgr, &err));
     TEST("co client set_nonblocking", st.client_conn->set_nonblocking(true, &err));
     st.client_conn->attach_co_executor(&st.ex);
-    st.client_task = std::make_unique<tls_co_task<void>>(co_client_session(st));
+    st.client_task = jpssl::make_unique<tls_co_task<void>>(co_client_session(st));
 
     // 等待服务端协程任务创建完成（线程同步）
     for (int i = 0; i < 100 && !st.server_task; ++i)
@@ -469,7 +469,7 @@ static void test_connect_default_system_trust() {
     auto leaf_cert = leaf_b.build_and_sign(x509::KeyType::ECDSA_P256, ca_priv, 32);
 
     // 服务端用 CA 签发的 leaf
-    auto srv = std::make_unique<tls_certificate>();
+    auto srv = jpssl::make_unique<tls_certificate>();
     srv->subject_name = "localhost";
     srv->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     std::memcpy(srv->pub.ecdsa_p256, leaf_pub, 64);

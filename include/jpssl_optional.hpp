@@ -14,7 +14,14 @@
 #include <type_traits>
 #include <utility>
 
-#if defined(__cpp_lib_optional) && __cpp_lib_optional >= 201606L
+// 使用语言版本而非特性测试宏，避免 MSVC 在低标准模式下误判。
+#if defined(_MSVC_LANG)
+#define JPSSL_OPTIONAL_CPLUSPLUS _MSVC_LANG
+#else
+#define JPSSL_OPTIONAL_CPLUSPLUS __cplusplus
+#endif
+
+#if JPSSL_OPTIONAL_CPLUSPLUS >= 201703L
 
 #include <optional>
 
@@ -27,6 +34,8 @@ using std::make_optional;
 using std::bad_optional_access;
 
 } // namespace jpssl
+
+#undef JPSSL_OPTIONAL_CPLUSPLUS
 
 #else
 

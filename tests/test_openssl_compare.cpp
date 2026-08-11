@@ -9,6 +9,7 @@
  * 编译需要链接 OpenSSL (libssl + libcrypto)
  */
 
+#include "jpssl_memory.hpp"
 #include "test_utils.hpp"
 #include "tls.hpp"
 #include "sha256.hpp"
@@ -358,7 +359,7 @@ void test_tls_handshake_perf() {
 
     // ── jpssl 完整握手 ──
     tls_certificate_manager cert_mgr;
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->sig_alg = SignatureAlgorithm::ED25519;
     ed25519_keygen(cert->pub.ed25519, cert->priv.ed25519);
     cert_mgr.add_certificate("localhost", std::move(cert));

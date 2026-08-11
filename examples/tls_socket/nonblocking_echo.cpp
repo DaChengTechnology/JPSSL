@@ -24,7 +24,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <memory>
+#include "jpssl_memory.hpp"
 #include <string>
 #include <thread>
 #include <vector>
@@ -36,7 +36,7 @@ using namespace jpssl::tls;
 // 客户端用于校验 CertificateVerify）
 static std::unique_ptr<tls_certificate> make_ecdsa_cert(const uint8_t pub[64],
                                                         const uint8_t priv[32]) {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "localhost";
     cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
     std::memcpy(cert->pub.ecdsa_p256, pub, 64);
