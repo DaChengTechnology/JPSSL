@@ -2,7 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 namespace jpssl {
-inline constexpr size_t ED25519_KEY_SIZE=32, ED25519_SIG_SIZE=64, ED25519_SEED_SIZE=32;
+constexpr size_t ED25519_KEY_SIZE=32, ED25519_SIG_SIZE=64, ED25519_SEED_SIZE=32;
 
 void ed25519_keygen(uint8_t pub[32],uint8_t priv[64]);
 /// 从 32 字节 seed 派生 32 字节公钥 (RFC 8032 §5.1.5)

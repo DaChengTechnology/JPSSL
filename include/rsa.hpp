@@ -13,9 +13,9 @@ namespace jpssl {
 /// 用于密钥生成等安全敏感场景, 替代 mt19937
 void secure_rand_bytes(uint8_t* out, size_t len);
 
-inline constexpr size_t RSA_2048_BITS=2048, RSA_2048_WORDS=32, RSA_2048_BYTES=256;
-inline constexpr size_t RSA_4096_BITS=4096, RSA_4096_WORDS=64, RSA_4096_BYTES=512;
-inline constexpr size_t RSA_1024_WORDS=16, RSA_1024_LIMBS=32;  // CRT 用 (p/q ≈ 1024 bit)
+constexpr size_t RSA_2048_BITS=2048, RSA_2048_WORDS=32, RSA_2048_BYTES=256;
+constexpr size_t RSA_4096_BITS=4096, RSA_4096_WORDS=64, RSA_4096_BYTES=512;
+constexpr size_t RSA_1024_WORDS=16, RSA_1024_LIMBS=32;  // CRT 用 (p/q ≈ 1024 bit)
 
 // ── 大整数（2048-bit） ────────────────────────────────────────────────
 struct alignas(64) rsa_bignum { uint64_t d[32];

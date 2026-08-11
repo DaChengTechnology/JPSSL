@@ -135,7 +135,7 @@ static double bench_min_ms(const Opts& o, F&& f) {
     long long iters = 1;
     if (per_ns > 0.0) {
         iters = (long long)(o.target_ms * 1e6 / per_ns);
-        iters = std::clamp<long long>(iters, 1, 2000000);
+        iters = iters < 1 ? 1 : (iters > 2000000 ? 2000000 : iters);
     }
     double best = 1e300;
     for (int r = 0; r < o.rounds; ++r) {

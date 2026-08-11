@@ -59,7 +59,7 @@ static inline void sm3_round(V& st0, V& st1, V& c0, V& c1, V& vtmp, V vw,
     vtmp = vsm3ss1q_u32(st0, c0, st1);
     // Tj <<< j：每轮把 lane3 的常量左旋 1 位
     c1 = vorrq_u32(vshlq_n_u32(c0, 1), vshrq_n_u32(c0, 31));
-    if constexpr (b) {
+    if (b) {
         st0 = vsm3tt1bq_u32(st0, vtmp, vw, i);
         st1 = vsm3tt2bq_u32(st1, vtmp, s0, i);
     } else {

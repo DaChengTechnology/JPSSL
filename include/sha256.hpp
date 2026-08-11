@@ -5,7 +5,7 @@
 #include "jpssl_span.hpp"
 #include <string>
 namespace jpssl {
-inline constexpr size_t SHA256_DIGEST_SIZE=32, SHA256_BLOCK_SIZE=64;
+constexpr size_t SHA256_DIGEST_SIZE=32, SHA256_BLOCK_SIZE=64;
 struct sha256_ctx { uint32_t h[8]; uint64_t len; uint8_t buf[64]; size_t buf_len; };
 void sha256_init(sha256_ctx*);
 void sha256_update(sha256_ctx*,const uint8_t*,size_t);

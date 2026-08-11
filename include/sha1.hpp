@@ -7,7 +7,7 @@
 
 namespace jpssl {
 
-inline constexpr size_t SHA1_DIGEST_SIZE = 20, SHA1_BLOCK_SIZE = 64;
+constexpr size_t SHA1_DIGEST_SIZE = 20, SHA1_BLOCK_SIZE = 64;
 
 struct sha1_ctx {
     uint32_t h[5];

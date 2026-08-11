@@ -26,7 +26,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
+#include "jpssl_optional.hpp"
 #include <string>
 #include <vector>
 
@@ -36,8 +36,8 @@ namespace jpssl::ct {
 // 协议常量
 // ============================================================================
 
-inline constexpr size_t CT_LOG_ID_SIZE = 32;   // LogID / issuer_key_hash 长度
-inline constexpr uint8_t CT_VERSION_V1 = 0;    // 协议版本 v1
+constexpr size_t CT_LOG_ID_SIZE = 32;   // LogID / issuer_key_hash 长度
+constexpr uint8_t CT_VERSION_V1 = 0;    // 协议版本 v1
 
 // X.509 扩展 OID (DER 编码值, 与 x509.hpp 中 OID_* 常量同格式)
 inline const uint8_t OID_SCT_LIST[]  = {0x2B,0x06,0x01,0x04,0x01,0xD6,0x79,0x02,0x04,0x02}; // 1.3.6.1.4.1.11129.2.4.2
@@ -49,20 +49,20 @@ inline const uint8_t OID_CT_EKU[]    = {0x2B,0x06,0x01,0x04,0x01,0xD6,0x79,0x02,
 // 编号体系中相邻的槽位, 便于后续按标准定稿或对方日志文档调整:
 //   hash_algorithm      = 0x04 (语义为 SM3)
 //   signature_algorithm = 0x04 (在 ecdsa=3 之后新增, 语义为 SM2)
-inline constexpr uint8_t CT_HASH_ALG_SM3 = 0x04;
-inline constexpr uint8_t CT_SIG_ALG_SM2  = 0x04;
+constexpr uint8_t CT_HASH_ALG_SM3 = 0x04;
+constexpr uint8_t CT_SIG_ALG_SM2  = 0x04;
 
 // RFC 6962 标准（国际）CT 算法标识字节
-inline constexpr uint8_t CT_HASH_ALG_SHA256 = 0x04;  // sha256 (RFC 6962 §3.2)
-inline constexpr uint8_t CT_SIG_ALG_ECDSA   = 0x03;  // ecdsa (RFC 6962 §3.2)
-inline constexpr uint8_t CT_SIG_ALG_RSA     = 0x01;  // rsa（本实现未启用）
+constexpr uint8_t CT_HASH_ALG_SHA256 = 0x04;  // sha256 (RFC 6962 §3.2)
+constexpr uint8_t CT_SIG_ALG_ECDSA   = 0x03;  // ecdsa (RFC 6962 §3.2)
+constexpr uint8_t CT_SIG_ALG_RSA     = 0x01;  // rsa（本实现未启用）
 
 // 日志哈希 / 签名算法策略
 enum class CtHashAlg : uint8_t { SM3 = 0, SHA256 = 1 };
 enum class CtSigAlg : uint8_t  { SM2 = 0, ECDSA_P256 = 1, RSA = 2 };
 
 // SM2 签名默认用户标识符 (GB/T 32918)
-inline constexpr char SM2_DEFAULT_ID[] = "1234567812345678";
+constexpr char SM2_DEFAULT_ID[] = "1234567812345678";
 
 // ============================================================================
 // 枚举 (RFC 6962 TLS 风格)
@@ -161,7 +161,7 @@ struct pre_cert {
 };
 
 std::vector<uint8_t> serialize_precert(const pre_cert& pc);
-std::optional<pre_cert> deserialize_precert(const uint8_t* data, size_t len);
+jpssl::optional<pre_cert> deserialize_precert(const uint8_t* data, size_t len);
 
 /// MerkleTreeLeaf (RFC 6962 §3.4)
 struct merkle_tree_leaf {
@@ -174,7 +174,7 @@ struct merkle_tree_leaf {
 };
 
 std::vector<uint8_t> serialize_merkle_tree_leaf(const merkle_tree_leaf& leaf);
-std::optional<merkle_tree_leaf> deserialize_merkle_tree_leaf(const uint8_t* data, size_t len);
+jpssl::optional<merkle_tree_leaf> deserialize_merkle_tree_leaf(const uint8_t* data, size_t len);
 
 /// 构造 PreCert 的 signed_entry (issuer_key_hash + 24 位长度前缀 TBS)
 std::vector<uint8_t> make_precert_signed_entry(const pre_cert& pc);
@@ -200,7 +200,7 @@ std::vector<uint8_t> sct_signed_data(uint64_t timestamp,
                                      const std::vector<uint8_t>& extensions);
 
 std::vector<uint8_t> serialize_sct(const signed_certificate_timestamp& sct);
-std::optional<signed_certificate_timestamp> deserialize_sct(const uint8_t* data, size_t len);
+jpssl::optional<signed_certificate_timestamp> deserialize_sct(const uint8_t* data, size_t len);
 
 /// 签发 SCT (SM2 签名)
 signed_certificate_timestamp issue_sct(const uint8_t log_priv[SM2_KEY_SIZE],
@@ -309,17 +309,17 @@ x509::x509_cert finalize_precert(const x509::x509_cert& precert,
 
 /// 从最终证书重建预证书 TBS: 解析最终证书, 删除 SCT 列表扩展
 /// @return DER TBSCertificate (不含签名), 失败时返回 nullopt
-std::optional<std::vector<uint8_t>> precert_tbs_from_final(const std::vector<uint8_t>& final_cert_der);
+jpssl::optional<std::vector<uint8_t>> precert_tbs_from_final(const std::vector<uint8_t>& final_cert_der);
 
 /// 编码 SCT 列表扩展的 extnValue (ASN.1 OCTET STRING 包裹 TLS 列表)
 std::vector<uint8_t> encode_sct_list_extn(const std::vector<signed_certificate_timestamp>& scts);
 
 /// 解码 SCT 列表扩展的 extnValue
-std::optional<std::vector<signed_certificate_timestamp>>
+jpssl::optional<std::vector<signed_certificate_timestamp>>
 decode_sct_list_extn(const std::vector<uint8_t>& extn_value);
 
 /// 从最终证书 DER 中读取并解码全部 SCT
-std::optional<std::vector<signed_certificate_timestamp>>
+jpssl::optional<std::vector<signed_certificate_timestamp>>
 scts_from_cert(const std::vector<uint8_t>& cert_der);
 
 // ============================================================================
@@ -355,11 +355,11 @@ public:
     void clear_roots();
 
     /// add-chain: 提交最终证书链 (leaf, ..., root), 返回 SCT
-    std::optional<signed_certificate_timestamp>
+    jpssl::optional<signed_certificate_timestamp>
     add_chain(const std::vector<std::vector<uint8_t>>& chain, std::string* error = nullptr);
 
     /// add-pre-chain: 提交预证书链, 返回 SCT
-    std::optional<signed_certificate_timestamp>
+    jpssl::optional<signed_certificate_timestamp>
     add_pre_chain(const std::vector<std::vector<uint8_t>>& chain, std::string* error = nullptr);
 
     /// get-sth: 当前签名树头
@@ -381,7 +381,7 @@ public:
     const node_hash& leaf_hash_at(size_t i) const { return leaf_hashes_[i]; }
 
 private:
-    std::optional<signed_certificate_timestamp>
+    jpssl::optional<signed_certificate_timestamp>
     append_entry(merkle_tree_leaf leaf, std::vector<uint8_t> extra_data,
                  std::string* error);
 
@@ -395,8 +395,8 @@ private:
     uint8_t log_priv_[32]{};
     uint8_t log_pub_[64]{};
     node_hash log_id_{};
-    std::optional<rsa_crt_key> rsa_priv_;    // sig_alg_ == RSA 时有效
-    std::optional<rsa_public_key> rsa_pub_;
+    jpssl::optional<rsa_crt_key> rsa_priv_;    // sig_alg_ == RSA 时有效
+    jpssl::optional<rsa_public_key> rsa_pub_;
     clock_fn now_fn_ = nullptr;
     uint64_t last_sth_time_ = 0;
     uint64_t last_entry_time_ = 0;

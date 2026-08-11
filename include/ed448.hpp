@@ -19,10 +19,10 @@
 #include <cstdint>
 namespace jpssl {
 
-inline constexpr size_t ED448_KEY_SIZE   = 57;   // 公钥/私钥字节数
-inline constexpr size_t ED448_SEED_SIZE  = 57;   // 私钥 seed
-inline constexpr size_t ED448_SIG_SIZE   = 114;  // 签名字节数 (R + S)
-inline constexpr size_t ED448_PRIV_SIZE  = 114;  // 完整私钥 = seed || pub
+constexpr size_t ED448_KEY_SIZE   = 57;   // 公钥/私钥字节数
+constexpr size_t ED448_SEED_SIZE  = 57;   // 私钥 seed
+constexpr size_t ED448_SIG_SIZE   = 114;  // 签名字节数 (R + S)
+constexpr size_t ED448_PRIV_SIZE  = 114;  // 完整私钥 = seed || pub
 
 /// Ed448 公钥派生：从 57 字节 seed 计算 57 字节公钥
 void ed448_keygen(uint8_t pub[57], uint8_t priv_seed[57]);

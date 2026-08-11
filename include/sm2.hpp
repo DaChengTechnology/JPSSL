@@ -12,10 +12,10 @@
 
 namespace jpssl {
 
-inline constexpr size_t SM2_KEY_SIZE   = 32;   // 私钥长度
-inline constexpr size_t SM2_PUB_SIZE   = 64;   // 未压缩公钥 (x||y)
-inline constexpr size_t SM2_SIG_SIZE   = 64;   // 签名 (r||s)
-inline constexpr size_t SM2_ZA_SIZE    = 32;   // SM3 杂凑值
+constexpr size_t SM2_KEY_SIZE   = 32;   // 私钥长度
+constexpr size_t SM2_PUB_SIZE   = 64;   // 未压缩公钥 (x||y)
+constexpr size_t SM2_SIG_SIZE   = 64;   // 签名 (r||s)
+constexpr size_t SM2_ZA_SIZE    = 32;   // SM3 杂凑值
 
 /// 生成 SM2 密钥对
 /// @param pub  输出：64 字节未压缩公钥 (x||y, 大端)

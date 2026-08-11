@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
+#include "jpssl_optional.hpp"
 #include <string>
 #include <vector>
 
@@ -116,8 +116,8 @@ std::string base64_encode(const std::vector<uint8_t>& data) {
     return base64_encode(data.data(), data.size());
 }
 
-std::optional<std::vector<uint8_t>> base64_decode(const std::string& text) {
-    if (text.size() % 4 != 0) return std::nullopt;
+jpssl::optional<std::vector<uint8_t>> base64_decode(const std::string& text) {
+    if (text.size() % 4 != 0) return jpssl::nullopt;
 
     const size_t n = text.size();
     std::vector<uint8_t> out;
@@ -134,7 +134,7 @@ std::optional<std::vector<uint8_t>> base64_decode(const std::string& text) {
             // is always handled by the scalar tail.
             const size_t n_simd = ((n - 4) / 64) * 64;
             if (!detail::base64_decode_avx512(text.data(), n_simd, out.data()))
-                return std::nullopt;
+                return jpssl::nullopt;
             i = n_simd;
         }
         break;
@@ -144,7 +144,7 @@ std::optional<std::vector<uint8_t>> base64_decode(const std::string& text) {
         if (n >= 36) {
             const size_t n_simd = ((n - 4) / 32) * 32;
             if (!detail::base64_decode_avx2(text.data(), n_simd, out.data()))
-                return std::nullopt;
+                return jpssl::nullopt;
             i = n_simd;
         }
         break;
@@ -160,7 +160,7 @@ std::optional<std::vector<uint8_t>> base64_decode(const std::string& text) {
         int b = b64_value((uint8_t)text[i + 1]);
         int c = text[i + 2] == '=' ? -2 : b64_value((uint8_t)text[i + 2]);
         int d = text[i + 3] == '=' ? -2 : b64_value((uint8_t)text[i + 3]);
-        if (a < 0 || b < 0 || c == -1 || d == -1) return std::nullopt;
+        if (a < 0 || b < 0 || c == -1 || d == -1) return jpssl::nullopt;
 
         uint32_t v = (uint32_t)a << 18 | (uint32_t)b << 12;
         if (c >= 0) v |= (uint32_t)c << 6;
@@ -172,7 +172,7 @@ std::optional<std::vector<uint8_t>> base64_decode(const std::string& text) {
 
         // Padding, if present, must only occur in the final group.
         bool padded = text[i + 2] == '=' || text[i + 3] == '=';
-        if (padded && i + 4 != n) return std::nullopt;
+        if (padded && i + 4 != n) return jpssl::nullopt;
         i += 4;
     }
     return out;

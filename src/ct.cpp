@@ -141,13 +141,13 @@ void subproof_impl(size_t m, const node_hash* leaves, size_t n, bool b,
 // ---- DER helpers ----
 
 // Raw bytes of the TBSCertificate element (SEQUENCE header included).
-std::optional<std::vector<uint8_t>> extract_tbs(const std::vector<uint8_t>& cert_der) {
+jpssl::optional<std::vector<uint8_t>> extract_tbs(const std::vector<uint8_t>& cert_der) {
     size_t off = 0;
     auto cert = x509::der::decode_tlv(cert_der.data(), cert_der.size(), off);
-    if (!cert || cert->tag != x509::ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!cert || cert->tag != x509::ASN1Tag::SEQUENCE) return jpssl::nullopt;
     size_t io = 0;
     auto tbs = x509::der::decode_tlv(cert->value.data(), cert->value.size(), io);
-    if (!tbs || tbs->tag != x509::ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!tbs || tbs->tag != x509::ASN1Tag::SEQUENCE) return jpssl::nullopt;
     return std::vector<uint8_t>(cert->value.begin(), cert->value.begin() + io);
 }
 
@@ -168,14 +168,14 @@ std::vector<std::vector<uint8_t>> tbs_elements(const std::vector<uint8_t>& tbs_d
 }
 
 // Raw SPKI element bytes of a certificate (byte-exact for parsed certs).
-std::optional<std::vector<uint8_t>> spki_raw(const x509::x509_cert& cert) {
+jpssl::optional<std::vector<uint8_t>> spki_raw(const x509::x509_cert& cert) {
     std::vector<uint8_t> tbs;
     if (!cert.tbs_raw.empty()) {
         tbs = cert.tbs_raw;
     } else {
         auto der = cert.to_der();
         auto t = extract_tbs(der);
-        if (!t) return std::nullopt;
+        if (!t) return jpssl::nullopt;
         tbs = std::move(*t);
     }
     auto elems = tbs_elements(tbs);
@@ -183,7 +183,7 @@ std::optional<std::vector<uint8_t>> spki_raw(const x509::x509_cert& cert) {
     if (!elems.empty() && elems[0].size() >= 1 && (elems[0][0] & 0xE0) == 0xA0)
         idx = 1;  // skip [0] version
     // serial, sigAlg, issuer, validity, subject, spki
-    if (idx + 5 >= elems.size()) return std::nullopt;
+    if (idx + 5 >= elems.size()) return jpssl::nullopt;
     return elems[idx + 5];
 }
 
@@ -192,24 +192,24 @@ struct extn_info {
     std::vector<uint8_t> extn_value;  // contents of extnValue OCTET STRING
 };
 
-std::optional<extn_info> find_extn(const std::vector<uint8_t>& cert_der,
+jpssl::optional<extn_info> find_extn(const std::vector<uint8_t>& cert_der,
                                    const uint8_t* oid, size_t oid_len) {
     auto tbs = extract_tbs(cert_der);
-    if (!tbs) return std::nullopt;
+    if (!tbs) return jpssl::nullopt;
     size_t off = 0;
     auto t = x509::der::decode_tlv(tbs->data(), tbs->size(), off);
-    if (!t || t->tag != x509::ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!t || t->tag != x509::ASN1Tag::SEQUENCE) return jpssl::nullopt;
     size_t pos = 0;
-    std::optional<x509::der::TLV> exts;
+    jpssl::optional<x509::der::TLV> exts;
     while (pos < t->value.size()) {
         auto el = x509::der::decode_tlv(t->value.data(), t->value.size(), pos);
         if (!el) break;
         if (el->tag == x509::ASN1Tag::CONTEXT3) { exts = *el; break; }
     }
-    if (!exts) return std::nullopt;
+    if (!exts) return jpssl::nullopt;
     size_t eo = 0;
     auto seq = x509::der::decode_tlv(exts->value.data(), exts->value.size(), eo);
-    if (!seq || seq->tag != x509::ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!seq || seq->tag != x509::ASN1Tag::SEQUENCE) return jpssl::nullopt;
     size_t so = 0;
     while (so < seq->value.size()) {
         auto ext = x509::der::decode_tlv(seq->value.data(), seq->value.size(), so);
@@ -227,18 +227,18 @@ std::optional<extn_info> find_extn(const std::vector<uint8_t>& cert_der,
         if (!next || next->tag != x509::ASN1Tag::OCTET_STRING) break;
         return extn_info{critical, next->value};
     }
-    return std::nullopt;
+    return jpssl::nullopt;
 }
 
 // Re-encode the TBS with extensions filtered/added. remove_oids entries are raw
 // DER OID bytes; add_exts are appended in order after the kept ones.
-std::optional<std::vector<uint8_t>> modify_tbs_extensions(
+jpssl::optional<std::vector<uint8_t>> modify_tbs_extensions(
     const std::vector<uint8_t>& tbs_der,
     const std::vector<std::vector<uint8_t>>& remove_oids,
     const std::vector<x509::RawExtension>& add_exts) {
     size_t off = 0;
     auto tbs = x509::der::decode_tlv(tbs_der.data(), tbs_der.size(), off);
-    if (!tbs || tbs->tag != x509::ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!tbs || tbs->tag != x509::ASN1Tag::SEQUENCE) return jpssl::nullopt;
 
     std::vector<uint8_t> body;   // TBS inner elements before extensions
     std::vector<uint8_t> kept;   // extensions SEQUENCE body after filtering
@@ -247,20 +247,20 @@ std::optional<std::vector<uint8_t>> modify_tbs_extensions(
     while (pos < tbs->value.size()) {
         size_t start = pos;
         auto el = x509::der::decode_tlv(tbs->value.data(), tbs->value.size(), pos);
-        if (!el) return std::nullopt;
+        if (!el) return jpssl::nullopt;
         if (el->tag == x509::ASN1Tag::CONTEXT3) {
             found = true;
             size_t eo = 0;
             auto seq = x509::der::decode_tlv(el->value.data(), el->value.size(), eo);
-            if (!seq || seq->tag != x509::ASN1Tag::SEQUENCE) return std::nullopt;
+            if (!seq || seq->tag != x509::ASN1Tag::SEQUENCE) return jpssl::nullopt;
             size_t so = 0;
             while (so < seq->value.size()) {
                 size_t sstart = so;
                 auto ext = x509::der::decode_tlv(seq->value.data(), seq->value.size(), so);
-                if (!ext || ext->tag != x509::ASN1Tag::SEQUENCE) return std::nullopt;
+                if (!ext || ext->tag != x509::ASN1Tag::SEQUENCE) return jpssl::nullopt;
                 size_t xo = 0;
                 auto eoid = x509::der::decode_tlv(ext->value.data(), ext->value.size(), xo);
-                if (!eoid || eoid->tag != x509::ASN1Tag::OID) return std::nullopt;
+                if (!eoid || eoid->tag != x509::ASN1Tag::OID) return jpssl::nullopt;
                 bool drop = false;
                 for (const auto& r : remove_oids)
                     if (eoid->value == r) { drop = true; break; }
@@ -564,14 +564,14 @@ std::vector<uint8_t> serialize_precert(const pre_cert& pc) {
     return out;
 }
 
-std::optional<pre_cert> deserialize_precert(const uint8_t* data, size_t len) {
+jpssl::optional<pre_cert> deserialize_precert(const uint8_t* data, size_t len) {
     pre_cert pc;
     size_t off = 0;
-    if (off + CT_LOG_ID_SIZE > len) return std::nullopt;
+    if (off + CT_LOG_ID_SIZE > len) return jpssl::nullopt;
     memcpy(pc.issuer_key_hash.data(), data + off, CT_LOG_ID_SIZE);
     off += CT_LOG_ID_SIZE;
-    if (!read_vector24(data, len, off, pc.tbs_certificate)) return std::nullopt;
-    if (off != len) return std::nullopt;
+    if (!read_vector24(data, len, off, pc.tbs_certificate)) return jpssl::nullopt;
+    if (off != len) return jpssl::nullopt;
     return pc;
 }
 
@@ -587,44 +587,44 @@ std::vector<uint8_t> serialize_merkle_tree_leaf(const merkle_tree_leaf& leaf) {
     return out;
 }
 
-std::optional<merkle_tree_leaf> deserialize_merkle_tree_leaf(const uint8_t* data, size_t len) {
+jpssl::optional<merkle_tree_leaf> deserialize_merkle_tree_leaf(const uint8_t* data, size_t len) {
     merkle_tree_leaf leaf;
     size_t off = 0;
-    if (off + 2 > len) return std::nullopt;
+    if (off + 2 > len) return jpssl::nullopt;
     leaf.version = data[off++];
     leaf.leaf_type = (MerkleLeafType)data[off++];
-    if (!read_u64(data, len, off, leaf.timestamp)) return std::nullopt;
+    if (!read_u64(data, len, off, leaf.timestamp)) return jpssl::nullopt;
     uint16_t et;
-    if (!read_u16(data, len, off, et)) return std::nullopt;
+    if (!read_u16(data, len, off, et)) return jpssl::nullopt;
     leaf.entry_type = (LogEntryType)et;
 
     size_t signed_end = 0;
     if (leaf.entry_type == LogEntryType::X509_ENTRY) {
         // signed_entry is one DER-encoded certificate (self-delimiting).
         size_t total = 0;
-        if (!tlv_total_len(data, len, off, total)) return std::nullopt;
+        if (!tlv_total_len(data, len, off, total)) return jpssl::nullopt;
         signed_end = off + total;
-        if (signed_end > len) return std::nullopt;
+        if (signed_end > len) return jpssl::nullopt;
     } else if (leaf.entry_type == LogEntryType::PRECERT_ENTRY) {
         // PreCert: issuer_key_hash[32] + tbs<0..2^24-1>
-        if (off + CT_LOG_ID_SIZE + 3 > len) return std::nullopt;
+        if (off + CT_LOG_ID_SIZE + 3 > len) return jpssl::nullopt;
         size_t pos = off + CT_LOG_ID_SIZE;
         uint32_t tbs_len;
-        if (!read_u24(data, len, pos, tbs_len)) return std::nullopt;
+        if (!read_u24(data, len, pos, tbs_len)) return jpssl::nullopt;
         signed_end = pos + tbs_len;
-        if (signed_end > len) return std::nullopt;
+        if (signed_end > len) return jpssl::nullopt;
     } else {
-        return std::nullopt;
+        return jpssl::nullopt;
     }
     leaf.signed_entry.assign(data + off, data + signed_end);
     off = signed_end;
 
     // Remaining bytes must be the extensions vector (u16 length + payload).
-    if (len - off < 2) return std::nullopt;
+    if (len - off < 2) return jpssl::nullopt;
     uint16_t ext_len;
     size_t eo = off;
-    if (!read_u16(data, len, eo, ext_len)) return std::nullopt;
-    if (eo + ext_len != len) return std::nullopt;
+    if (!read_u16(data, len, eo, ext_len)) return jpssl::nullopt;
+    if (eo + ext_len != len) return jpssl::nullopt;
     leaf.extensions.assign(data + eo, data + len);
     return leaf;
 }
@@ -664,20 +664,20 @@ std::vector<uint8_t> serialize_sct(const signed_certificate_timestamp& sct) {
     return out;
 }
 
-std::optional<signed_certificate_timestamp> deserialize_sct(const uint8_t* data, size_t len) {
+jpssl::optional<signed_certificate_timestamp> deserialize_sct(const uint8_t* data, size_t len) {
     signed_certificate_timestamp sct;
     size_t off = 0;
-    if (off + 1 + CT_LOG_ID_SIZE > len) return std::nullopt;
+    if (off + 1 + CT_LOG_ID_SIZE > len) return jpssl::nullopt;
     sct.version = data[off++];
     memcpy(sct.log_id.data(), data + off, CT_LOG_ID_SIZE);
     off += CT_LOG_ID_SIZE;
-    if (!read_u64(data, len, off, sct.timestamp)) return std::nullopt;
-    if (!read_vector16(data, len, off, sct.extensions)) return std::nullopt;
-    if (off + 2 > len) return std::nullopt;
+    if (!read_u64(data, len, off, sct.timestamp)) return jpssl::nullopt;
+    if (!read_vector16(data, len, off, sct.extensions)) return jpssl::nullopt;
+    if (off + 2 > len) return jpssl::nullopt;
     sct.hash_algorithm = data[off++];
     sct.signature_algorithm = data[off++];
-    if (!read_vector16(data, len, off, sct.signature)) return std::nullopt;
-    if (off != len) return std::nullopt;
+    if (!read_vector16(data, len, off, sct.signature)) return jpssl::nullopt;
+    if (off != len) return jpssl::nullopt;
     return sct;
 }
 
@@ -960,9 +960,9 @@ x509::x509_cert finalize_precert(const x509::x509_cert& precert,
     return out;
 }
 
-std::optional<std::vector<uint8_t>> precert_tbs_from_final(const std::vector<uint8_t>& final_cert_der) {
+jpssl::optional<std::vector<uint8_t>> precert_tbs_from_final(const std::vector<uint8_t>& final_cert_der) {
     auto tbs = extract_tbs(final_cert_der);
-    if (!tbs) return std::nullopt;
+    if (!tbs) return jpssl::nullopt;
     std::vector<std::vector<uint8_t>> remove_oids = {
         {std::begin(OID_SCT_LIST), std::end(OID_SCT_LIST)},
     };
@@ -976,29 +976,29 @@ std::vector<uint8_t> encode_sct_list_extn(const std::vector<signed_certificate_t
     return x509::der::encode_octet_string(wrapped.data(), wrapped.size());
 }
 
-std::optional<std::vector<signed_certificate_timestamp>>
+jpssl::optional<std::vector<signed_certificate_timestamp>>
 decode_sct_list_extn(const std::vector<uint8_t>& extn_value) {
     size_t off = 0;
     auto oct = x509::der::decode_tlv(extn_value.data(), extn_value.size(), off);
-    if (!oct || oct->tag != x509::ASN1Tag::OCTET_STRING) return std::nullopt;
+    if (!oct || oct->tag != x509::ASN1Tag::OCTET_STRING) return jpssl::nullopt;
     size_t lo = 0;
     uint16_t total;
-    if (!read_u16(oct->value.data(), oct->value.size(), lo, total)) return std::nullopt;
-    if ((size_t)total != oct->value.size() - 2) return std::nullopt;
+    if (!read_u16(oct->value.data(), oct->value.size(), lo, total)) return jpssl::nullopt;
+    if ((size_t)total != oct->value.size() - 2) return jpssl::nullopt;
     std::vector<signed_certificate_timestamp> scts;
     while (lo < oct->value.size()) {
         auto sct = deserialize_sct(oct->value.data() + lo, oct->value.size() - lo);
-        if (!sct) return std::nullopt;
+        if (!sct) return jpssl::nullopt;
         lo += serialize_sct(*sct).size();
         scts.push_back(std::move(*sct));
     }
     return scts;
 }
 
-std::optional<std::vector<signed_certificate_timestamp>>
+jpssl::optional<std::vector<signed_certificate_timestamp>>
 scts_from_cert(const std::vector<uint8_t>& cert_der) {
     auto ext = find_extn(cert_der, OID_SCT_LIST, sizeof(OID_SCT_LIST));
-    if (!ext) return std::nullopt;
+    if (!ext) return jpssl::nullopt;
     return decode_sct_list_extn(ext->extn_value);
 }
 
@@ -1090,28 +1090,28 @@ bool ct_log::chain_ok(const std::vector<std::vector<uint8_t>>& chain,
     return true;
 }
 
-std::optional<signed_certificate_timestamp>
+jpssl::optional<signed_certificate_timestamp>
 ct_log::add_chain(const std::vector<std::vector<uint8_t>>& chain, std::string* error) {
-    if (!chain_ok(chain, false, error)) return std::nullopt;
+    if (!chain_ok(chain, false, error)) return jpssl::nullopt;
     merkle_tree_leaf leaf;
     leaf.entry_type = LogEntryType::X509_ENTRY;
     leaf.signed_entry = chain[0];
     return append_entry(leaf, {}, error);
 }
 
-std::optional<signed_certificate_timestamp>
+jpssl::optional<signed_certificate_timestamp>
 ct_log::add_pre_chain(const std::vector<std::vector<uint8_t>>& chain, std::string* error) {
-    if (!chain_ok(chain, true, error)) return std::nullopt;
+    if (!chain_ok(chain, true, error)) return jpssl::nullopt;
 
     auto issuer = x509::x509_cert::from_der(chain[1]);
     if (!issuer) {
         if (error) *error = "bad issuer certificate";
-        return std::nullopt;
+        return jpssl::nullopt;
     }
     auto spki = spki_raw(*issuer);
     if (!spki) {
         if (error) *error = "issuer SPKI unavailable";
-        return std::nullopt;
+        return jpssl::nullopt;
     }
 
     pre_cert pc;
@@ -1122,7 +1122,7 @@ ct_log::add_pre_chain(const std::vector<std::vector<uint8_t>>& chain, std::strin
     auto tbs = extract_tbs(chain[0]);
     if (!tbs) {
         if (error) *error = "bad precert TBS";
-        return std::nullopt;
+        return jpssl::nullopt;
     }
     pc.tbs_certificate = std::move(*tbs);
 
@@ -1191,7 +1191,7 @@ bool ct_log::get_entries(uint64_t start, uint64_t end,
     return true;
 }
 
-std::optional<signed_certificate_timestamp>
+jpssl::optional<signed_certificate_timestamp>
 ct_log::append_entry(merkle_tree_leaf leaf, std::vector<uint8_t> extra_data,
                      std::string* error) {
     uint64_t ts = now();
@@ -1206,7 +1206,7 @@ ct_log::append_entry(merkle_tree_leaf leaf, std::vector<uint8_t> extra_data,
     else
         sm3_leaf_hash(serialized.data(), serialized.size(), lh.data());
 
-    std::optional<signed_certificate_timestamp> sct;
+    jpssl::optional<signed_certificate_timestamp> sct;
     if (sig_alg_ == CtSigAlg::ECDSA_P256)
         sct = issue_sct_std(log_priv_, log_pub_, log_id_.data(), ts,
                             leaf.entry_type, leaf.signed_entry, leaf.extensions);

@@ -10,6 +10,7 @@
 #include <random>
 #include <atomic>
 #include <chrono>
+#include <type_traits>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -135,17 +136,38 @@ static bool keygen_with_watchdog(int timeout_ms, FN&& work) {
 // Incremental prime search: delegate to rsa_body.inc kgen_next_prime_
 // (6542-small-prime sieve + half-width MR + gcd(p-1,e)==1 check).
 // Only keeps the deadline fallback to the prebuilt prime table.
+
+// C++14 兼容的编译期分派（替代 if constexpr）：按 K 选择 32/64 位素数例程。
+template <typename BN>
+static void kgen_prebuilt_dispatch(BN& p, int slot, std::integral_constant<int, 32>) {
+    kgen_prebuilt_32(p, slot);
+}
+template <typename BN>
+static void kgen_prebuilt_dispatch(BN& p, int slot, std::integral_constant<int, 64>) {
+    kgen_prebuilt_64(p, slot);
+}
+template <typename BN>
+static bool kgen_next_prime_dispatch(
+    BN& p, const BN& avoid, std::chrono::steady_clock::time_point dl,
+    std::integral_constant<int, 32>) {
+    return kgen_next_prime_32(p, avoid, dl);
+}
+template <typename BN>
+static bool kgen_next_prime_dispatch(
+    BN& p, const BN& avoid, std::chrono::steady_clock::time_point dl,
+    std::integral_constant<int, 64>) {
+    return kgen_next_prime_64(p, avoid, dl);
+}
+
 template<typename BN, int K>
 static void find_prime(BN& p, std::chrono::steady_clock::time_point deadline) {
     // timeout fallback: pick one of the 50 prebuilt prime pairs (slot 0 = p side)
     auto prebuilt_fallback = [&]() {
-        if constexpr (K == 32) kgen_prebuilt_32(p, 0);
-        else                   kgen_prebuilt_64(p, 0);
+        kgen_prebuilt_dispatch(p, 0, std::integral_constant<int, K>());
     };
     BN avoid; avoid.zero();
-    bool ok;
-    if constexpr (K == 32) ok = kgen_next_prime_32(p, avoid, deadline);
-    else                   ok = kgen_next_prime_64(p, avoid, deadline);
+    bool ok = kgen_next_prime_dispatch(p, avoid, deadline,
+                                       std::integral_constant<int, K>());
     if (!ok) prebuilt_fallback();
 }
 

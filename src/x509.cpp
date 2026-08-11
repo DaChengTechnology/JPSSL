@@ -331,12 +331,12 @@ static size_t decode_length(const uint8_t* data, size_t len, size_t& offset) {
     return result;
 }
 
-std::optional<TLV> decode_tlv(const uint8_t* data, size_t len, size_t& offset) {
-    if (offset >= len) return std::nullopt;
+jpssl::optional<TLV> decode_tlv(const uint8_t* data, size_t len, size_t& offset) {
+    if (offset >= len) return jpssl::nullopt;
     ASN1Tag tag = (ASN1Tag)data[offset++];
     size_t value_len = decode_length(data, len, offset);
-    if (value_len == 0 && data[offset - 1] != 0x00) return std::nullopt;
-    if (offset + value_len > len) return std::nullopt;
+    if (value_len == 0 && data[offset - 1] != 0x00) return jpssl::nullopt;
+    if (offset + value_len > len) return jpssl::nullopt;
     TLV tlv; tlv.tag = tag;
     tlv.value.assign(data + offset, data + offset + value_len);
     offset += value_len;
@@ -344,12 +344,12 @@ std::optional<TLV> decode_tlv(const uint8_t* data, size_t len, size_t& offset) {
 }
 
 // Internal decode helper (returns TLV with total_len, skips tag/length)
-static std::optional<TLV> decode_tlv2(const uint8_t* data, size_t len, size_t& offset) {
-    if (offset >= len) return std::nullopt;
+static jpssl::optional<TLV> decode_tlv2(const uint8_t* data, size_t len, size_t& offset) {
+    if (offset >= len) return jpssl::nullopt;
     size_t start = offset;
     TLV tlv; tlv.tag = (ASN1Tag)data[offset++];
     size_t vlen = decode_length(data, len, offset);
-    if (offset + vlen > len) return std::nullopt;
+    if (offset + vlen > len) return jpssl::nullopt;
     tlv.value.assign(data + offset, data + offset + vlen);
     offset += vlen;
     tlv.total_len = offset - start;
@@ -383,11 +383,11 @@ std::vector<uint8_t> tlv_to_bit_string(const TLV& tlv) {
 }
 std::vector<uint8_t> tlv_to_octet_string(const TLV& tlv) { return tlv.value; }
 
-std::optional<uint64_t> tlv_to_utc_time(const TLV& tlv) {
-    if (tlv.value.size() < 12) return std::nullopt;
+jpssl::optional<uint64_t> tlv_to_utc_time(const TLV& tlv) {
+    if (tlv.value.size() < 12) return jpssl::nullopt;
     std::string s((const char*)tlv.value.data(), tlv.value.size());
     int y, mo, d, h, mi, se;
-    if (sscanf(s.c_str(), "%2d%2d%2d%2d%2d%2d", &y, &mo, &d, &h, &mi, &se) != 6) return std::nullopt;
+    if (sscanf(s.c_str(), "%2d%2d%2d%2d%2d%2d", &y, &mo, &d, &h, &mi, &se) != 6) return jpssl::nullopt;
     y += (y >= 50) ? 1900 : 2000;
     struct tm tm = {}; tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = d;
     tm.tm_hour = h; tm.tm_min = mi; tm.tm_sec = se; tm.tm_isdst = -1;
@@ -484,11 +484,11 @@ static DistinguishedName parse_dn(const std::vector<uint8_t>& dn_data) {
 
 //  from_der
 // ═══════════════════════════════════════════════════════════════════════
-std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
+jpssl::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
     using namespace der;
     size_t off = 0;
     auto cert_tlv = decode_tlv2(data, len, off);
-    if (!cert_tlv || cert_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!cert_tlv || cert_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
 
     x509_cert cert;
 
@@ -496,19 +496,19 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
     // Save raw TBS for verification (includes the SEQUENCE tag+length)
     size_t tbs_start = inner_off;
     auto tbs_tlv = decode_tlv2(cert_tlv->value.data(), cert_tlv->value.size(), inner_off);
-    if (!tbs_tlv || tbs_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!tbs_tlv || tbs_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     cert.tbs_raw.assign(cert_tlv->value.data() + tbs_start,
                         cert_tlv->value.data() + inner_off);
     auto sig_alg_tlv = decode_tlv2(cert_tlv->value.data(), cert_tlv->value.size(), inner_off);
-    if (!sig_alg_tlv || sig_alg_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!sig_alg_tlv || sig_alg_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     auto sig_tlv = decode_tlv2(cert_tlv->value.data(), cert_tlv->value.size(), inner_off);
-    if (!sig_tlv || sig_tlv->tag != ASN1Tag::BIT_STRING) return std::nullopt;
+    if (!sig_tlv || sig_tlv->tag != ASN1Tag::BIT_STRING) return jpssl::nullopt;
 
     cert.signature = tlv_to_bit_string(*sig_tlv);
 
     size_t tbs_off = 0;
     auto first = decode_tlv2(tbs_tlv->value.data(), tbs_tlv->value.size(), tbs_off);
-    if (!first) return std::nullopt;
+    if (!first) return jpssl::nullopt;
 
     // version [0]?  (RFC 5280: 0=v1, 1=v2, 2=v3; v1 无该字段)
     cert.version = 0;  // 默认 v1，避免残留 builder 默认值 (v3) 导致重编码多出 version 字段
@@ -518,21 +518,21 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
         if (ver_tlv && ver_tlv->tag == ASN1Tag::INTEGER && !ver_tlv->value.empty())
             cert.version = (int)ver_tlv->value[0];
         first = decode_tlv2(tbs_tlv->value.data(), tbs_tlv->value.size(), tbs_off);
-        if (!first) return std::nullopt;
+        if (!first) return jpssl::nullopt;
     }
 
-    if (first->tag != ASN1Tag::INTEGER) return std::nullopt;
+    if (first->tag != ASN1Tag::INTEGER) return jpssl::nullopt;
     cert.serial_number = first->value;
 
     auto tbs_sig = decode_tlv2(tbs_tlv->value.data(), tbs_tlv->value.size(), tbs_off);
-    if (!tbs_sig || tbs_sig->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!tbs_sig || tbs_sig->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
 
     auto issuer_tlv = decode_tlv2(tbs_tlv->value.data(), tbs_tlv->value.size(), tbs_off);
-    if (!issuer_tlv || issuer_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!issuer_tlv || issuer_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     cert.issuer = parse_dn(issuer_tlv->value);
 
     auto valid_tlv = decode_tlv2(tbs_tlv->value.data(), tbs_tlv->value.size(), tbs_off);
-    if (!valid_tlv || valid_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!valid_tlv || valid_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     { size_t voff = 0;
       auto nb = decode_tlv2(valid_tlv->value.data(), valid_tlv->value.size(), voff);
       if (nb) cert.not_before = tlv_to_utc_time(*nb).value_or(0);
@@ -540,19 +540,19 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
       if (na) cert.not_after = tlv_to_utc_time(*na).value_or(0); }
 
     auto subj_tlv = decode_tlv2(tbs_tlv->value.data(), tbs_tlv->value.size(), tbs_off);
-    if (!subj_tlv || subj_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!subj_tlv || subj_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     cert.subject = parse_dn(subj_tlv->value);
 
     auto spki_tlv = decode_tlv2(tbs_tlv->value.data(), tbs_tlv->value.size(), tbs_off);
-    if (!spki_tlv || spki_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!spki_tlv || spki_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
 
     // Parse SPKI
     {   size_t soff = 0;
         auto alg_tlv = decode_tlv2(spki_tlv->value.data(), spki_tlv->value.size(), soff);
-        if (!alg_tlv || alg_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+        if (!alg_tlv || alg_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
         size_t aoff = 0;
         auto oid_tlv = decode_tlv2(alg_tlv->value.data(), alg_tlv->value.size(), aoff);
-        if (!oid_tlv || oid_tlv->tag != ASN1Tag::OID) return std::nullopt;
+        if (!oid_tlv || oid_tlv->tag != ASN1Tag::OID) return jpssl::nullopt;
         auto algo_oid = oid_tlv->value; // raw DER-encoded OID bytes
         if (oid_equal(algo_oid, OID_RSA_ENCRYPTION, sizeof(OID_RSA_ENCRYPTION)))
             cert.key_type = KeyType::RSA_2048;
@@ -571,7 +571,7 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
             cert.key_type = KeyType::Ed448;
 
         auto pub_tlv = decode_tlv2(spki_tlv->value.data(), spki_tlv->value.size(), soff);
-        if (!pub_tlv || pub_tlv->tag != ASN1Tag::BIT_STRING) return std::nullopt;
+        if (!pub_tlv || pub_tlv->tag != ASN1Tag::BIT_STRING) return jpssl::nullopt;
         cert.public_key = tlv_to_bit_string(*pub_tlv);
 
         if ((cert.key_type == KeyType::ECDSA_P256 || cert.key_type == KeyType::ECDSA_P384 ||
@@ -686,7 +686,7 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
     return cert;
 }
 
-std::optional<x509_cert> x509_cert::from_der(const std::vector<uint8_t>& der) {
+jpssl::optional<x509_cert> x509_cert::from_der(const std::vector<uint8_t>& der) {
     return from_der(der.data(), der.size());
 }
 
@@ -991,14 +991,14 @@ verify_result x509_verify_chain(const std::vector<x509_cert>& chain, uint64_t no
 namespace {
 
 /// 提取 PEM 块内的 base64 文本并解码为 DER
-std::optional<std::vector<uint8_t>> pem_decode_block(const std::string& pem,
+jpssl::optional<std::vector<uint8_t>> pem_decode_block(const std::string& pem,
                                                      const char* label) {
     std::string begin = std::string("-----BEGIN ") + label + "-----";
     std::string end   = std::string("-----END ") + label + "-----";
     auto b = pem.find(begin);
-    if (b == std::string::npos) return std::nullopt;
+    if (b == std::string::npos) return jpssl::nullopt;
     auto e = pem.find(end, b + begin.size());
-    if (e == std::string::npos) return std::nullopt;
+    if (e == std::string::npos) return jpssl::nullopt;
     std::string b64 = pem.substr(b + begin.size(), e - (b + begin.size()));
     // 移除 PEM 中的空白字符
     std::string clean;
@@ -1019,14 +1019,14 @@ std::string pem_encode_block(const std::vector<uint8_t>& der, const char* label)
 }
 
 /// 从 PEM 文本中找出首个匹配 label 的块，返回其 DER
-std::optional<std::vector<uint8_t>> pem_extract_any(const std::string& pem,
+jpssl::optional<std::vector<uint8_t>> pem_extract_any(const std::string& pem,
                                                      const char** labels,
                                                      size_t n_labels) {
     for (size_t i = 0; i < n_labels; ++i) {
         auto der = pem_decode_block(pem, labels[i]);
         if (der) return der;
     }
-    return std::nullopt;
+    return jpssl::nullopt;
 }
 
 } // anonymous namespace
@@ -1081,11 +1081,11 @@ bool pbkdf2_hmac_sha256(const uint8_t* password, size_t pw_len,
 
 /// AES-CBC 解密（PKCS#7 padding 去除）
 /// cipher_len 必须为 16 的倍数
-std::optional<std::vector<uint8_t>> aes_cbc_decrypt(const uint8_t* key, size_t key_len,
+jpssl::optional<std::vector<uint8_t>> aes_cbc_decrypt(const uint8_t* key, size_t key_len,
                                                     const uint8_t* iv,
                                                     const uint8_t* cipher, size_t cipher_len) {
-    if (cipher_len == 0 || cipher_len % 16 != 0) return std::nullopt;
-    if (key_len != 16 && key_len != 32) return std::nullopt;
+    if (cipher_len == 0 || cipher_len % 16 != 0) return jpssl::nullopt;
+    if (key_len != 16 && key_len != 32) return jpssl::nullopt;
     aes_context ctx;
     if (key_len == 16) ctx.init(jpssl::span<const uint8_t, 16>(key, 16));
     else               ctx.init(jpssl::span<const uint8_t, 32>(key, 32));
@@ -1100,11 +1100,11 @@ std::optional<std::vector<uint8_t>> aes_cbc_decrypt(const uint8_t* key, size_t k
         memcpy(prev, cipher + off, 16);
     }
     // PKCS#7 padding
-    if (out.empty()) return std::nullopt;
+    if (out.empty()) return jpssl::nullopt;
     uint8_t pad = out.back();
-    if (pad == 0 || pad > 16 || pad > out.size()) return std::nullopt;
+    if (pad == 0 || pad > 16 || pad > out.size()) return jpssl::nullopt;
     for (size_t i = out.size() - pad; i < out.size(); ++i)
-        if (out[i] != pad) return std::nullopt;
+        if (out[i] != pad) return jpssl::nullopt;
     out.resize(out.size() - pad);
     return out;
 }
@@ -1125,63 +1125,63 @@ std::optional<std::vector<uint8_t>> aes_cbc_decrypt(const uint8_t* key, size_t k
 ///     },
 ///     OCTET STRING encryptedData
 ///   }
-std::optional<std::vector<uint8_t>> pbes2_decrypt(const std::vector<uint8_t>& der,
+jpssl::optional<std::vector<uint8_t>> pbes2_decrypt(const std::vector<uint8_t>& der,
                                                   const std::string& password) {
     using namespace der;
     size_t off = 0;
     auto outer = decode_tlv2(der.data(), der.size(), off);
-    if (!outer || outer->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!outer || outer->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     size_t ooff = 0;
     auto alg_seq = decode_tlv2(outer->value.data(), outer->value.size(), ooff);
-    if (!alg_seq || alg_seq->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!alg_seq || alg_seq->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     size_t aoff = 0;
     auto pbes2_oid = decode_tlv2(alg_seq->value.data(), alg_seq->value.size(), aoff);
-    if (!pbes2_oid || pbes2_oid->tag != ASN1Tag::OID) return std::nullopt;
-    if (!oid_equal(pbes2_oid->value, OID_PBES2, sizeof(OID_PBES2))) return std::nullopt;
+    if (!pbes2_oid || pbes2_oid->tag != ASN1Tag::OID) return jpssl::nullopt;
+    if (!oid_equal(pbes2_oid->value, OID_PBES2, sizeof(OID_PBES2))) return jpssl::nullopt;
     auto params = decode_tlv2(alg_seq->value.data(), alg_seq->value.size(), aoff);
-    if (!params || params->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!params || params->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
 
     // keyDerivationFunc
     size_t poff = 0;
     auto kdf = decode_tlv2(params->value.data(), params->value.size(), poff);
-    if (!kdf || kdf->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!kdf || kdf->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     size_t koff = 0;
     auto kdf_oid = decode_tlv2(kdf->value.data(), kdf->value.size(), koff);
-    if (!kdf_oid || kdf_oid->tag != ASN1Tag::OID) return std::nullopt;
-    if (!oid_equal(kdf_oid->value, OID_PBKDF2, sizeof(OID_PBKDF2))) return std::nullopt;
+    if (!kdf_oid || kdf_oid->tag != ASN1Tag::OID) return jpssl::nullopt;
+    if (!oid_equal(kdf_oid->value, OID_PBKDF2, sizeof(OID_PBKDF2))) return jpssl::nullopt;
     auto kdf_params = decode_tlv2(kdf->value.data(), kdf->value.size(), koff);
-    if (!kdf_params || kdf_params->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!kdf_params || kdf_params->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     size_t kpoff = 0;
     auto salt_tlv = decode_tlv2(kdf_params->value.data(), kdf_params->value.size(), kpoff);
-    if (!salt_tlv || salt_tlv->tag != ASN1Tag::OCTET_STRING) return std::nullopt;
+    if (!salt_tlv || salt_tlv->tag != ASN1Tag::OCTET_STRING) return jpssl::nullopt;
     auto iter_tlv = decode_tlv2(kdf_params->value.data(), kdf_params->value.size(), kpoff);
-    if (!iter_tlv || iter_tlv->tag != ASN1Tag::INTEGER || iter_tlv->value.empty()) return std::nullopt;
+    if (!iter_tlv || iter_tlv->tag != ASN1Tag::INTEGER || iter_tlv->value.empty()) return jpssl::nullopt;
     uint32_t iterations = 0;
     for (uint8_t b : iter_tlv->value) iterations = (iterations << 8) | b;
 
     // encryptionScheme
     auto scheme = decode_tlv2(params->value.data(), params->value.size(), poff);
-    if (!scheme || scheme->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!scheme || scheme->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     size_t soff = 0;
     auto scheme_oid = decode_tlv2(scheme->value.data(), scheme->value.size(), soff);
-    if (!scheme_oid || scheme_oid->tag != ASN1Tag::OID) return std::nullopt;
+    if (!scheme_oid || scheme_oid->tag != ASN1Tag::OID) return jpssl::nullopt;
     auto iv_tlv = decode_tlv2(scheme->value.data(), scheme->value.size(), soff);
-    if (!iv_tlv || iv_tlv->tag != ASN1Tag::OCTET_STRING || iv_tlv->value.size() != 16) return std::nullopt;
+    if (!iv_tlv || iv_tlv->tag != ASN1Tag::OCTET_STRING || iv_tlv->value.size() != 16) return jpssl::nullopt;
 
     // encryptedData
     auto data_tlv = decode_tlv2(outer->value.data(), outer->value.size(), ooff);
-    if (!data_tlv || data_tlv->tag != ASN1Tag::OCTET_STRING) return std::nullopt;
+    if (!data_tlv || data_tlv->tag != ASN1Tag::OCTET_STRING) return jpssl::nullopt;
 
     size_t key_len;
     if (oid_equal(scheme_oid->value, OID_AES128_CBC, sizeof(OID_AES128_CBC))) key_len = 16;
     else if (oid_equal(scheme_oid->value, OID_AES256_CBC, sizeof(OID_AES256_CBC))) key_len = 32;
-    else return std::nullopt;
+    else return jpssl::nullopt;
 
     std::vector<uint8_t> key(key_len);
     if (!pbkdf2_hmac_sha256((const uint8_t*)password.data(), password.size(),
                             salt_tlv->value.data(), salt_tlv->value.size(),
                             iterations, key.data(), key.size()))
-        return std::nullopt;
+        return jpssl::nullopt;
     return aes_cbc_decrypt(key.data(), key.size(), iv_tlv->value.data(),
                            data_tlv->value.data(), data_tlv->value.size());
 }
@@ -1189,12 +1189,12 @@ std::optional<std::vector<uint8_t>> pbes2_decrypt(const std::vector<uint8_t>& de
 } // anonymous namespace
 
 // ── x509_cert: PEM 读取 ──────────────────────────────────────────────────
-std::optional<x509_cert> x509_cert::from_pem(const std::string& pem) {
+jpssl::optional<x509_cert> x509_cert::from_pem(const std::string& pem) {
     auto der = pem_decode_block(pem, "CERTIFICATE");
-    if (!der) return std::nullopt;
+    if (!der) return jpssl::nullopt;
     return from_der(*der);
 }
-std::optional<x509_cert> x509_cert::from_pem(const char* data, size_t len) {
+jpssl::optional<x509_cert> x509_cert::from_pem(const char* data, size_t len) {
     return from_pem(std::string(data, len));
 }
 
@@ -1208,17 +1208,17 @@ std::string x509_cert::to_pem() const {
 namespace {
 
 /// 解析 PKCS#1 RSAPrivateKey: 提取 d (第 4 个 INTEGER) 与 n||e 公钥
-std::optional<private_key> parse_pkcs1_rsa(const std::vector<uint8_t>& der) {
+jpssl::optional<private_key> parse_pkcs1_rsa(const std::vector<uint8_t>& der) {
     using namespace der;
     size_t off = 0;
     auto seq = decode_tlv2(der.data(), der.size(), off);
-    if (!seq || seq->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!seq || seq->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     size_t ioff = 0;
     std::vector<uint8_t> n, e, d;
     int idx = 0;
     while (ioff < seq->value.size() && idx < 4) {
         auto it = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
-        if (!it || it->tag != ASN1Tag::INTEGER) return std::nullopt;
+        if (!it || it->tag != ASN1Tag::INTEGER) return jpssl::nullopt;
         auto bytes = it->value;
         if (!bytes.empty() && bytes[0] == 0x00) bytes.erase(bytes.begin());
         if (idx == 1) n = std::move(bytes);
@@ -1226,7 +1226,7 @@ std::optional<private_key> parse_pkcs1_rsa(const std::vector<uint8_t>& der) {
         else if (idx == 3) d = std::move(bytes);
         ++idx;
     }
-    if (idx < 4 || n.empty() || e.empty() || d.empty()) return std::nullopt;
+    if (idx < 4 || n.empty() || e.empty() || d.empty()) return jpssl::nullopt;
 
     private_key key;
     key.key_type = (n.size() <= 256) ? KeyType::RSA_2048 : KeyType::RSA_4096;
@@ -1234,15 +1234,15 @@ std::optional<private_key> parse_pkcs1_rsa(const std::vector<uint8_t>& der) {
     size_t dsz = (key.key_type == KeyType::RSA_2048) ? 256 : 512;
     key.priv.assign(dsz, 0);
     if (d.size() <= dsz) memcpy(key.priv.data() + dsz - d.size(), d.data(), d.size());
-    else return std::nullopt;
+    else return jpssl::nullopt;
     // 公钥: n(256) || e(3) 与 x509 格式一致
     key.pub.assign(dsz, 0);
     if (n.size() <= dsz) memcpy(key.pub.data() + dsz - n.size(), n.data(), n.size());
-    else return std::nullopt;
+    else return jpssl::nullopt;
     // e 通常 0x010001 (3 bytes)
     std::vector<uint8_t> e3 = e;
     while (e3.size() < 3) e3.insert(e3.begin(), 0x00);
-    if (e3.size() > 3) return std::nullopt;
+    if (e3.size() > 3) return jpssl::nullopt;
     key.pub.insert(key.pub.end(), e3.begin(), e3.end());
     return key;
 }
@@ -1250,19 +1250,19 @@ std::optional<private_key> parse_pkcs1_rsa(const std::vector<uint8_t>& der) {
 /// 解析 SEC1 ECPrivateKey（可能带 curve OID 上下文和 [1] 公钥）
 /// der: ECPrivateKey 整个 DER
 /// curve_oid_hint: 若外部 AlgorithmIdentifier 已提供曲线 OID，可为 nullptr
-std::optional<private_key> parse_sec1_ec(const std::vector<uint8_t>& der,
+jpssl::optional<private_key> parse_sec1_ec(const std::vector<uint8_t>& der,
                                          const std::vector<uint8_t>* curve_oid_hint) {
     using namespace der;
     size_t off = 0;
     auto seq = decode_tlv2(der.data(), der.size(), off);
-    if (!seq || seq->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!seq || seq->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     size_t ioff = 0;
     // version INTEGER (optional tolerate)
     auto ver = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
-    if (!ver) return std::nullopt;
+    if (!ver) return jpssl::nullopt;
     if (ver->tag == ASN1Tag::INTEGER) {
         auto priv_tlv = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
-        if (!priv_tlv || priv_tlv->tag != ASN1Tag::OCTET_STRING) return std::nullopt;
+        if (!priv_tlv || priv_tlv->tag != ASN1Tag::OCTET_STRING) return jpssl::nullopt;
 
         private_key key;
         key.priv = priv_tlv->value;
@@ -1295,27 +1295,27 @@ std::optional<private_key> parse_sec1_ec(const std::vector<uint8_t>& der,
         else key.key_type = KeyType::ECDSA_P256;  // 默认 P-256
         return key;
     }
-    return std::nullopt;
+    return jpssl::nullopt;
 }
 
 /// 解析 PKCS#8 PrivateKeyInfo
 /// der: 整个 PKCS#8 DER
-std::optional<private_key> parse_pkcs8(const std::vector<uint8_t>& der) {
+jpssl::optional<private_key> parse_pkcs8(const std::vector<uint8_t>& der) {
     using namespace der;
     size_t off = 0;
     auto seq = decode_tlv2(der.data(), der.size(), off);
-    if (!seq || seq->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!seq || seq->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     size_t ioff = 0;
     auto ver = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
-    if (!ver || ver->tag != ASN1Tag::INTEGER) return std::nullopt;
+    if (!ver || ver->tag != ASN1Tag::INTEGER) return jpssl::nullopt;
     auto alg_tlv = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
-    if (!alg_tlv || alg_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!alg_tlv || alg_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     size_t aoff = 0;
     auto oid_tlv = decode_tlv2(alg_tlv->value.data(), alg_tlv->value.size(), aoff);
-    if (!oid_tlv || oid_tlv->tag != ASN1Tag::OID) return std::nullopt;
+    if (!oid_tlv || oid_tlv->tag != ASN1Tag::OID) return jpssl::nullopt;
     auto algo_oid = tlv_to_oid(*oid_tlv);
     auto key_tlv = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
-    if (!key_tlv || key_tlv->tag != ASN1Tag::OCTET_STRING) return std::nullopt;
+    if (!key_tlv || key_tlv->tag != ASN1Tag::OCTET_STRING) return jpssl::nullopt;
 
     if (oid_equal(algo_oid, OID_RSA_ENCRYPTION, sizeof(OID_RSA_ENCRYPTION))) {
         // OCTET STRING 内是 PKCS#1 RSAPrivateKey
@@ -1348,7 +1348,7 @@ std::optional<private_key> parse_pkcs8(const std::vector<uint8_t>& der) {
         } else {
             seed = inner;
         }
-        if (seed.size() != 32) return std::nullopt;
+        if (seed.size() != 32) return jpssl::nullopt;
         key.priv.assign(64, 0);
         memcpy(key.priv.data(), seed.data(), 32);
         key.pub.resize(32);
@@ -1373,30 +1373,30 @@ std::optional<private_key> parse_pkcs8(const std::vector<uint8_t>& der) {
         } else {
             seed = inner;
         }
-        if (seed.size() != 57) return std::nullopt;
+        if (seed.size() != 57) return jpssl::nullopt;
         key.priv = seed;  // 库内 ed448 私钥格式 = 57 字节 seed
         key.pub.resize(57);
         jpssl::ed448_keygen(key.pub.data(), seed.data());
         return key;
     }
-    return std::nullopt;
+    return jpssl::nullopt;
 }
 
 } // anonymous namespace
 
-std::optional<private_key> private_key::from_der(const uint8_t* data, size_t len) {
+jpssl::optional<private_key> private_key::from_der(const uint8_t* data, size_t len) {
     return from_der(std::vector<uint8_t>(data, data + len));
 }
-std::optional<private_key> private_key::from_der(const std::vector<uint8_t>& der) {
+jpssl::optional<private_key> private_key::from_der(const std::vector<uint8_t>& der) {
     using namespace der;
     // 顶层 SEQUENCE
     size_t off = 0;
     auto seq = decode_tlv2(der.data(), der.size(), off);
-    if (!seq || seq->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!seq || seq->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
 
     size_t ioff = 0;
     auto first = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
-    if (!first) return std::nullopt;
+    if (!first) return jpssl::nullopt;
 
     // 分发依据顶层结构:
     //   PKCS#8:  SEQUENCE { INTEGER 0, SEQUENCE alg, OCTET STRING key }
@@ -1405,51 +1405,51 @@ std::optional<private_key> private_key::from_der(const std::vector<uint8_t>& der
     if (first->tag == ASN1Tag::INTEGER) {
         size_t tmp = ioff;
         auto second = decode_tlv2(seq->value.data(), seq->value.size(), tmp);
-        if (!second) return std::nullopt;
+        if (!second) return jpssl::nullopt;
         if (second->tag == ASN1Tag::SEQUENCE) {
             // PKCS#8: version + AlgorithmIdentifier
             auto key = parse_pkcs8(der);
             if (key) return key;
-            return std::nullopt;
+            return jpssl::nullopt;
         }
         if (second->tag == ASN1Tag::INTEGER) {
             // PKCS#1 RSA: version + n + e + d ...
             auto key = parse_pkcs1_rsa(der);
             if (key) return key;
-            return std::nullopt;
+            return jpssl::nullopt;
         }
         if (second->tag == ASN1Tag::OCTET_STRING) {
             // SEC1 EC: version(1) + privateKey OCTET STRING ...
             auto key = parse_sec1_ec(der, nullptr);
             if (key) return key;
-            return std::nullopt;
+            return jpssl::nullopt;
         }
-        return std::nullopt;
+        return jpssl::nullopt;
     }
-    return std::nullopt;
+    return jpssl::nullopt;
 }
 
-std::optional<private_key> private_key::from_pem(const std::string& pem) {
+jpssl::optional<private_key> private_key::from_pem(const std::string& pem) {
     static const char* labels[] = {"PRIVATE KEY", "RSA PRIVATE KEY",
                                    "EC PRIVATE KEY", "ED25519 PRIVATE KEY",
                                    "ED448 PRIVATE KEY"};
     auto der = pem_extract_any(pem, labels, sizeof(labels)/sizeof(labels[0]));
-    if (!der) return std::nullopt;
+    if (!der) return jpssl::nullopt;
     return from_der(*der);
 }
-std::optional<private_key> private_key::from_pem(const char* data, size_t len) {
+jpssl::optional<private_key> private_key::from_pem(const char* data, size_t len) {
     return from_pem(std::string(data, len));
 }
 
-std::optional<private_key> private_key::from_pem_encrypted(const std::string& pem,
+jpssl::optional<private_key> private_key::from_pem_encrypted(const std::string& pem,
                                                            const std::string& password) {
     auto der = pem_decode_block(pem, "ENCRYPTED PRIVATE KEY");
-    if (!der) return std::nullopt;
+    if (!der) return jpssl::nullopt;
     auto plain = pbes2_decrypt(*der, password);
-    if (!plain) return std::nullopt;
+    if (!plain) return jpssl::nullopt;
     return from_der(*plain);
 }
-std::optional<private_key> private_key::from_pem_encrypted(const char* data, size_t len,
+jpssl::optional<private_key> private_key::from_pem_encrypted(const char* data, size_t len,
                                                            const std::string& password) {
     return from_pem_encrypted(std::string(data, len), password);
 }
@@ -1457,39 +1457,39 @@ std::optional<private_key> private_key::from_pem_encrypted(const char* data, siz
 // ═══════════════════════════════════════════════════════════════════════
 //  PKCS#10 CSR 解析
 // ═══════════════════════════════════════════════════════════════════════
-std::optional<csr> csr::from_der(const uint8_t* data, size_t len) {
+jpssl::optional<csr> csr::from_der(const uint8_t* data, size_t len) {
     using namespace der;
     size_t off = 0;
     auto outer = decode_tlv2(data, len, off);
-    if (!outer || outer->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!outer || outer->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
 
     csr out;
     size_t ooff = 0;
     // CertificationRequestInfo
     size_t info_start = ooff;
     auto info_tlv = decode_tlv2(outer->value.data(), outer->value.size(), ooff);
-    if (!info_tlv || info_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!info_tlv || info_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     out.tbs_raw.assign(outer->value.data() + info_start,
                        outer->value.data() + ooff);
 
     size_t ioff = 0;
     auto ver = decode_tlv2(info_tlv->value.data(), info_tlv->value.size(), ioff);
-    if (!ver || ver->tag != ASN1Tag::INTEGER) return std::nullopt;
+    if (!ver || ver->tag != ASN1Tag::INTEGER) return jpssl::nullopt;
 
     auto subj_tlv = decode_tlv2(info_tlv->value.data(), info_tlv->value.size(), ioff);
-    if (!subj_tlv || subj_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!subj_tlv || subj_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     out.subject = parse_dn(subj_tlv->value);
 
     auto spki_tlv = decode_tlv2(info_tlv->value.data(), info_tlv->value.size(), ioff);
-    if (!spki_tlv || spki_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!spki_tlv || spki_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
 
     // 解析 SPKI（与证书一致）
     {   size_t soff = 0;
         auto alg_tlv = decode_tlv2(spki_tlv->value.data(), spki_tlv->value.size(), soff);
-        if (!alg_tlv || alg_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+        if (!alg_tlv || alg_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
         size_t aoff = 0;
         auto oid_tlv = decode_tlv2(alg_tlv->value.data(), alg_tlv->value.size(), aoff);
-        if (!oid_tlv || oid_tlv->tag != ASN1Tag::OID) return std::nullopt;
+        if (!oid_tlv || oid_tlv->tag != ASN1Tag::OID) return jpssl::nullopt;
         auto algo_oid = oid_tlv->value;
         if (oid_equal(algo_oid, OID_RSA_ENCRYPTION, sizeof(OID_RSA_ENCRYPTION)))
             out.key_type = KeyType::RSA_2048;
@@ -1508,7 +1508,7 @@ std::optional<csr> csr::from_der(const uint8_t* data, size_t len) {
             out.key_type = KeyType::Ed448;
 
         auto pub_tlv = decode_tlv2(spki_tlv->value.data(), spki_tlv->value.size(), soff);
-        if (!pub_tlv || pub_tlv->tag != ASN1Tag::BIT_STRING) return std::nullopt;
+        if (!pub_tlv || pub_tlv->tag != ASN1Tag::BIT_STRING) return jpssl::nullopt;
         out.public_key = tlv_to_bit_string(*pub_tlv);
         if ((out.key_type == KeyType::ECDSA_P256 || out.key_type == KeyType::ECDSA_P384 ||
              out.key_type == KeyType::ECDSA_P521 || out.key_type == KeyType::SM2)
@@ -1535,7 +1535,7 @@ std::optional<csr> csr::from_der(const uint8_t* data, size_t len) {
 
     // signatureAlgorithm + signature
     auto sig_alg_tlv = decode_tlv2(outer->value.data(), outer->value.size(), ooff);
-    if (!sig_alg_tlv || sig_alg_tlv->tag != ASN1Tag::SEQUENCE) return std::nullopt;
+    if (!sig_alg_tlv || sig_alg_tlv->tag != ASN1Tag::SEQUENCE) return jpssl::nullopt;
     {   size_t saoff = 0;
         auto sa_oid_tlv = decode_tlv2(sig_alg_tlv->value.data(), sig_alg_tlv->value.size(), saoff);
         if (sa_oid_tlv) {
@@ -1551,20 +1551,20 @@ std::optional<csr> csr::from_der(const uint8_t* data, size_t len) {
         }
     }
     auto sig_tlv = decode_tlv2(outer->value.data(), outer->value.size(), ooff);
-    if (!sig_tlv || sig_tlv->tag != ASN1Tag::BIT_STRING) return std::nullopt;
+    if (!sig_tlv || sig_tlv->tag != ASN1Tag::BIT_STRING) return jpssl::nullopt;
     out.signature = tlv_to_bit_string(*sig_tlv);
 
     return out;
 }
-std::optional<csr> csr::from_der(const std::vector<uint8_t>& der) {
+jpssl::optional<csr> csr::from_der(const std::vector<uint8_t>& der) {
     return from_der(der.data(), der.size());
 }
-std::optional<csr> csr::from_pem(const std::string& pem) {
+jpssl::optional<csr> csr::from_pem(const std::string& pem) {
     auto der = pem_decode_block(pem, "CERTIFICATE REQUEST");
-    if (!der) return std::nullopt;
+    if (!der) return jpssl::nullopt;
     return from_der(*der);
 }
-std::optional<csr> csr::from_pem(const char* data, size_t len) {
+jpssl::optional<csr> csr::from_pem(const char* data, size_t len) {
     return from_pem(std::string(data, len));
 }
 

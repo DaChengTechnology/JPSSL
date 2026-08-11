@@ -15,9 +15,9 @@
 
 namespace jpssl {
 
-inline constexpr size_t SM4_BLOCK_SIZE = 16;   // 128-bit
-inline constexpr size_t SM4_KEY_SIZE   = 16;   // 128-bit
-inline constexpr int    SM4_ROUNDS     = 32;
+constexpr size_t SM4_BLOCK_SIZE = 16;   // 128-bit
+constexpr size_t SM4_KEY_SIZE   = 16;   // 128-bit
+constexpr int    SM4_ROUNDS     = 32;
 
 /// SM4 轮密钥（32 个 32-bit 字）
 struct sm4_ctx {

@@ -6,9 +6,9 @@
 
 namespace jpssl::dh {
 
-inline constexpr size_t  FFDHE2048_BYTES      = 256;   // 2048-bit
-inline constexpr uint16_t FFDHE2048_NAMED_GROUP = 256; // 0x0100（RFC 7919 §2 supported_groups 编码）
-inline constexpr uint8_t  FFDHE2048_G         = 2;     // 生成元
+constexpr size_t  FFDHE2048_BYTES      = 256;   // 2048-bit
+constexpr uint16_t FFDHE2048_NAMED_GROUP = 256; // 0x0100（RFC 7919 §2 supported_groups 编码）
+constexpr uint8_t  FFDHE2048_G         = 2;     // 生成元
 
 /// ffdhe2048 素数 p（RFC 7919 A.1，256 字节大端；与 RFC 3526 的 pi 素数不同）
 extern const uint8_t ffdhe2048_p[FFDHE2048_BYTES];

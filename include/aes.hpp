@@ -25,7 +25,7 @@ namespace jpssl {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// AES 块大小（字节）
-inline constexpr size_t AES_BLOCK_SIZE = 16;
+constexpr size_t AES_BLOCK_SIZE = 16;
 
 /// 密钥长度枚举
 enum class AesKeySize : int { AES_128 = 16, AES_192 = 24, AES_256 = 32 };
@@ -98,10 +98,10 @@ constexpr uint8_t gf28_mul(uint8_t a, uint8_t b) {
 }
 
 /// S-Box 常量
-inline constexpr auto SBOX = make_sbox();
+constexpr auto SBOX = make_sbox();
 
 /// 逆 S-Box 常量
-inline constexpr auto INV_SBOX = make_inv_sbox(SBOX);
+constexpr auto INV_SBOX = make_inv_sbox(SBOX);
 
 /// 轮常数 Rcon（用于密钥扩展）
     constexpr std::array<uint8_t, 16> make_rcon() {
@@ -114,7 +114,7 @@ inline constexpr auto INV_SBOX = make_inv_sbox(SBOX);
     return rcon;
 }
 
-inline constexpr auto RCON = make_rcon();
+constexpr auto RCON = make_rcon();
 
 // ═══════════════════════════════════════════════════════════════════════
 //  核心操作（内联 / constexpr）

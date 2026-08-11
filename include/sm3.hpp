@@ -8,8 +8,8 @@
 
 namespace jpssl {
 
-inline constexpr size_t SM3_DIGEST_SIZE = 32;  // 256-bit
-inline constexpr size_t SM3_BLOCK_SIZE  = 64;  // 512-bit
+constexpr size_t SM3_DIGEST_SIZE = 32;  // 256-bit
+constexpr size_t SM3_BLOCK_SIZE  = 64;  // 512-bit
 
 struct sm3_ctx {
     uint32_t  h[8];       // 8 个 32 位字，256-bit 状态

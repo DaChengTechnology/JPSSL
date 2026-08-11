@@ -55,7 +55,7 @@ enum class NamedGroup : uint16_t {
 /// TLS 单条 record 明文上限（RFC 5246 / RFC 8446：2^14 字节）。
 /// 大于该值的长消息由 tls_encrypt / tls_connection::send 自动分片为多条 record，
 /// 由 tls_decrypt / tls_connection::recv 自动合并还原。
-inline constexpr size_t TLS_MAX_RECORD_PLAINTEXT = 16384;
+constexpr size_t TLS_MAX_RECORD_PLAINTEXT = 16384;
 
 // TLS 1.3 CipherSuite (RFC 8446 §B.4, RFC 8998 §4.1)
 enum class CipherSuite : uint16_t {

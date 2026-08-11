@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 namespace jpssl {
-inline constexpr size_t SHA512_DIGEST_SIZE=64, SHA384_DIGEST_SIZE=48, SHA512_BLOCK_SIZE=128;
+constexpr size_t SHA512_DIGEST_SIZE=64, SHA384_DIGEST_SIZE=48, SHA512_BLOCK_SIZE=128;
 struct sha512_ctx{uint64_t h[8];uint64_t len;uint8_t buf[128];size_t buf_len;bool is_384;};
 void sha512_init(sha512_ctx*);
 void sha384_init(sha512_ctx*);

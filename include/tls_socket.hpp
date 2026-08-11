@@ -66,11 +66,11 @@ namespace jpssl::tls {
 
 #ifdef _WIN32
 using socket_handle_t = SOCKET;
-inline constexpr socket_handle_t INVALID_SOCKET_HANDLE = INVALID_SOCKET;
+constexpr socket_handle_t INVALID_SOCKET_HANDLE = INVALID_SOCKET;
 inline void close_socket_handle(socket_handle_t s) { closesocket(s); }
 #else
 using socket_handle_t = int;
-inline constexpr socket_handle_t INVALID_SOCKET_HANDLE = -1;
+constexpr socket_handle_t INVALID_SOCKET_HANDLE = -1;
 inline void close_socket_handle(socket_handle_t s) { ::close(s); }
 #endif
 

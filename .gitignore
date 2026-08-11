@@ -15,6 +15,7 @@ build-ohos*/
 build-macos*/
 build-win-test/
 build-win17*/
+build-win14/
 win_connect_probe.obj
 .deepseek/
 

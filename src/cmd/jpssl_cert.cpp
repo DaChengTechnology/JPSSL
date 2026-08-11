@@ -147,7 +147,7 @@ static void set_private_key_mode(const char* path) {
 }
 
 // 读取证书文件: 支持 DER 或 PEM (-----BEGIN CERTIFICATE-----)
-static std::optional<x509_cert> load_cert_file(const char* path) {
+static jpssl::optional<x509_cert> load_cert_file(const char* path) {
     auto data = read_file(path);
     if (auto c = x509_cert::from_der(data)) return c;
     return x509_cert::from_pem(std::string((const char*)data.data(), data.size()));
@@ -339,7 +339,7 @@ static void cmd_key(int argc, char** argv) {
 
     auto data = read_file(key_file);
     std::string pem((const char*)data.data(), data.size());
-    std::optional<private_key> key;
+    jpssl::optional<private_key> key;
     if (pem.find("-----BEGIN ENCRYPTED PRIVATE KEY-----") != std::string::npos) {
         if (!password) die("加密私钥需要 --pass <password>");
         key = private_key::from_pem_encrypted(pem, password);

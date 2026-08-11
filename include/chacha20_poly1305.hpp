@@ -24,14 +24,14 @@ namespace jpssl {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// ChaCha20 密钥大小（字节）
-inline constexpr size_t CHACHA20_KEY_SIZE   = 32;  // 256-bit
+constexpr size_t CHACHA20_KEY_SIZE   = 32;  // 256-bit
 /// ChaCha20-Poly1305 Nonce 大小（字节，IETF 变体）
-inline constexpr size_t CHACHA20_NONCE_SIZE = 12;  // 96-bit
+constexpr size_t CHACHA20_NONCE_SIZE = 12;  // 96-bit
 /// Poly1305 认证标签大小（字节）
-inline constexpr size_t POLY1305_TAG_SIZE   = 16;  // 128-bit
+constexpr size_t POLY1305_TAG_SIZE   = 16;  // 128-bit
 
 /// ChaCha20 块大小（字节）
-inline constexpr size_t CHACHA20_BLOCK_SIZE = 64;
+constexpr size_t CHACHA20_BLOCK_SIZE = 64;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  ChaCha20 底层

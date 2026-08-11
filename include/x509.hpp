@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 #include "jpssl_span.hpp"
-#include <optional>
+#include "jpssl_optional.hpp"
 #include <ctime>
 
 namespace jpssl::x509 {
@@ -179,10 +179,10 @@ struct x509_cert {
     std::vector<uint8_t> public_key;     // raw key bytes
 
     // Extensions (v3)
-    std::optional<BasicConstraints> basic_constraints;
-    std::optional<KeyUsage> key_usage;
-    std::optional<ExtKeyUsageList> ext_key_usage;
-    std::optional<SubjectAlternativeName> subject_alt_name;
+    jpssl::optional<BasicConstraints> basic_constraints;
+    jpssl::optional<KeyUsage> key_usage;
+    jpssl::optional<ExtKeyUsageList> ext_key_usage;
+    jpssl::optional<SubjectAlternativeName> subject_alt_name;
     std::vector<RawExtension> raw_extensions;  // extensions not modeled above
 
     // Signature
@@ -192,12 +192,12 @@ struct x509_cert {
 
     // ── 辅助方法 ────────────────────────────────────────────────────────
     /// 从 DER 编码的证书解析
-    static std::optional<x509_cert> from_der(const uint8_t* data, size_t len);
-    static std::optional<x509_cert> from_der(const std::vector<uint8_t>& der);
+    static jpssl::optional<x509_cert> from_der(const uint8_t* data, size_t len);
+    static jpssl::optional<x509_cert> from_der(const std::vector<uint8_t>& der);
 
     /// 从 PEM 编码的证书解析 (-----BEGIN CERTIFICATE-----)
-    static std::optional<x509_cert> from_pem(const std::string& pem);
-    static std::optional<x509_cert> from_pem(const char* data, size_t len);
+    static jpssl::optional<x509_cert> from_pem(const std::string& pem);
+    static jpssl::optional<x509_cert> from_pem(const char* data, size_t len);
 
     /// 编码为 DER
     std::vector<uint8_t> to_der() const;
@@ -234,8 +234,8 @@ struct private_key {
     std::vector<uint8_t> pub;    // 公钥 raw bytes（解析时从密钥中恢复，可为空）
 
     /// 从 DER 编码的私钥解析 (PKCS#8 / PKCS#1 RSA / SEC1 EC / RFC 8410)
-    static std::optional<private_key> from_der(const uint8_t* data, size_t len);
-    static std::optional<private_key> from_der(const std::vector<uint8_t>& der);
+    static jpssl::optional<private_key> from_der(const uint8_t* data, size_t len);
+    static jpssl::optional<private_key> from_der(const std::vector<uint8_t>& der);
 
     /// 从 PEM 编码的私钥解析:
     ///   -----BEGIN PRIVATE KEY-----        (PKCS#8)
@@ -243,14 +243,14 @@ struct private_key {
     ///   -----BEGIN EC PRIVATE KEY-----      (SEC1)
     ///   -----BEGIN ED25519 PRIVATE KEY----- (RFC 8410)
     ///   -----BEGIN ED448 PRIVATE KEY-----   (RFC 8410)
-    static std::optional<private_key> from_pem(const std::string& pem);
-    static std::optional<private_key> from_pem(const char* data, size_t len);
+    static jpssl::optional<private_key> from_pem(const std::string& pem);
+    static jpssl::optional<private_key> from_pem(const char* data, size_t len);
 
     /// 从加密 PEM 私钥解析 (-----BEGIN ENCRYPTED PRIVATE KEY-----)
     /// 支持 PBES2 (RFC 8018): PBKDF2-HMAC-SHA256 + AES-128/256-CBC
-    static std::optional<private_key> from_pem_encrypted(const std::string& pem,
+    static jpssl::optional<private_key> from_pem_encrypted(const std::string& pem,
                                                          const std::string& password);
-    static std::optional<private_key> from_pem_encrypted(const char* data, size_t len,
+    static jpssl::optional<private_key> from_pem_encrypted(const char* data, size_t len,
                                                          const std::string& password);
 };
 
@@ -269,12 +269,12 @@ struct csr {
     std::vector<uint8_t> tbs_raw;      // raw CertificationRequestInfo bytes（供验签）
 
     /// 从 DER 编码的 CSR 解析
-    static std::optional<csr> from_der(const uint8_t* data, size_t len);
-    static std::optional<csr> from_der(const std::vector<uint8_t>& der);
+    static jpssl::optional<csr> from_der(const uint8_t* data, size_t len);
+    static jpssl::optional<csr> from_der(const std::vector<uint8_t>& der);
 
     /// 从 PEM 编码的 CSR 解析 (-----BEGIN CERTIFICATE REQUEST-----)
-    static std::optional<csr> from_pem(const std::string& pem);
-    static std::optional<csr> from_pem(const char* data, size_t len);
+    static jpssl::optional<csr> from_pem(const std::string& pem);
+    static jpssl::optional<csr> from_pem(const char* data, size_t len);
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -383,7 +383,7 @@ struct TLV {
 };
 
 /// 解码一个 TLV
-std::optional<TLV> decode_tlv(const uint8_t* data, size_t len, size_t& offset);
+jpssl::optional<TLV> decode_tlv(const uint8_t* data, size_t len, size_t& offset);
 
 /// 解码整数
 std::vector<uint8_t> tlv_to_integer(const TLV& tlv);
@@ -394,7 +394,7 @@ std::vector<uint8_t> tlv_to_bit_string(const TLV& tlv);
 /// 解码 octet string
 std::vector<uint8_t> tlv_to_octet_string(const TLV& tlv);
 /// 解码 UTCTime 为 unix timestamp
-std::optional<uint64_t> tlv_to_utc_time(const TLV& tlv);
+jpssl::optional<uint64_t> tlv_to_utc_time(const TLV& tlv);
 /// 解码 string
 std::string tlv_to_string(const TLV& tlv);
 
