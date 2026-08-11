@@ -305,21 +305,22 @@ static void vaes_gcm_encrypt_impl(const aes_context& ctx,
         _mm256_set_m128i(c5, c4),
         _mm256_set_m128i(c7, c6),
     };
-    const __m256i inc8 = _mm256_set_epi32(0, 0, 0, 8, 0, 0, 0, 8);
+    const __m256i inc8 = _mm256_set_epi32(0x08000000, 0, 0, 0, 0x08000000, 0, 0, 0);
 
     size_t i = 0;
     __m256i ct0, ct1, ct2, ct3;  // 上一组密文（YMM 形式）
     auto enc_group = [&](size_t off) {
-        vaes_encrypt_8blocks(yc[0], yc[1], yc[2], yc[3], rk, rounds);
+        __m256i t0 = yc[0], t1 = yc[1], t2 = yc[2], t3 = yc[3];  // 拷贝 counter
+        vaes_encrypt_8blocks(t0, t1, t2, t3, rk, rounds);
         const uint8_t* p = plaintext.data() + off * 16;
         __m256i p0 = _mm256_loadu_si256((const __m256i*)(p));
         __m256i p1 = _mm256_loadu_si256((const __m256i*)(p + 32));
         __m256i p2 = _mm256_loadu_si256((const __m256i*)(p + 64));
         __m256i p3 = _mm256_loadu_si256((const __m256i*)(p + 96));
-        ct0 = _mm256_xor_si256(p0, yc[0]);
-        ct1 = _mm256_xor_si256(p1, yc[1]);
-        ct2 = _mm256_xor_si256(p2, yc[2]);
-        ct3 = _mm256_xor_si256(p3, yc[3]);
+        ct0 = _mm256_xor_si256(p0, t0);
+        ct1 = _mm256_xor_si256(p1, t1);
+        ct2 = _mm256_xor_si256(p2, t2);
+        ct3 = _mm256_xor_si256(p3, t3);
         uint8_t* co = out + off * 16;
         _mm256_storeu_si256((__m256i*)(co), ct0);
         _mm256_storeu_si256((__m256i*)(co + 32), ct1);
@@ -476,20 +477,21 @@ static bool vaes_gcm_decrypt_impl(const aes_context& ctx,
         _mm256_set_m128i(c5, c4),
         _mm256_set_m128i(c7, c6),
     };
-    const __m256i inc8 = _mm256_set_epi32(0, 0, 0, 8, 0, 0, 0, 8);
+    const __m256i inc8 = _mm256_set_epi32(0x08000000, 0, 0, 0, 0x08000000, 0, 0, 0);
 
     size_t i = 0;
     for (; i + 8 <= num_blocks8; i += 8) {
-        vaes_encrypt_8blocks(yc[0], yc[1], yc[2], yc[3], rk, rounds);
+        __m256i t0 = yc[0], t1 = yc[1], t2 = yc[2], t3 = yc[3];  // 拷贝 counter
+        vaes_encrypt_8blocks(t0, t1, t2, t3, rk, rounds);
         const uint8_t* ct = ciphertext.data() + i * 16;
         __m256i c0v = _mm256_loadu_si256((const __m256i*)(ct));
         __m256i c1v = _mm256_loadu_si256((const __m256i*)(ct + 32));
         __m256i c2v = _mm256_loadu_si256((const __m256i*)(ct + 64));
         __m256i c3v = _mm256_loadu_si256((const __m256i*)(ct + 96));
-        __m256i p0 = _mm256_xor_si256(c0v, yc[0]);
-        __m256i p1 = _mm256_xor_si256(c1v, yc[1]);
-        __m256i p2 = _mm256_xor_si256(c2v, yc[2]);
-        __m256i p3 = _mm256_xor_si256(c3v, yc[3]);
+        __m256i p0 = _mm256_xor_si256(c0v, t0);
+        __m256i p1 = _mm256_xor_si256(c1v, t1);
+        __m256i p2 = _mm256_xor_si256(c2v, t2);
+        __m256i p3 = _mm256_xor_si256(c3v, t3);
         uint8_t* po = out + i * 16;
         _mm256_storeu_si256((__m256i*)(po), p0);
         _mm256_storeu_si256((__m256i*)(po + 32), p1);
