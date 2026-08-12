@@ -2,8 +2,11 @@ cmake_minimum_required(VERSION 3.20)
 
 project(jpssl VERSION 1.1.0 LANGUAGES CXX)
 
-# ARMv8 汇编源（src/ecp_nistz256_arm.S）需要 GNU/Apple 汇编器支持
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+# 汇编源需要 GNU/Apple 汇编器支持：
+#   ARMv8：src/ecp_nistz256_arm.S
+#   x86-64：src/ecdsa_p256_adx.S（GNU as，GCC/Clang）
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64" OR
+   (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64" AND NOT MSVC))
     enable_language(ASM)
 endif()
 
@@ -247,6 +250,10 @@ endif()
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     list(APPEND CPU_SOURCES ${X86_SOURCES})
+    # P-256 ECDSA ADX 快速路径（内联汇编版，GCC/Clang 跨平台；MSVC 用同目录 .asm）
+    if(NOT MSVC)
+        list(APPEND CPU_SOURCES src/ecdsa_p256_adx_inline.cpp)
+    endif()
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     if(JP_ENABLE_NEON)
         list(APPEND CPU_SOURCES ${ARM_SOURCES})

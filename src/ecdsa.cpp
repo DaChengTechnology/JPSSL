@@ -24,17 +24,36 @@
 #pragma intrinsic(_umul128, _addcarry_u64, _subborrow_u64)
 #endif
 
+// P-256 ADX 快速路径可用平台：
+//   - MSVC x64：src/ecdsa_p256_adx.asm（MASM）
+//   - GCC/Clang x86-64：src/ecdsa_p256_adx_inline.cpp（内联汇编，纯 asm 标签，
+//     由 src/ecdsa_p256_adx.S 转换而来，Linux/macOS 跨平台）
+// 依赖 BMI2 (MULX/SHLX/SHRX) + ADX (ADCX/ADOX)，运行时用 cpu_has_adx() 检测。
+// 注意：comb_mul_G / gather_w7 / nistz256 固定点路径目前仅 MSVC 实现，
+//       GCC/Clang 走 C++ comb_fixed_window（域/点运算仍用汇编加速）。
+#if (defined(_MSC_VER) && defined(_M_X64)) || \
+    (defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__)))
+#define JPSSL_P256_ADX_ASM 1
+#endif
+
 namespace jpssl {
 
-#if defined(_MSC_VER) && defined(_M_X64)
-// Windows x64 MASM 快速路径（src/ecdsa_p256_adx.asm，需 BMI2+ADX）
+#if defined(JPSSL_P256_ADX_ASM)
+// x86-64 ADX 快速路径（MSVC: src/ecdsa_p256_adx.asm；GCC/Clang: src/ecdsa_p256_adx.S）
 extern "C" void jpssl_p256_mul_adx(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
 extern "C" void jpssl_p256_sqr_adx(uint64_t r[4], const uint64_t a[4]);
 extern "C" void jpssl_p256_ord_mul_adx(uint64_t r[4], const uint64_t a[4], const uint64_t b[4]);
-extern "C" void jpssl_p256_dbl(uint64_t r[12], const uint64_t p[12]);
-extern "C" void jpssl_p256_madd(uint64_t r[12], const uint64_t p[12], const uint64_t q[12]);
 extern "C" void jpssl_p256_inv_adx(uint64_t r[4], const uint64_t a[4]);
 extern "C" void jpssl_p256_ord_inv_adx(uint64_t r[4], const uint64_t a[4]);
+extern "C" void ecp_nistz256_point_double(uint64_t r[12], const uint64_t p[12]);
+extern "C" void ecp_nistz256_point_add_affine(uint64_t r[12],
+                                              const uint64_t p[12],
+                                              const uint64_t q[8]);
+#endif
+#if defined(_MSC_VER) && defined(_M_X64)
+// 仅 MSVC 的符号（Linux 上对应路径走 C++，不引用这些）
+extern "C" void jpssl_p256_dbl(uint64_t r[12], const uint64_t p[12]);
+extern "C" void jpssl_p256_madd(uint64_t r[12], const uint64_t p[12], const uint64_t q[12]);
 extern "C" void jpssl_p256_comb_mul_G(uint64_t r[12], const uint64_t k[4],
                                       const void* table, const uint64_t one[4]);
 extern "C" void jpssl_p256_gather_w7(uint64_t val[8], const uint64_t* table,
@@ -42,10 +61,6 @@ extern "C" void jpssl_p256_gather_w7(uint64_t val[8], const uint64_t* table,
 extern "C" void jpssl_p256_gather_w7_avx2(uint64_t val[8], const uint64_t* table,
                                           unsigned int index);
 extern "C" void jpssl_p256_neg(uint64_t r[4], const uint64_t a[4]);
-extern "C" void ecp_nistz256_point_double(uint64_t r[12], const uint64_t p[12]);
-extern "C" void ecp_nistz256_point_add_affine(uint64_t r[12],
-                                              const uint64_t p[12],
-                                              const uint64_t q[8]);
 #endif
 
 namespace {
@@ -332,7 +347,7 @@ static void p256_reduce_special(uint64_t t[8]) {
 
 template <int N>
 static void mont_mul(bn<N>* r, const bn<N>* a, const bn<N>* b, const mod_ctx<N>& M) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if defined(JPSSL_P256_ADX_ASM)
     if (M.special == 1 && g_p256_adx_ok) {
         jpssl_p256_mul_adx((uint64_t*)r->v, (const uint64_t*)a->v, (const uint64_t*)b->v);
         return;
@@ -365,7 +380,7 @@ static void mont_mul(bn<N>* r, const bn<N>* a, const bn<N>* b, const mod_ctx<N>&
 
 template <int N>
 static void mont_sqr(bn<N>* r, const bn<N>* a, const mod_ctx<N>& M) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if defined(JPSSL_P256_ADX_ASM)
     if (N == 4 && M.special == 1 && g_p256_adx_ok) {
         jpssl_p256_sqr_adx((uint64_t*)r->v, (const uint64_t*)a->v);
         return;
@@ -430,7 +445,7 @@ static void mont_pow(bn<N>* r, const bn<N>* base, const mod_ctx<N>& M,
 // r = a^{-1} mod m（Fermat：a^{m-2}，m 为奇素数）
 template <int N>
 static void mod_inv(bn<N>* r, const bn<N>* a, const mod_ctx<N>& M) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if defined(JPSSL_P256_ADX_ASM)
     if (N == 4 && M.special == 1 && g_p256_adx_ok) {
         // P-256 素数域专用加法链求逆：255 sq + 12 mul（addchain v0.4.0，
         // 与 crypto/internal/nistec/fiat/p256_invert.go 同源），比 Fermat 链快 ~1.5 倍
@@ -540,8 +555,9 @@ static void jac_inf(jac_point<N>* P, const mod_ctx<N>& M) {
 // 因此无需分支。
 template <int N>
 static void jac_dbl(jac_point<N>* R, const jac_point<N>* P, const mod_ctx<N>& M) {
-#if defined(_MSC_VER) && defined(_M_X64)
-    if (N == 4 && M.special == 1 && g_p256_adx_ok) {
+#if defined(JPSSL_P256_ADX_ASM)
+    // 汇编 point_double 不处理 Z=0（无穷远），哨兵由 C++ 路径保持稳定
+    if (N == 4 && M.special == 1 && g_p256_adx_ok && !bn_is_zero(&P->Z)) {
         ecp_nistz256_point_double((uint64_t*)R, (const uint64_t*)P);
         return;
     }
@@ -591,7 +607,7 @@ static void jac_dbl(jac_point<N>* R, const jac_point<N>* P, const mod_ctx<N>& M)
 template <int N>
 static void pt_madd(jac_point<N>* R, const jac_point<N>* P,
                     const jac_point<N>* Q, const mod_ctx<N>& M) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if defined(JPSSL_P256_ADX_ASM)
     if (N == 4 && M.special == 1 && g_p256_adx_ok) {
         ecp_nistz256_point_add_affine((uint64_t*)R, (const uint64_t*)P,
                                       (const uint64_t*)&Q->X);
@@ -889,15 +905,16 @@ template <int N>
 static void ct_select(jac_point<N>* Q, const aff_point<N>* table, int d,
                       const mod_ctx<N>& M) {
     uint64_t x[N], y[N];
+    // any = 全 1（d 有效）或 0（d==0 跳过）：一次位运算替代 15 次 or 链
+    uint64_t any = 0 - (uint64_t)(d != 0);
+    // 15-way 常数时间选择（掩码累积，访问模式与 d 无关）
     for (int i = 0; i < N; ++i) { x[i] = 0; y[i] = 0; }
-    uint64_t any = 0;
     for (int i = 0; i < 15; ++i) {
         uint64_t m = 0 - (uint64_t)(d == i + 1);
         for (int j = 0; j < N; ++j) {
             x[j] |= m & table[i].X.v[j];
             y[j] |= m & table[i].Y.v[j];
         }
-        any |= m;
     }
     for (int j = 0; j < N; ++j) {
         Q->X.v[j] = x[j];
@@ -1248,7 +1265,7 @@ static void ensure256() {
                                 P256_Gx_BYTES, P256_Gy_BYTES);
         C256.MP.special = 1;  // P-256 素数域走 nistz256 特殊形式归约
         C256.MN.special = 2;  // P-256 群阶走 ord 特殊形式归约
-#if defined(_MSC_VER) && defined(_M_X64)
+#if defined(JPSSL_P256_ADX_ASM)
         g_p256_adx_ok = cpu_has_adx();
 #elif defined(__aarch64__) && !defined(__APPLE__)
         g_p256_arm_ok = true;
