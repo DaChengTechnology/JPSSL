@@ -3817,4 +3817,758 @@ lea    rsp,QWORD PTR [rsi]
     ret
 .size   ecp_nistz256_point_add_affine, .-ecp_nistz256_point_add_affine
 
+/* ─────────────────────────────────────────────────────────────
+ * jpssl_p256_madd(r[12], p[12], q[12]): Jacobian 混合加 R=P+Q（SysV ABI）
+ * 移植自 Windows 版 ecdsa_p256_adx.asm；H==0 例外分支调用
+ * ecp_nistz256_point_double 替代 jpssl_p256_dbl；栈帧 +8 保持
+ * call 前 16B 对齐（被调 point_double 用 movdqa）。
+ * ───────────────────────────────────────────────────────────── */
+.p2align 5
+.globl  jpssl_p256_madd
+.type   jpssl_p256_madd, @function
+jpssl_p256_madd:
+.pushsection .rodata
+.p2align 3
+.LLjpssl_p256_field_one:
+.quad 0x1
+.quad 0xffffffff
+.quad 0xffffffffffffffff
+.quad 0xfffffffe
+.popsection
+push    rbp
+push    rbx
+push    r12
+push    r13
+push    r14
+push    r15
+push    rsi
+push    rdi
+sub     rsp, 584
+mov     rbx, rdx
+mov     r15, 0xffffffff00000001 /* p word 3 */
+mov     r14, 0xffffffff /* p word 1 */
+mov     rax, [rsi] /* X1 */
+mov     rcx, [rsi+8]
+mov     rdx, [rsi+16]
+mov     r8, [rsi+24]
+mov     [rsp+0], rax
+mov     [rsp+8], rcx
+mov     [rsp+16], rdx
+mov     [rsp+24], r8
+mov     rax, [rsi+32] /* Y1 */
+mov     rcx, [rsi+40]
+mov     rdx, [rsi+48]
+mov     r8, [rsi+56]
+mov     [rsp+32], rax
+mov     [rsp+40], rcx
+mov     [rsp+48], rdx
+mov     [rsp+56], r8
+mov     rax, [rsi+64] /* Z1 */
+mov     rcx, [rsi+72]
+mov     rdx, [rsi+80]
+mov     r8, [rsi+88]
+mov     [rsp+64], rax
+mov     [rsp+72], rcx
+mov     [rsp+80], rdx
+mov     [rsp+88], r8
+mov     rax, [rbx] /* Xq */
+mov     rcx, [rbx+8]
+mov     rdx, [rbx+16]
+mov     r8, [rbx+24]
+mov     [rsp+96], rax
+mov     [rsp+104], rcx
+mov     [rsp+112], rdx
+mov     [rsp+120], r8
+mov     rax, [rbx+32] /* Yq */
+mov     rcx, [rbx+40]
+mov     rdx, [rbx+48]
+mov     r8, [rbx+56]
+mov     [rsp+128], rax
+mov     [rsp+136], rcx
+mov     [rsp+144], rdx
+mov     [rsp+152], r8
+mov     rax, [rbx+64] /* Zq */
+mov     rcx, [rbx+72]
+mov     rdx, [rbx+80]
+mov     r8, [rbx+88]
+mov     [rsp+160], rax
+mov     [rsp+168], rcx
+mov     [rsp+176], rdx
+mov     [rsp+184], r8
+mov     rax, [rsp+64]
+or      rax, [rsp+72]
+or      rax, [rsp+80]
+or      rax, [rsp+88]
+jnz     .Lmadd_p_notinf
+mov     rax, [rsp+96]
+mov     rcx, [rsp+104]
+mov     rdx, [rsp+112]
+mov     r8, [rsp+120]
+mov     [rbp], rax
+mov     [rbp+8], rcx
+mov     [rbp+16], rdx
+mov     [rbp+24], r8
+mov     rax, [rsp+128]
+mov     rcx, [rsp+136]
+mov     rdx, [rsp+144]
+mov     r8, [rsp+152]
+mov     [rbp+32], rax
+mov     [rbp+40], rcx
+mov     [rbp+48], rdx
+mov     [rbp+56], r8
+mov     rax, [rsp+160]
+mov     rcx, [rsp+168]
+mov     rdx, [rsp+176]
+mov     r8, [rsp+184]
+mov     [rbp+64], rax
+mov     [rbp+72], rcx
+mov     [rbp+80], rdx
+mov     [rbp+88], r8
+jmp     .Lmadd_done
+.Lmadd_p_notinf:
+lea     rdi, [rsp+192]
+lea     rsi, [rsp+64]
+call    jpssl_p256_sqr_adx
+lea     rdi, [rsp+224]
+lea     rsi, [rsp+96]
+lea     rdx, [rsp+192]
+call    jpssl_p256_mul_adx
+lea     rdi, [rsp+256]
+lea     rsi, [rsp+128]
+lea     rdx, [rsp+64]
+call    jpssl_p256_mul_adx
+lea     rdi, [rsp+256]
+lea     rsi, [rsp+256]
+lea     rdx, [rsp+192]
+call    jpssl_p256_mul_adx
+mov     rax, [rsp+224]
+mov     rcx, [rsp+232]
+mov     rdx, [rsp+240]
+mov     r8, [rsp+248]
+sub     rax, [rsp+0]
+sbb     rcx, [rsp+8]
+sbb     rdx, [rsp+16]
+sbb     r8, [rsp+24]
+setc    r9b
+movzx   r9d, r9b
+mov     r10, rax
+mov     r11, rcx
+mov     r12, rdx
+mov     r13, r8
+add     r10, -1
+adc     r11, r14
+adc     r12, 0
+adc     r13, r15
+neg     r9
+cmovc   rax, r10
+cmovc   rcx, r11
+cmovc   rdx, r12
+cmovc   r8, r13
+mov     [rsp+288], rax
+mov     [rsp+296], rcx
+mov     [rsp+304], rdx
+mov     [rsp+312], r8
+mov     rax, [rsp+256]
+mov     rcx, [rsp+264]
+mov     rdx, [rsp+272]
+mov     r8, [rsp+280]
+sub     rax, [rsp+32]
+sbb     rcx, [rsp+40]
+sbb     rdx, [rsp+48]
+sbb     r8, [rsp+56]
+setc    r9b
+movzx   r9d, r9b
+mov     r10, rax
+mov     r11, rcx
+mov     r12, rdx
+mov     r13, r8
+add     r10, -1
+adc     r11, r14
+adc     r12, 0
+adc     r13, r15
+neg     r9
+cmovc   rax, r10
+cmovc   rcx, r11
+cmovc   rdx, r12
+cmovc   r8, r13
+mov     [rsp+320], rax
+mov     [rsp+328], rcx
+mov     [rsp+336], rdx
+mov     [rsp+344], r8
+mov     rax, [rsp+288]
+or      rax, [rsp+296]
+or      rax, [rsp+304]
+or      rax, [rsp+312]
+jnz     .Lmadd_h_nonzero
+mov     rax, [rsp+320]
+or      rax, [rsp+328]
+or      rax, [rsp+336]
+or      rax, [rsp+344]
+jnz     .Lmadd_h_inf
+call    ecp_nistz256_point_double
+jmp     .Lmadd_done
+.Lmadd_h_inf:
+lea     rbx, [rip + .LLjpssl_p256_field_one]
+mov     rax, [rbx]
+mov     rcx, [rbx+8]
+mov     rdx, [rbx+16]
+mov     r8, [rbx+24]
+mov     [rbp], rax
+mov     [rbp+8], rcx
+mov     [rbp+16], rdx
+mov     [rbp+24], r8
+mov     [rbp+32], rax
+mov     [rbp+40], rcx
+mov     [rbp+48], rdx
+mov     [rbp+56], r8
+mov QWORD PTR [rbp+64], 0
+mov QWORD PTR [rbp+72], 0
+mov QWORD PTR [rbp+80], 0
+mov QWORD PTR [rbp+88], 0
+jmp     .Lmadd_done
+.Lmadd_h_nonzero:
+mov     rax, [rsp+320]
+mov     rcx, [rsp+328]
+mov     rdx, [rsp+336]
+mov     r8, [rsp+344]
+add     rax, rax
+adc     rcx, rcx
+adc     rdx, rdx
+adc     r8, r8
+setc    r9b
+movzx   r9d, r9b
+sub     rax, -1
+sbb     rcx, r14
+sbb     rdx, 0
+sbb     r8, r15
+setc    r10b
+movzx   r10d, r10b
+xor     r9d, 1
+and     r9d, r10d
+neg     r9
+mov     r10, r9
+and     r10, r14
+mov     r11, r9
+and     r11, r15
+add     rax, r9
+adc     rcx, r10
+adc     rdx, 0
+adc     r8, r11
+mov     [rsp+352], rax
+mov     [rsp+360], rcx
+mov     [rsp+368], rdx
+mov     [rsp+376], r8
+mov     rax, [rsp+288]
+mov     rcx, [rsp+296]
+mov     rdx, [rsp+304]
+mov     r8, [rsp+312]
+add     rax, rax
+adc     rcx, rcx
+adc     rdx, rdx
+adc     r8, r8
+setc    r9b
+movzx   r9d, r9b
+sub     rax, -1
+sbb     rcx, r14
+sbb     rdx, 0
+sbb     r8, r15
+setc    r10b
+movzx   r10d, r10b
+xor     r9d, 1
+and     r9d, r10d
+neg     r9
+mov     r10, r9
+and     r10, r14
+mov     r11, r9
+and     r11, r15
+add     rax, r9
+adc     rcx, r10
+adc     rdx, 0
+adc     r8, r11
+mov     [rsp+384], rax
+mov     [rsp+392], rcx
+mov     [rsp+400], rdx
+mov     [rsp+408], r8
+lea     rdi, [rsp+384]
+lea     rsi, [rsp+384]
+call    jpssl_p256_sqr_adx
+lea     rdi, [rsp+416]
+lea     rsi, [rsp+288]
+lea     rdx, [rsp+384]
+call    jpssl_p256_mul_adx
+lea     rdi, [rsp+448]
+lea     rsi, [rsp+0]
+lea     rdx, [rsp+384]
+call    jpssl_p256_mul_adx
+lea     rdi, [rsp+480]
+lea     rsi, [rsp+352]
+call    jpssl_p256_sqr_adx
+mov     rax, [rsp+480]
+mov     rcx, [rsp+488]
+mov     rdx, [rsp+496]
+mov     r8, [rsp+504]
+sub     rax, [rsp+416]
+sbb     rcx, [rsp+424]
+sbb     rdx, [rsp+432]
+sbb     r8, [rsp+440]
+setc    r9b
+movzx   r9d, r9b
+mov     r10, rax
+mov     r11, rcx
+mov     r12, rdx
+mov     r13, r8
+add     r10, -1
+adc     r11, r14
+adc     r12, 0
+adc     r13, r15
+neg     r9
+cmovc   rax, r10
+cmovc   rcx, r11
+cmovc   rdx, r12
+cmovc   r8, r13
+mov     [rsp+480], rax
+mov     [rsp+488], rcx
+mov     [rsp+496], rdx
+mov     [rsp+504], r8
+mov     rax, [rsp+448]
+mov     rcx, [rsp+456]
+mov     rdx, [rsp+464]
+mov     r8, [rsp+472]
+add     rax, rax
+adc     rcx, rcx
+adc     rdx, rdx
+adc     r8, r8
+setc    r9b
+movzx   r9d, r9b
+sub     rax, -1
+sbb     rcx, r14
+sbb     rdx, 0
+sbb     r8, r15
+setc    r10b
+movzx   r10d, r10b
+xor     r9d, 1
+and     r9d, r10d
+neg     r9
+mov     r10, r9
+and     r10, r14
+mov     r11, r9
+and     r11, r15
+add     rax, r9
+adc     rcx, r10
+adc     rdx, 0
+adc     r8, r11
+mov     r9, [rsp+480]
+mov     r10, [rsp+488]
+mov     r11, [rsp+496]
+mov     rbx, [rsp+504]
+sub     r9, rax
+sbb     r10, rcx
+sbb     r11, rdx
+sbb     rbx, r8
+setc    r12b
+movzx   r12d, r12b /* r12 = borrow */
+mov     r13, r9
+mov     rax, r10
+mov     rcx, r11
+mov     rdx, rbx
+add     r13, -1
+adc     rax, r14
+adc     rcx, 0
+adc     rdx, r15 /* r13,rax,rcx,rdx = a-b+p */
+neg     r12 /* CF = borrow */
+cmovc   r9, r13
+cmovc   r10, rax
+cmovc   r11, rcx
+cmovc   rbx, rdx
+mov     [rsp+480], r9
+mov     [rsp+488], r10
+mov     [rsp+496], r11
+mov     [rsp+504], rbx
+mov     rax, [rsp+448]
+mov     rcx, [rsp+456]
+mov     rdx, [rsp+464]
+mov     r8, [rsp+472]
+sub     rax, [rsp+480]
+sbb     rcx, [rsp+488]
+sbb     rdx, [rsp+496]
+sbb     r8, [rsp+504]
+setc    r9b
+movzx   r9d, r9b
+mov     r10, rax
+mov     r11, rcx
+mov     r12, rdx
+mov     r13, r8
+add     r10, -1
+adc     r11, r14
+adc     r12, 0
+adc     r13, r15
+neg     r9
+cmovc   rax, r10
+cmovc   rcx, r11
+cmovc   rdx, r12
+cmovc   r8, r13
+mov     [rsp+320], rax
+mov     [rsp+328], rcx
+mov     [rsp+336], rdx
+mov     [rsp+344], r8
+lea     rdi, [rsp+512]
+lea     rsi, [rsp+352]
+lea     rdx, [rsp+320]
+call    jpssl_p256_mul_adx
+lea     rdi, [rsp+320]
+lea     rsi, [rsp+32]
+lea     rdx, [rsp+416]
+call    jpssl_p256_mul_adx
+mov     rax, [rsp+320]
+mov     rcx, [rsp+328]
+mov     rdx, [rsp+336]
+mov     r8, [rsp+344]
+add     rax, rax
+adc     rcx, rcx
+adc     rdx, rdx
+adc     r8, r8
+setc    r9b
+movzx   r9d, r9b
+sub     rax, -1
+sbb     rcx, r14
+sbb     rdx, 0
+sbb     r8, r15
+setc    r10b
+movzx   r10d, r10b
+xor     r9d, 1
+and     r9d, r10d
+neg     r9
+mov     r10, r9
+and     r10, r14
+mov     r11, r9
+and     r11, r15
+add     rax, r9
+adc     rcx, r10
+adc     rdx, 0
+adc     r8, r11
+mov     r9, [rsp+512]
+mov     r10, [rsp+520]
+mov     r11, [rsp+528]
+mov     rbx, [rsp+536]
+sub     r9, rax
+sbb     r10, rcx
+sbb     r11, rdx
+sbb     rbx, r8
+setc    r12b
+movzx   r12d, r12b /* r12 = borrow */
+mov     r13, r9
+mov     rax, r10
+mov     rcx, r11
+mov     rdx, rbx
+add     r13, -1
+adc     rax, r14
+adc     rcx, 0
+adc     rdx, r15 /* r13,rax,rcx,rdx = a-b+p */
+neg     r12 /* CF = borrow */
+cmovc   r9, r13
+cmovc   r10, rax
+cmovc   r11, rcx
+cmovc   rbx, rdx
+mov     [rsp+512], r9
+mov     [rsp+520], r10
+mov     [rsp+528], r11
+mov     [rsp+536], rbx
+lea     rdi, [rsp+544]
+lea     rsi, [rsp+64]
+lea     rdx, [rsp+288]
+call    jpssl_p256_mul_adx
+mov     rax, [rsp+544]
+mov     rcx, [rsp+552]
+mov     rdx, [rsp+560]
+mov     r8, [rsp+568]
+add     rax, rax
+adc     rcx, rcx
+adc     rdx, rdx
+adc     r8, r8
+setc    r9b
+movzx   r9d, r9b
+sub     rax, -1
+sbb     rcx, r14
+sbb     rdx, 0
+sbb     r8, r15
+setc    r10b
+movzx   r10d, r10b
+xor     r9d, 1
+and     r9d, r10d
+neg     r9
+mov     r10, r9
+and     r10, r14
+mov     r11, r9
+and     r11, r15
+add     rax, r9
+adc     rcx, r10
+adc     rdx, 0
+adc     r8, r11
+mov     [rsp+544], rax
+mov     [rsp+552], rcx
+mov     [rsp+560], rdx
+mov     [rsp+568], r8
+mov     rax, [rsp+160]
+or      rax, [rsp+168]
+or      rax, [rsp+176]
+or      rax, [rsp+184]
+neg     rax /* CF = (Zq != 0) */
+sbb     r9, r9 /* r9 = -(Zq != 0) */
+mov     r10, r9
+not     r10 /* r10 = mask_q (all-ones if Zq==0) */
+mov     rax, [rsp+480]
+and     rax, r9
+mov     rcx, [rsp+0]
+and     rcx, r10
+or      rax, rcx
+mov     [rbp], rax
+mov     rax, [rsp+488]
+and     rax, r9
+mov     rcx, [rsp+8]
+and     rcx, r10
+or      rax, rcx
+mov     [rbp+8], rax
+mov     rax, [rsp+496]
+and     rax, r9
+mov     rcx, [rsp+16]
+and     rcx, r10
+or      rax, rcx
+mov     [rbp+16], rax
+mov     rax, [rsp+504]
+and     rax, r9
+mov     rcx, [rsp+24]
+and     rcx, r10
+or      rax, rcx
+mov     [rbp+24], rax
+mov     rax, [rsp+512]
+and     rax, r9
+mov     rcx, [rsp+32]
+and     rcx, r10
+or      rax, rcx
+mov     [rbp+32], rax
+mov     rax, [rsp+520]
+and     rax, r9
+mov     rcx, [rsp+40]
+and     rcx, r10
+or      rax, rcx
+mov     [rbp+40], rax
+mov     rax, [rsp+528]
+and     rax, r9
+mov     rcx, [rsp+48]
+and     rcx, r10
+or      rax, rcx
+mov     [rbp+48], rax
+mov     rax, [rsp+536]
+and     rax, r9
+mov     rcx, [rsp+56]
+and     rcx, r10
+or      rax, rcx
+mov     [rbp+56], rax
+mov     rax, [rsp+544]
+and     rax, r9
+mov     rcx, [rsp+64]
+and     rcx, r10
+or      rax, rcx
+mov     [rbp+64], rax
+mov     rax, [rsp+552]
+and     rax, r9
+mov     rcx, [rsp+72]
+and     rcx, r10
+or      rax, rcx
+mov     [rbp+72], rax
+mov     rax, [rsp+560]
+and     rax, r9
+mov     rcx, [rsp+80]
+and     rcx, r10
+or      rax, rcx
+mov     [rbp+80], rax
+mov     rax, [rsp+568]
+and     rax, r9
+mov     rcx, [rsp+88]
+and     rcx, r10
+or      rax, rcx
+mov     [rbp+88], rax
+.Lmadd_done:
+add     rsp, 584
+pop     rdi
+pop     rsi
+pop     r15
+pop     r14
+pop     r13
+pop     r12
+pop     rbx
+pop     rbp
+ret
+.size   jpssl_p256_madd, .-jpssl_p256_madd
+
+/* ─────────────────────────────────────────────────────────────
+ * jpssl_p256_comb_mul_G(r[12], k[4], table, one[4]):
+ *   64 窗口 4-bit comb 固定点标量乘（常数时间）
+ *   table[i][d-1] = d*2^(4i)*G（Montgomery，行步长 960B）
+ * ───────────────────────────────────────────────────────────── */
+.p2align 5
+.globl  jpssl_p256_comb_mul_G
+.type   jpssl_p256_comb_mul_G, @function
+jpssl_p256_comb_mul_G:
+push    rbp
+push    rbx
+push    r12
+push    r13
+push    r14
+push    r15
+push    rsi
+push    rdi
+sub     rsp, 232
+mov     rbx, rdx
+mov     rbp, rcx
+mov     rax, [rsi]
+mov     [rsp+192], rax
+mov     rax, [rsi+8]
+mov     [rsp+200], rax
+mov     rax, [rsi+16]
+mov     [rsp+208], rax
+mov     rax, [rsi+24]
+mov     [rsp+216], rax
+mov     rax, [rbp]
+mov     [rsp+0], rax
+mov     rax, [rbp+8]
+mov     [rsp+8], rax
+mov     rax, [rbp+16]
+mov     [rsp+16], rax
+mov     rax, [rbp+24]
+mov     [rsp+24], rax
+mov     rax, [rbp]
+mov     [rsp+32], rax
+mov     rax, [rbp+8]
+mov     [rsp+40], rax
+mov     rax, [rbp+16]
+mov     [rsp+48], rax
+mov     rax, [rbp+24]
+mov     [rsp+56], rax
+xor     eax, eax
+mov     [rsp+64], rax
+mov     [rsp+72], rax
+mov     [rsp+80], rax
+mov     [rsp+88], rax
+xor     r12, r12 /* window index */
+mov     r15, rbx /* window base pointer */
+.Lcomb_loop:
+mov     rax, [rsp+192]
+and     rax, 15
+mov     [rsp+224], rax
+xor     r13, r13 /* any = 0 */
+pxor    xmm0, xmm0
+movdqu  [rsp+96], xmm0
+movdqu  [rsp+112], xmm0
+movdqu  [rsp+128], xmm0
+movdqu  [rsp+144], xmm0
+movdqu  [rsp+160], xmm0
+movdqu  [rsp+176], xmm0
+xor     r14, r14 /* entry byte offset */
+.Lcomb_sel:
+mov     rax, [rsp+224]
+mov     rcx, r14
+shr     rcx, 6
+inc     rcx
+xor     rdx, rdx
+cmp     rax, rcx
+sete    dl
+neg     rdx
+or      r13, rdx
+mov     rax, [r15+r14]
+and     rax, rdx
+or      [rsp+96], rax
+mov     rax, [r15+r14+8]
+and     rax, rdx
+or      [rsp+104], rax
+mov     rax, [r15+r14+16]
+and     rax, rdx
+or      [rsp+112], rax
+mov     rax, [r15+r14+24]
+and     rax, rdx
+or      [rsp+120], rax
+mov     rax, [r15+r14+32]
+and     rax, rdx
+or      [rsp+128], rax
+mov     rax, [r15+r14+40]
+and     rax, rdx
+or      [rsp+136], rax
+mov     rax, [r15+r14+48]
+and     rax, rdx
+or      [rsp+144], rax
+mov     rax, [r15+r14+56]
+and     rax, rdx
+or      [rsp+152], rax
+add     r14, 64
+cmp     r14, 960
+jb      .Lcomb_sel
+mov     rax, [rbp]
+and     rax, r13
+mov     [rsp+160], rax
+mov     rax, [rbp+8]
+and     rax, r13
+mov     [rsp+168], rax
+mov     rax, [rbp+16]
+and     rax, r13
+mov     [rsp+176], rax
+mov     rax, [rbp+24]
+and     rax, r13
+mov     [rsp+184], rax
+lea     rdi, [rsp+0]
+lea     rsi, [rsp+0]
+lea    rdx,QWORD PTR [rsp+96]
+call    ecp_nistz256_point_add_affine
+mov     rax, [rsp+192]
+mov     rcx, [rsp+200]
+mov     rdx, [rsp+208]
+mov     r8, [rsp+216]
+shrd    rax, rcx, 4
+shrd    rcx, rdx, 4
+shrd    rdx, r8, 4
+shr     r8, 4
+mov     [rsp+192], rax
+mov     [rsp+200], rcx
+mov     [rsp+208], rdx
+mov     [rsp+216], r8
+add     r15, 960
+inc     r12
+cmp     r12, 64
+jb      .Lcomb_loop
+mov     rax, [rsp+0]
+mov     [rbx], rax
+mov     rax, [rsp+8]
+mov     [rbx+8], rax
+mov     rax, [rsp+16]
+mov     [rbx+16], rax
+mov     rax, [rsp+24]
+mov     [rbx+24], rax
+mov     rax, [rsp+32]
+mov     [rbx+32], rax
+mov     rax, [rsp+40]
+mov     [rbx+40], rax
+mov     rax, [rsp+48]
+mov     [rbx+48], rax
+mov     rax, [rsp+56]
+mov     [rbx+56], rax
+mov     rax, [rsp+64]
+mov     [rbx+64], rax
+mov     rax, [rsp+72]
+mov     [rbx+72], rax
+mov     rax, [rsp+80]
+mov     [rbx+80], rax
+mov     rax, [rsp+88]
+mov     [rbx+88], rax
+add     rsp, 232
+pop     rdi
+pop     rsi
+pop     r15
+pop     r14
+pop     r13
+pop     r12
+pop     rbx
+pop     rbp
+ret
+.size   jpssl_p256_comb_mul_G, .-jpssl_p256_comb_mul_G
+
+
 #endif /* __x86_64__ */
