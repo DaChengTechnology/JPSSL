@@ -31,3 +31,4 @@ android/jpssl/build/
 android/**/.cxx/
 android/.idea/
 build-main-verify/
+benchmarks/results/
