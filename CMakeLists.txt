@@ -253,6 +253,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     # P-256 ECDSA ADX 快速路径（内联汇编版，GCC/Clang 跨平台；MSVC 用同目录 .asm）
     if(NOT MSVC)
         list(APPEND CPU_SOURCES src/ecdsa_p256_adx_inline.cpp)
+        # X25519 fe51 (radix-2^51) 域运算汇编原语（移植自 OpenSSL x25519-x86_64.pl，
+        # Apache-2.0）：x25519_fe51_mul/sqr/mul121666，需 BMI2+ADX
+        list(APPEND CPU_SOURCES src/x25519_fe51.S)
     endif()
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     if(JP_ENABLE_NEON)
