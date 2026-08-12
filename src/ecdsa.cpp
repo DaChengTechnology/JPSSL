@@ -29,8 +29,8 @@
 //   - GCC/Clang x86-64：src/ecdsa_p256_adx_inline.cpp（内联汇编，纯 asm 标签，
 //     由 src/ecdsa_p256_adx.S 转换而来，Linux/macOS 跨平台）
 // 依赖 BMI2 (MULX/SHLX/SHRX) + ADX (ADCX/ADOX)，运行时用 cpu_has_adx() 检测。
-// 注意：comb_mul_G / gather_w7 / nistz256 固定点路径目前仅 MSVC 实现，
-//       GCC/Clang 走 C++ comb_fixed_window（域/点运算仍用汇编加速）。
+// 固定点路径：comb_mul_G / madd（64 窗口 4-bit comb）在 MSVC（.asm）与
+// GCC/Clang（内联汇编）均已实现；gather_w7 / nistz256 37 帧 w7 表仅 MSVC。
 #if (defined(_MSC_VER) && defined(_M_X64)) || \
     (defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__)))
 #define JPSSL_P256_ADX_ASM 1
@@ -49,13 +49,15 @@ extern "C" void ecp_nistz256_point_double(uint64_t r[12], const uint64_t p[12]);
 extern "C" void ecp_nistz256_point_add_affine(uint64_t r[12],
                                               const uint64_t p[12],
                                               const uint64_t q[8]);
+// 固定点 64 窗口 4-bit comb（MSVC: .asm 内部用 jpssl_p256_madd；
+// GCC/Clang: 内联汇编版，加法直接调用 ecp_nistz256_point_add_affine 更高效）
+extern "C" void jpssl_p256_madd(uint64_t r[12], const uint64_t p[12], const uint64_t q[12]);
+extern "C" void jpssl_p256_comb_mul_G(uint64_t r[12], const uint64_t k[4],
+                                      const void* table, const uint64_t one[4]);
 #endif
 #if defined(_MSC_VER) && defined(_M_X64)
 // 仅 MSVC 的符号（Linux 上对应路径走 C++，不引用这些）
 extern "C" void jpssl_p256_dbl(uint64_t r[12], const uint64_t p[12]);
-extern "C" void jpssl_p256_madd(uint64_t r[12], const uint64_t p[12], const uint64_t q[12]);
-extern "C" void jpssl_p256_comb_mul_G(uint64_t r[12], const uint64_t k[4],
-                                      const void* table, const uint64_t one[4]);
 extern "C" void jpssl_p256_gather_w7(uint64_t val[8], const uint64_t* table,
                                      unsigned int index);
 extern "C" void jpssl_p256_gather_w7_avx2(uint64_t val[8], const uint64_t* table,
@@ -950,7 +952,8 @@ template <int N>
 static void comb_fixed_window(jac_point<N>* R, const bn<N>* k,
                               const aff_point<N> (*table)[15], const mod_ctx<N>& M,
                               int windows) {
-#if defined(_MSC_VER) && defined(_M_X64)
+#if defined(JPSSL_P256_ADX_ASM)
+    // P-256 固定基点 comb 走汇编（MSVC .asm / GCC/Clang 内联汇编版）
     if (N == 4 && M.special == 1 && g_p256_adx_ok && windows == 64) {
         jpssl_p256_comb_mul_G((uint64_t*)R, (const uint64_t*)k->v, table,
                               (const uint64_t*)M.one.v);
