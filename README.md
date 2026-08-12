@@ -24,6 +24,7 @@
 - [HarmonyOS / OpenHarmony (鸿蒙) 构建](#harmonyos--openharmony-鸿蒙-构建)
 - [TLS 稳定性测试](#tls-稳定性测试)
 - [TLS 大消息自动分片与合并](#tls-大消息自动分片与合并)
+- [记录层 / 消息层 Fuzz 测试](#记录层--消息层-fuzz-测试)
 - [平台适配说明](#平台适配说明)
 - [动态库 / 静态库](#动态库--静态库)
 - [命令行工具](#命令行工具)
@@ -256,6 +257,81 @@ ctest --test-dir build-win -R test_tls_stability --output-on-failure
   消息边界由应用层协议负责（如 HTTP Content-Length）。
 - 测试 `test_tls_large_msg`：覆盖 16KiB 边界、64KiB 长度字段边界、256KiB、
   TLS 1.2 以及 socket 端到端 128KiB 单次 send / 单次 recv。
+
+## 记录层 / 消息层 Fuzz 测试
+
+三个 fuzz harness 覆盖 TLS/DTLS 记录层与其周边解析路径，任何畸形输入都必须
+被安全拒绝（不崩溃、不越界、不死循环）。每个 harness 均为**确定性回归模式**
+（固定种子 PRNG，可直接作为 CTest 测试）+ **libFuzzer 模式**（编译期
+`-DJP_FUZZ_LIBFUZZER`，需 clang）双用。
+
+- `test_tls_record_fuzz`（`tests/fuzz_tls_record.cpp`）：`tls_decrypt()`，
+  TLS 1.2（AES-GCM / CBC / ChaCha20-Poly1305 / CBC-SHA384）与 TLS 1.3
+  （AES-GCM / ChaCha20 / CCM / CCM-8 / SM4-GCM / SM4-CCM）全部套件 ×
+  客户端/服务端双方向；语料含纯随机、受控头部、真实加密记录变异
+  （比特翻转 / 截断 / 长度字段篡改 / 多记录拼接）与边界输入。
+- `test_dtls_record_fuzz`（`tests/fuzz_dtls_record.cpp`）：
+  `dtls_unprotect_application()`，DTLS 1.2（RFC 6347）与 DTLS 1.3（RFC 9147）
+  的 AEAD 记录层，含 DTLS 1.3 首字节位组合穷举（`0x20`/`0x10`/seq16/has_len/
+  epoch）、epoch/seq/长度字段篡改与真实数据报变异。
+- `test_tls_handshake_fuzz`（`tests/fuzz_tls_handshake.cpp`）：记录层周边——
+  TLS 1.3 0-RTT early data 解密（`tls13_decrypt_early_data`）、TLS 1.3/1.2
+  服务端 flight 解析（`tls13_process_server_flight` / `tls12_process_server_flight`，
+  真实握手状态 + 变异 flight 覆盖握手消息边界）。
+
+```bash
+# CTest 常规运行（Release 构建，约 6s）
+ctest --test-dir build-main-verify -R "record_fuzz|handshake_fuzz" --output-on-failure
+
+# 直接运行：控制迭代数与种子
+./build-main-verify/tests/test_tls_record_fuzz    --iters 100000 --seed 0x1234abcd
+./build-main-verify/tests/test_dtls_record_fuzz   --iters 100000 --seed 0x5678ef90
+./build-main-verify/tests/test_tls_handshake_fuzz --iters 100000 --seed 0x9abc1234
+
+# ASan/UBSan 构建（内存错误 → 进程崩溃，由 CTest 捕获）
+cmake -B build-fuzz-asan -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -O2 -g -U_FORTIFY_SOURCE"
+cmake --build build-fuzz-asan --target test_tls_record_fuzz test_dtls_record_fuzz test_tls_handshake_fuzz
+./build-fuzz-asan/tests/test_tls_record_fuzz --iters 100000 --seed 0xdeadbeef
+
+# libFuzzer（需要支持 -fsanitize=fuzzer 的 clang）
+cmake -B build-fuzz -DJP_ENABLE_LIBFUZZER=ON
+cmake --build build-fuzz --target fuzz_tls_record fuzz_dtls_record fuzz_tls_handshake
+./build-fuzz/tests/fuzz_tls_record -max_total_time=300
+```
+
+说明：
+
+- 会话对由测试内手工构造（随机密钥材料，TLS 1.3 另填 traffic secrets），
+  不依赖完整握手，毫秒级即可对全部套件建会；`tls_encrypt` /
+  `tls13_encrypt_early_data` / `dtls_protect_application` 生成真实有效记录
+  作为变异基底，并自检解密成功。
+- ASan 构建需 `-U_FORTIFY_SOURCE`（Ubuntu 默认 fortify 与 ASan 冲突）；
+  `rsa_mont_asm.cpp` / `sm2_mont_asm.cpp` 两个全寄存器手写内联汇编在
+  ASan 插桩下无法编译，构建时自动附加 `-fno-sanitize=address,undefined`
+  （普通构建为 no-op，见 `CMakeLists.txt`）。
+- fuzz 已发现并修复的缺陷（均有回归语料/注释）：TLS 1.2 AES-GCM 记录
+  `rlen∈[16,23]` 时 `rlen-24` 无符号下溢导致巨大长度内存访问
+  （`src/tls_router.cpp`）；TLS 1.3 ServerHello 解析缺最小长度检查、
+  扩展循环无消息边界、回退偏移 50 读取、加密 record 头读取越界
+  （`src/tls13_client.cpp`，共 4 处）。
+- `tls_connection::recv` 依赖 socket 内部缓冲（`rbuf_` 私有），其核心记录
+  解析（`read_record` + `tls_decrypt`）已由 `test_tls_record_fuzz` 覆盖。
+
+### Windows（MSVC）
+
+- 三个 fuzz 回归目标（`test_tls_record_fuzz` / `test_dtls_record_fuzz` /
+  `test_tls_handshake_fuzz`）随 `build-win` 等 Windows 构建自动编译并注册
+  CTest，`ctest -R "record_fuzz|handshake_fuzz"` 可直接运行；
+  fuzz 源文件为纯标准库 + 本库头，无 POSIX 依赖。
+- 含中文字符串/注释的源文件无需额外设置：顶层 `CMakeLists.txt` 的 MSVC
+  分支已全局提供 `/utf-8`（同时设置源与执行字符集），避免 C4819 与字符串错乱。
+- libFuzzer 目标（`fuzz_tls_record` 等）依赖 clang 的 `-fsanitize=fuzzer`，
+  MSVC 下 `JP_ENABLE_LIBFUZZER=ON` 会自动跳过并给出提示（回归 fuzz 不受影响）。
+- Windows 内存错误检测：可用 MSVC 的 `/fsanitize=address`
+  （VS 2019 16.9+，需 `/DEBUG` 与 `/INCREMENTAL:NO`）或
+  [clang-cl](https://clang.llvm.org/docs/HowToSetupTooling.html) 配合
+  `-fsanitize=address` 重新配置构建目录后运行同一批 CTest。
 
 ## 平台适配说明
 

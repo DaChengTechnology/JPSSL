@@ -1875,6 +1875,16 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
         const uint8_t* read_key=is_svr?s.client_write_key:s.server_write_key;
         bool is_chacha_tls12 = tls12_is_chacha(s.cipher_suite);
         bool is_cbc = tls12_is_cbc(s.cipher_suite);
+        // 长度下溢防护：ct_len = rlen - 16/24 为无符号减法，rlen 过小时会
+        // 下溢成巨大值（fuzz 发现：rlen∈[16,23] 的 AES-GCM 记录导致
+        // aes_gcm_decrypt 以 2^64-1 长度访问内存而崩溃）。最小合法长度：
+        //   CBC/ChaCha20：rlen ≥ 16（16 字节 AEAD tag）
+        //   AES-GCM：rlen ≥ 24（8 字节显式 nonce + 16 字节 tag）
+        if(is_cbc || is_chacha_tls12){
+            if(rlen < 16) return false;
+        }else{
+            if(rlen < 24) return false;
+        }
         // RFC 7905: ChaCha20-Poly1305 records carry no explicit nonce (record_iv_length=0),
         // payload = ciphertext || tag(16), unlike AES-GCM which uses an 8-byte explicit nonce
         const uint8_t* ciphertext = is_chacha_tls12 ? record+5 : (is_cbc ? record+21 : record+13);

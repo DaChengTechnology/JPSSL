@@ -31,4 +31,5 @@ android/jpssl/build/
 android/**/.cxx/
 android/.idea/
 build-main-verify/
+build-fuzz-asan/
 benchmarks/results/
