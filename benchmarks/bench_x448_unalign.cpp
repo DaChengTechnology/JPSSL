@@ -46,8 +46,10 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#if !defined(_WIN32)
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 #include <vector>
 
 using Clock = std::chrono::steady_clock;
@@ -197,6 +199,15 @@ enum class IsoRes { PASS, FAIL, CRASH };
 static IsoRes run_crash_probe(const std::function<void()>& fn) {
     fflush(stdout);
     fflush(stderr);
+#if defined(_WIN32)
+    // Windows: fork()/waitpid() unavailable; same policy as fork failure:
+    // assume no crash and let the parent's real execution decide PASS/FAIL.
+    try {
+        fn();
+    } catch (...) {
+    }
+    return IsoRes::PASS;
+#else
     pid_t pid = fork();
     if (pid < 0) {
         // fork 不可用: 假定不崩溃, 由父进程真实执行决定 PASS/FAIL
@@ -213,6 +224,7 @@ static IsoRes run_crash_probe(const std::function<void()>& fn) {
     if (waitpid(pid, &st, 0) < 0) return IsoRes::PASS;
     if (WIFSIGNALED(st)) return IsoRes::CRASH;
     return IsoRes::PASS;
+#endif
 }
 
 static void record_iso(const char* what, IsoRes r) {

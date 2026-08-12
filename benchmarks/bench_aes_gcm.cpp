@@ -258,8 +258,12 @@ static void bench_gcm(const char* algo, size_t size,
         {"jpssl-sw", jpssl::aes_gcm_encrypt_sw, jpssl::aes_gcm_decrypt_sw, true, ""},
         {"jpssl-aesni", jpssl::aes_gcm_encrypt_aesni, jpssl::aes_gcm_decrypt_aesni, true, ""},
         {"jpssl-avx2", jpssl::aes_gcm_encrypt_avx2, jpssl::aes_gcm_decrypt_avx2, feats.avx2, "no AVX2"},
+#if defined(__x86_64__) && defined(JP_VAES)
         {"jpssl-vaes", jpssl::aes_gcm_encrypt_vaes, jpssl::aes_gcm_decrypt_vaes, feats.vpclmulqdq_vaes, "no VAES/VPCLMULQDQ"},
+#endif
+#if defined(JP_AVX512)
         {"jpssl-avx512", jpssl::aes_gcm_encrypt_avx512, jpssl::aes_gcm_decrypt_avx512, feats.avx512, "no AVX512 (SIGILL if called; never called)"},
+#endif
         {"jpssl-auto", jpssl::aes_gcm_encrypt_auto, jpssl::aes_gcm_decrypt_auto, true, ""},
     };
 
@@ -334,8 +338,12 @@ int main() {
         {"sw", jpssl::aes_gcm_encrypt_sw, jpssl::aes_gcm_decrypt_sw},
         {"aesni", jpssl::aes_gcm_encrypt_aesni, jpssl::aes_gcm_decrypt_aesni},
         {"avx2", jpssl::aes_gcm_encrypt_avx2, jpssl::aes_gcm_decrypt_avx2},
+#if defined(__x86_64__) && defined(JP_VAES)
         {"vaes", jpssl::aes_gcm_encrypt_vaes, jpssl::aes_gcm_decrypt_vaes},
+#endif
+#if defined(JP_AVX512)
         {"avx512", jpssl::aes_gcm_encrypt_avx512, jpssl::aes_gcm_decrypt_avx512},
+#endif
         {"auto", jpssl::aes_gcm_encrypt_auto, jpssl::aes_gcm_decrypt_auto},
     };
     for (int keysz = 0; keysz < 2; ++keysz) {

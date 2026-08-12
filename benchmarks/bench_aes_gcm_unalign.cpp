@@ -204,10 +204,14 @@ static std::vector<GcmImpl> make_impls(const jpssl::cpu_features& feats) {
         {"jpssl-aesni", jpssl::aes_gcm_encrypt_aesni, jpssl::aes_gcm_decrypt_aesni, true, ""},
         {"jpssl-avx2", jpssl::aes_gcm_encrypt_avx2, jpssl::aes_gcm_decrypt_avx2,
          feats.avx2, "no AVX2"},
+#if defined(__x86_64__) && defined(JP_VAES)
         {"jpssl-vaes", jpssl::aes_gcm_encrypt_vaes, jpssl::aes_gcm_decrypt_vaes,
          feats.vpclmulqdq_vaes, "no VAES/VPCLMULQDQ"},
+#endif
+#if defined(JP_AVX512)
         {"jpssl-avx512", jpssl::aes_gcm_encrypt_avx512, jpssl::aes_gcm_decrypt_avx512,
          feats.avx512, "no AVX512 (SIGILL if called; never called)"},
+#endif
         {"jpssl-auto", jpssl::aes_gcm_encrypt_auto, jpssl::aes_gcm_decrypt_auto, true, ""},
     };
 }

@@ -314,9 +314,11 @@ int main() {
             skip("ed448-unx batch-avx2 : cpu_has_avx2()=false (不调用 AVX2 代码)");
         }
         if (feats.avx512) {
+#if defined(JP_AVX512)
             bool ok = jpssl::detail::ed448_batch_verify_avx512(pubp.data(), msgp.data(),
                                                                lens.data(), sigp.data(), BN);
             selfcheck("ed448-unx batch64 explicit avx512 (N=64)", ok);
+#endif
         } else {
             skip("ed448-unx batch-avx512 : cpu_has_avx512()=false (本机无 AVX512, 调用会 SIGILL)");
         }

@@ -247,9 +247,11 @@ int main() {
 
     // S6. 显式 AVX512 批量后端 x256 (cpu_has_avx512 时)
     if (feats.avx512) {
+#if defined(JP_AVX512)
         bool ok = jpssl::detail::ed448_batch_verify_avx512(pubp.data(), msgp.data(), lens.data(),
                                                            sigp.data(), BN);
         selfcheck("ed448 batch x256 explicit avx512", ok);
+#endif
     } else {
         skip("ed448-batch-avx512 : cpu_has_avx512()=false (本机无 AVX512, 调用会 SIGILL)");
     }
@@ -357,6 +359,7 @@ int main() {
                 }, target_ms, rounds);
                 emit_row("ed448-batch", "jpssl-avx2", m32.size(), b_a2);
             }
+#if defined(JP_AVX512)
             if (feats.avx512) {
                 double b_a5 = auto_bench("ed448-batch", [&] {
                     g_sink ^= jpssl::detail::ed448_batch_verify_avx512(
@@ -364,6 +367,7 @@ int main() {
                 }, target_ms, rounds);
                 emit_row("ed448-batch", "jpssl-avx512", m32.size(), b_a5);
             }
+#endif
         }
     }
 
