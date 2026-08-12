@@ -17,6 +17,7 @@
 #include "cpu_features.hpp"
 #include <cstring>
 #include <random>
+#include <thread>
 #include <vector>
 
 #ifdef _MSC_VER
@@ -1505,6 +1506,21 @@ template <int N, int BYTES>
 static bool ecdh_batch_impl(uint8_t* shared, const uint8_t* priv, const uint8_t* pub,
                             int count, const ecdsa_curve<N>& C, int windows) {
     const int CHUNK = 16;
+    // 前置输入校验（快速失败）：OpenMP 并行区内不保留失败返回路径
+    for (int i = 0; i < count; ++i) {
+        bn<N> d0;
+        bn_from_be<N, BYTES>(&d0, priv + (size_t)i * BYTES);
+        if (bn_is_zero(&d0) || !bn_lt(&d0, &C.order)) return false;
+    }
+    // 跨 CHUNK 块 OpenMP 并行：每块 16 条记录完全独立（odd/qt/d/R/A 均为块内局部），
+    // 共享仅只读曲线参数与预计算表；阈值 count>=64（≥4 块）才并行；
+    // ARM-Linux 表构建期使用 g_pt_madd_asm 全局开关（多线程竞态），不并行。
+    // 线程数按 CPU 逻辑核数自适应：>=8 用 8，>=4 用 4，>=2 用 2，否则 1（串行）。
+#if defined(_OPENMP) && (!defined(__aarch64__) || defined(__APPLE__))
+    const unsigned ncpu = std::thread::hardware_concurrency();
+    const int nth = (ncpu >= 8) ? 8 : (ncpu >= 4) ? 4 : (ncpu >= 2) ? 2 : 1;
+    #pragma omp parallel for schedule(static) num_threads(nth) if(count >= 64 && nth > 1)
+#endif
     for (int off = 0; off < count; off += CHUNK) {
         int n = (count - off < CHUNK) ? count - off : CHUNK;
         jac_point<N> odd[CHUNK][8];
@@ -1512,7 +1528,6 @@ static bool ecdh_batch_impl(uint8_t* shared, const uint8_t* priv, const uint8_t*
         bn<N> d[CHUNK];
         for (int i = 0; i < n; ++i) {
             bn_from_be<N, BYTES>(&d[i], priv + (size_t)(off + i) * BYTES);
-            if (bn_is_zero(&d[i]) || !bn_lt(&d[i], &C.order)) return false;
             const uint8_t* p = pub + (size_t)(off + i) * (2 * BYTES);
             bn<N> qx, qy;
             bn_from_be<N, BYTES>(&qx, p);

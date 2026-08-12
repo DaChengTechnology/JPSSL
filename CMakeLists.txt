@@ -253,6 +253,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     # P-256 ECDSA ADX 快速路径（内联汇编版，GCC/Clang 跨平台；MSVC 用同目录 .asm）
     if(NOT MSVC)
         list(APPEND CPU_SOURCES src/ecdsa_p256_adx_inline.cpp)
+        # X25519 fe51 (radix-2^51) 域运算汇编原语（移植自 OpenSSL x25519-x86_64.pl，
+        # Apache-2.0）：x25519_fe51_mul/sqr/mul121666，需 BMI2+ADX
+        list(APPEND CPU_SOURCES src/x25519_fe51.S)
     endif()
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
     if(JP_ENABLE_NEON)
@@ -410,12 +413,14 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
         set_source_files_properties(src/sha1_avx512.cpp PROPERTIES
             COMPILE_FLAGS "-mavx512f -mavx512bw")
         # RSA Montgomery asm: 内联 asm 模板为 Intel 语法且含 "m" 内存操作数，
-        # 需 -masm=intel 使 GCC 生成与模板一致的 Intel 形式操作数文本
+        # 需 -masm=intel 使 GCC 生成与模板一致的 Intel 形式操作数文本。
+        # -fno-sanitize=address,undefined：该全寄存器手写内联汇编在
+        # ASan/UBSan 插桩下寄存器约束冲突无法编译（普通构建下为 no-op）。
         set_source_files_properties(src/rsa_mont_asm.cpp PROPERTIES
-            COMPILE_FLAGS "-masm=intel")
+            COMPILE_FLAGS "-masm=intel -fno-sanitize=address,undefined")
         # SM2 Montgomery asm: 同上（GCC/Clang 内联汇编）
         set_source_files_properties(src/sm2_mont_asm.cpp PROPERTIES
-            COMPILE_FLAGS "-masm=intel")
+            COMPILE_FLAGS "-masm=intel -fno-sanitize=address,undefined")
         # RSA batch AVX2: 4-wide Montgomery multiplication
         set_source_files_properties(src/rsa_batch_avx2.cpp PROPERTIES
             COMPILE_FLAGS "-mavx2")
