@@ -1,0 +1,58 @@
+name: HarmonyOS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-ohos:
+    name: Cross-compile (arm64-v8a, OpenHarmony 6.1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build unzip
+
+      - name: Download & verify OpenHarmony SDK
+        run: |
+          curl -fL --retry 3 -o ohos-sdk.tar.gz \
+            https://repo.huaweicloud.com/openharmony/os/6.1-Release/ohos-sdk-windows_linux-public.tar.gz
+          curl -fL --retry 3 -o ohos-sdk.tar.gz.sha256 \
+            https://repo.huaweicloud.com/openharmony/os/6.1-Release/ohos-sdk-windows_linux-public.tar.gz.sha256
+          EXPECTED="$(awk '{print $1}' ohos-sdk.tar.gz.sha256)"
+          echo "${EXPECTED}  ohos-sdk.tar.gz" | sha256sum -c -
+          mkdir -p ohos-sdk ohos-sdk-tar
+          tar -xzf ohos-sdk.tar.gz -C ohos-sdk-tar
+          rm -f ohos-sdk.tar.gz ohos-sdk.tar.gz.sha256
+
+      - name: Install OpenHarmony native toolchain
+        run: |
+          NATIVE_ZIP="$(find ohos-sdk-tar -path '*/linux/native-linux-x64-*.zip' | head -1)"
+          test -n "$NATIVE_ZIP" || { echo "native-linux-x64-*.zip not found in SDK"; exit 1; }
+          echo "Extracting $NATIVE_ZIP"
+          unzip -q "$NATIVE_ZIP" -d ohos-sdk
+          test -f ohos-sdk/native/build/cmake/ohos.toolchain.cmake
+          # 只保留 native 工具链，释放磁盘空间（外层包含 linux/windows 全套 zip）
+          rm -rf ohos-sdk-tar
+          echo "OHOS_NDK_HOME=${GITHUB_WORKSPACE}/ohos-sdk/native" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-ohos -G Ninja
+          -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/ohos.cmake
+          -DOHOS_ARCH=arm64-v8a
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-ohos -j"$(nproc)"
+
+      - name: Verify artifacts
+        run: |
+          test -s build-ohos/libjpssl_cpu.a
+          file build-ohos/libjpssl_cpu.a build-ohos/libjpssl_cpu.so

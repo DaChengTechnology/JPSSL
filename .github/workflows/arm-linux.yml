@@ -9,6 +9,7 @@ jobs:
   native-arm64:
     name: Build & test (native ARM64 Linux)
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,11 +26,12 @@ jobs:
         run: cmake --build build -j"$(nproc)"
 
       - name: Run tests
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --timeout 120
 
   cross-aarch64:
     name: Cross-compile (aarch64-linux-gnu)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4

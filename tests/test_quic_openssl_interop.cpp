@@ -40,6 +40,8 @@ constexpr uint32_t QUIC_VERSION_V2 = 0x6b3343cfu;
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <poll.h>
+#include <fcntl.h>
 #endif
 
 #include <chrono>

@@ -30,7 +30,9 @@ static int pass = 0, fail = 0;
     else { std::fprintf(stderr, "  FAIL: %s\n", name); fail++; std::exit(1); } \
 } while (0)
 
-static uint64_t fake_now() { return 1700000000ULL; }
+// RFC 6962 时钟：返回自 epoch 起的毫秒数（与 ct_log 默认时钟一致）。
+// 证书有效期按秒计（RFC 5280），测试中需除以 1000。
+static uint64_t fake_now() { return 1700000000000ULL; }
 
 // ---------------------------------------------------------------------------
 // 1. base64
@@ -197,7 +199,7 @@ static void test_full_flow() {
     uint8_t log_pub[SM2_PUB_SIZE], log_priv[SM2_KEY_SIZE];
     sm2_keygen(log_pub, log_priv);
 
-    uint64_t now = fake_now();
+    uint64_t now = fake_now() / 1000;
     DistinguishedName root_dn;
     root_dn.push_back({std::vector<uint8_t>(OID_CN, OID_CN + sizeof(OID_CN)), "SM2 Root CA"});
     DistinguishedName leaf_dn;
@@ -434,7 +436,7 @@ static void test_std_flow() {
     uint8_t leaf_pub[64], leaf_priv[32];
     ecdsa_p256_keygen(leaf_pub, leaf_priv);
 
-    uint64_t now = fake_now();
+    uint64_t now = fake_now() / 1000;
     DistinguishedName root_dn;
     root_dn.push_back({std::vector<uint8_t>(OID_CN, OID_CN + sizeof(OID_CN)), "ECDSA Root CA"});
     DistinguishedName leaf_dn;

@@ -16,8 +16,18 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <mutex>
 #include <algorithm>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <wincrypt.h>
+#endif
+
 namespace jpssl::tls {
 
 
@@ -492,8 +502,8 @@ static bool rsa_pss_verify(const rsa_public_key& pub, uint16_t scheme,
 //  证书签名/验证
 // ══════════════════════════════════════════════════════════════════════�?
 // ECDSA 签名 DER 编解码（RFC 8446 §4.4.3 / RFC 8422 §5.5�?
-static bool ecdsa_sign_to_der(const uint8_t* raw, size_t raw_len,
-                              uint8_t* out, size_t out_cap, size_t& out_len) {
+bool ecdsa_sign_to_der(const uint8_t* raw, size_t raw_len,
+                       uint8_t* out, size_t out_cap, size_t& out_len) {
     size_t half = raw_len / 2;
     if (half == 0 || half * 2 != raw_len) return false;
     const uint8_t* r = raw;
@@ -522,8 +532,8 @@ static bool ecdsa_sign_to_der(const uint8_t* raw, size_t raw_len,
     return true;
 }
 
-static bool ecdsa_sig_from_der(const uint8_t* der, size_t der_len,
-                               uint8_t* raw, size_t raw_len) {
+bool ecdsa_sig_from_der(const uint8_t* der, size_t der_len,
+                        uint8_t* raw, size_t raw_len) {
     size_t half = raw_len / 2;
     size_t off = 0;
     if (der_len < 8 || der[off++] != 0x30) return false;
@@ -955,6 +965,24 @@ tls_trust_store tls_trust_store::from_system() {
         auto ts = from_pem_file(*p);
         if (!ts.empty()) { cached = std::move(ts); loaded = true; return cached; }
     }
+#ifdef _WIN32
+    // Windows 没有 POSIX CA bundle：从系统证书库（ROOT）加载根证书
+    if (cached.empty()) {
+        HCERTSTORE store =
+            CertOpenSystemStoreW(static_cast<HCRYPTPROV_LEGACY>(0), L"ROOT");
+        if (store) {
+            PCCERT_CONTEXT ctx = nullptr;
+            while ((ctx = CertEnumCertificatesInStore(store, ctx)) != nullptr) {
+                if (ctx->cbCertEncoded > 0) {
+                    auto cert = x509::x509_cert::from_der(
+                        ctx->pbCertEncoded, ctx->cbCertEncoded);
+                    if (cert) cached.ca_roots.push_back(std::move(*cert));
+                }
+            }
+            CertCloseStore(store, 0);
+        }
+    }
+#endif
     loaded = true;  // 缓存"未找�?结果，避免每次连接都探测
     return cached;
 }
@@ -1079,8 +1107,10 @@ void tls13_derive_handshake_keys(tls_session& s, const uint8_t* shared_secret, s
 
     // QUIC mode (RFC 9001 §5.1)：Handshake 数据包保护 secret = TLS 1.3 "c/s hs traffic" 流量密钥
     if (s.quic_mode) {
-        memcpy(s.quic_client_hs_secret, ch_ts, hl);
-        memcpy(s.quic_server_hs_secret, sh_ts, hl);
+        if (!s.quic_secrets)
+            s.quic_secrets = std::make_shared<quic_secrets_block>();
+        memcpy(s.quic_secrets->client_hs, ch_ts, hl);
+        memcpy(s.quic_secrets->server_hs, sh_ts, hl);
         s.quic_hs_secrets_ready = true;
     }
 }
@@ -1141,8 +1171,10 @@ void tls13_derive_application_keys(tls_session& s){
 
     // QUIC mode (RFC 9001 §5.1)：1-RTT 数据包保护 secret = TLS 1.3 "c/s ap traffic" 流量密钥
     if (s.quic_mode) {
-        memcpy(s.quic_client_app_secret, c_ap_ts, hl);
-        memcpy(s.quic_server_app_secret, s_ap_ts, hl);
+        if (!s.quic_secrets)
+            s.quic_secrets = std::make_shared<quic_secrets_block>();
+        memcpy(s.quic_secrets->client_app, c_ap_ts, hl);
+        memcpy(s.quic_secrets->server_app, s_ap_ts, hl);
         s.quic_app_secrets_ready = true;
     }
 }
@@ -1369,7 +1401,7 @@ switch(s.cipher_suite){
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, write_key);
-            sm4_gcm_encrypt(&s.sm4,nonce,12,inner,aad_span,ciphertext,tag,16);
+            sm4_gcm_encrypt_auto(&s.sm4,nonce,12,inner,aad_span,ciphertext,tag,16);
             break;
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
@@ -1429,7 +1461,7 @@ bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_t recor
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, read_key);
-            ok = sm4_gcm_decrypt(&s.sm4,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
+            ok = sm4_gcm_decrypt_auto(&s.sm4,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
             break;
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
@@ -1442,8 +1474,13 @@ bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_t recor
     }
     if(!ok) return false;
 
-    if(inner.empty() || inner.back()!=(uint8_t)ContentType::HANDSHAKE)return false;
-    hs_out.assign(inner.begin(),inner.end()-1);
+    // RFC 8446 5.2：TLSInnerPlaintext = content || type || zeros(padding)，
+    // 从尾部跳过零填充后第一个非零字节即 ContentType。
+    size_t epos = inner.size();
+    while (epos > 0 && inner[epos - 1] == 0) --epos;
+    if (epos == 0 || inner[epos - 1] != (uint8_t)ContentType::HANDSHAKE)
+        return false;
+    hs_out.assign(inner.begin(), inner.begin() + (epos - 1));
     return true;
 }
 bool tls12_is_ecdhe(CipherSuite cs){
@@ -1568,9 +1605,28 @@ void tls12_derive_keys(tls_session& s, const uint8_t* pre_master, size_t pms_len
     s.ver=TLSVersion::V12;
     bool use_sha384 = tls_use_sha384(s.cipher_suite);
     if (pms_len == 0) pms_len = 48;  // 兼容旧调用（RSA premaster 48 字节�?
-    uint8_t seed[64];memcpy(seed,s.client_random,32);memcpy(seed+32,s.server_random,32);
-    if(use_sha384) tls12_prf_sha384(pre_master,pms_len,"master secret",seed,64,s.master_secret,48);
-    else tls12_prf(pre_master,pms_len,"master secret",seed,64,s.master_secret,48);
+    if (s.tls12_ems) {
+        // RFC 7627：master_secret = PRF(pre_master, "extended master secret", session_hash)，
+        // session_hash = Hash(截至 ClientKeyExchange 的握手消息)。
+        tls_transcript_finalize(s);
+        size_t hl = tls_hash_len(s.cipher_suite);
+        if(use_sha384)
+            tls12_prf_sha384(pre_master,pms_len,"extended master secret",
+                             s.transcript_hash,hl,s.master_secret,48);
+        else
+            tls12_prf(pre_master,pms_len,"extended master secret",
+                      s.transcript_hash,hl,s.master_secret,48);
+    } else {
+        uint8_t seed[64];memcpy(seed,s.client_random,32);memcpy(seed+32,s.server_random,32);
+        if(use_sha384) tls12_prf_sha384(pre_master,pms_len,"master secret",seed,64,s.master_secret,48);
+        else tls12_prf(pre_master,pms_len,"master secret",seed,64,s.master_secret,48);
+    }
+    tls12_derive_key_block(s);
+
+}
+// ????? master_secret ?? key_block ????????????RFC 5246 6.3?
+void tls12_derive_key_block(tls_session& s){
+    bool use_sha384 = tls_use_sha384(s.cipher_suite);
     // RFC 5288/7905：AES-128-GCM 16 字节 key、AES-256-GCM �?ChaCha20-Poly1305 32 字节 key
     size_t key_len = aes_key_len(s.cipher_suite);
     bool is_chacha = tls12_is_chacha(s.cipher_suite);
@@ -1614,6 +1670,90 @@ void tls12_derive_keys(tls_session& s, const uint8_t* pre_master, size_t pms_len
     s.client_seq=0;s.server_seq=0;
     init_cipher_ctx(s, s.client_write_key);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TLS 1.2 会话恢复缓存（RFC 5246 §7.3）
+// ═══════════════════════════════════════════════════════════════════════
+namespace {
+
+constexpr size_t kTls12SessionCacheMax = 256;
+constexpr uint64_t kTls12SessionTtlSec = 8 * 3600;
+
+struct tls12_session_cache_impl {
+    std::mutex mtx;
+    std::vector<tls12_session_entry> entries;
+
+    static uint64_t now_sec() {
+        return (uint64_t)std::time(nullptr);
+    }
+
+    void store(const tls12_session_entry& e) {
+        std::lock_guard<std::mutex> lock(mtx);
+        uint64_t t = now_sec();
+        // 剔除过期条目
+        entries.erase(
+            std::remove_if(entries.begin(), entries.end(),
+                           [&](const tls12_session_entry& x) {
+                               return t > x.created &&
+                                      t - x.created > kTls12SessionTtlSec;
+                           }),
+            entries.end());
+        // 剔除同 id 旧条目
+        entries.erase(
+            std::remove_if(entries.begin(), entries.end(),
+                           [&](const tls12_session_entry& x) {
+                               return x.id_len == e.id_len &&
+                                      memcmp(x.id, e.id, e.id_len) == 0;
+                           }),
+            entries.end());
+        // 容量超限时淘汰最旧条目
+        if (entries.size() >= kTls12SessionCacheMax) {
+            auto oldest = std::min_element(
+                entries.begin(), entries.end(),
+                [](const tls12_session_entry& a, const tls12_session_entry& b) {
+                    return a.created < b.created;
+                });
+            if (oldest != entries.end()) entries.erase(oldest);
+        }
+        tls12_session_entry copy = e;
+        copy.created = t;
+        entries.push_back(copy);
+    }
+
+    bool lookup(const uint8_t* id, size_t id_len, tls12_session_entry& out) {
+        std::lock_guard<std::mutex> lock(mtx);
+        uint64_t t = now_sec();
+        for (auto it = entries.begin(); it != entries.end();) {
+            if (t > it->created && t - it->created > kTls12SessionTtlSec) {
+                it = entries.erase(it);
+                continue;
+            }
+            if (it->id_len == id_len && memcmp(it->id, id, id_len) == 0) {
+                out = *it;
+                return true;
+            }
+            ++it;
+        }
+        return false;
+    }
+};
+
+tls12_session_cache_impl& global_tls12_session_cache() {
+    static tls12_session_cache_impl cache;
+    return cache;
+}
+
+} // namespace
+
+bool tls12_session_cache_lookup(const uint8_t* id, size_t id_len,
+                                tls12_session_entry& out) {
+    return global_tls12_session_cache().lookup(id, id_len, out);
+}
+
+void tls12_session_cache_store(const tls12_session_entry& entry) {
+    global_tls12_session_cache().store(entry);
+}
+
 
 // PSK premaster：uint16(other_len) || other || uint16(psk_len) || psk
 // 纯 PSK 时 other=nullptr：OpenSSL 4.0 在 ssl_generate_master_secret 中规定
@@ -1816,8 +1956,8 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
                 }
                 case CipherSuite::TLS_SM4_GCM_SM3: {
                     sm4_ctx_init_from_key(s.sm4, write_key);
-                    sm4_gcm_encrypt_inplace(&s.sm4, nonce, 12, inner, inner_len,
-                                            aad_span, tag, 16);
+                    sm4_gcm_encrypt_inplace_auto(&s.sm4, nonce, 12, inner, inner_len,
+                                                 aad_span, tag, 16);
                     break;
                 }
                 case CipherSuite::TLS_SM4_CCM_SM3: {
@@ -1844,6 +1984,16 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
         const uint8_t* read_key=is_svr?s.client_write_key:s.server_write_key;
         bool is_chacha_tls12 = tls12_is_chacha(s.cipher_suite);
         bool is_cbc = tls12_is_cbc(s.cipher_suite);
+        // 长度下溢防护：ct_len = rlen - 16/24 为无符号减法，rlen 过小时会
+        // 下溢成巨大值（fuzz 发现：rlen∈[16,23] 的 AES-GCM 记录导致
+        // aes_gcm_decrypt 以 2^64-1 长度访问内存而崩溃）。最小合法长度：
+        //   CBC/ChaCha20：rlen ≥ 16（16 字节 AEAD tag）
+        //   AES-GCM：rlen ≥ 24（8 字节显式 nonce + 16 字节 tag）
+        if(is_cbc || is_chacha_tls12){
+            if(rlen < 16) return false;
+        }else{
+            if(rlen < 24) return false;
+        }
         // RFC 7905: ChaCha20-Poly1305 records carry no explicit nonce (record_iv_length=0),
         // payload = ciphertext || tag(16), unlike AES-GCM which uses an 8-byte explicit nonce
         const uint8_t* ciphertext = is_chacha_tls12 ? record+5 : (is_cbc ? record+21 : record+13);
@@ -1951,9 +2101,9 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, read_key);
-            ok = sm4_gcm_decrypt(&s.sm4, nonce, 12,
-                                 std::span<const uint8_t>(ciphertext,ct_len),
-                                 aad_span, tag, 16, inner);
+            ok = sm4_gcm_decrypt_auto(&s.sm4, nonce, 12,
+                                      std::span<const uint8_t>(ciphertext,ct_len),
+                                      aad_span, tag, 16, inner);
             break;
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
@@ -1965,10 +2115,12 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
         }
     }
     if(!ok) return false;
-    if(inner.empty())return false;
-    // RFC 8446 5.2：type 在末�?
-    ct=(ContentType)inner.back();
-    out.assign(inner.begin(),inner.end()-1);
+    // RFC 8446 5.2：TLSInnerPlaintext = content || type || zeros(padding)
+    size_t epos = inner.size();
+    while (epos > 0 && inner[epos - 1] == 0) --epos;
+    if (epos == 0) return false;
+    ct=(ContentType)inner[epos - 1];
+    out.assign(inner.begin(), inner.begin() + (epos - 1));
     return true;
 }
 

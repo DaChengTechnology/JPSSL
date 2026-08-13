@@ -3,6 +3,7 @@ build-arm64/
 build-armv9/
 build-arm84/
 build-win/
+build-ios/
 .cache/
 .codewhale/
 build_test/
@@ -15,3 +16,20 @@ build-macos*/
 build-win-test/
 win_connect_probe.obj
 .deepseek/
+
+# iOS XCFramework 构建产物（由 ios/build-xcframework.sh 生成）
+ios/JPSsl.xcframework/
+
+# macOS framework 构建产物（由 macos/build.sh 生成）
+macos/JPSslC.framework/
+
+# Android
+android/.gradle/
+android/build/
+android/local.properties
+android/jpssl/build/
+android/**/.cxx/
+android/.idea/
+build-main-verify/
+build-fuzz-asan/
+benchmarks/results/

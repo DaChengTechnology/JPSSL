@@ -1,0 +1,12 @@
+// module.modulemap — 将 jpssl.h 暴露为 Clang 模块 `JPSslC`（framework 形式）
+//
+// 构建脚本（ios/build-xcframework.sh）会把本文件复制到每个 slice 的
+// JPSslC.framework/Modules/module.modulemap，供 Swift `import JPSslC`
+// 与 SPM binaryTarget 使用。
+
+framework module JPSslC {
+    umbrella header "jpssl.h"
+
+    export *
+    module * { export * }
+}

@@ -9,6 +9,7 @@ jobs:
   build-test:
     name: Build & test (x86 Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,12 +26,13 @@ jobs:
         run: cmake --build build -j"$(nproc)"
 
       - name: Run tests
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --timeout 120
 
   # 仅验证 benchmarks/ 目标可正常编译（MUSA OFF 时 GPU 段由 JP_MUSA 守卫跳过）
   bench:
     name: Build benchmarks (x86 Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -1,0 +1,73 @@
+name: macOS arm64 CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-macos:
+    name: Build dylib + framework (arm64)
+    runs-on: macos-14
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install CMake & Ninja
+        run: |
+          brew install cmake ninja
+          uname -m
+          xcodebuild -version
+
+      - name: Build dylib + framework
+        run: ./macos/build.sh
+
+      - name: Verify artifacts
+        run: |
+          echo "== shared library =="
+          file build-macos/libjpssl_cpu.dylib build-macos/libjpssl_cpu.so
+          lipo -info build-macos/libjpssl_cpu.dylib
+          echo "== framework =="
+          file macos/JPSslC.framework/JPSslC
+          lipo -info macos/JPSslC.framework/JPSslC
+          test -f macos/JPSslC.framework/Headers/jpssl.h
+          test -f macos/JPSslC.framework/Modules/module.modulemap
+          plutil -p macos/JPSslC.framework/Info.plist | head -20
+          codesign --verify macos/JPSslC.framework && echo "codesign OK"
+
+      - name: Smoke test (dylib + framework)
+        run: |
+          cat > /tmp/smoke.c <<'EOF'
+          #include <stdio.h>
+          #include <string.h>
+          #include "jpssl.h"
+          int main(void) {
+            const unsigned char msg[] = "abc";
+            unsigned char d[32];
+            unsigned char expect[32] = {
+              0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,
+              0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
+              0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,
+              0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad
+            };
+            unsigned char pub[32], priv[64], sig[64];
+            jp_sha256(msg, 3, d);
+            if (memcmp(d, expect, 32) != 0) {
+              fprintf(stderr, "sha256 mismatch\n");
+              return 1;
+            }
+            jp_ed25519_keygen(pub, priv);
+            jp_ed25519_sign(priv, msg, 3, sig);
+            if (!jp_ed25519_verify(pub, msg, 3, sig)) {
+              fprintf(stderr, "ed25519 verify failed\n");
+              return 1;
+            }
+            printf("smoke OK (jpssl %s)\n", jp_version());
+            return 0;
+          }
+          EOF
+          clang /tmp/smoke.c -Iios/bridge -Lbuild-macos -ljpssl_cpu -o /tmp/smoke_dylib
+          DYLD_LIBRARY_PATH="$PWD/build-macos" /tmp/smoke_dylib
+          clang /tmp/smoke.c -Iios/bridge -Fmacos -framework JPSslC -o /tmp/smoke_fw
+          DYLD_FRAMEWORK_PATH="$PWD/macos" /tmp/smoke_fw

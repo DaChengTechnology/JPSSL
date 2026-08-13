@@ -12,7 +12,7 @@
 #include "cpu_features.hpp"
 #include <cstring>
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
 #include <wmmintrin.h>  // AES-NI, PCLMULQDQ intrinsics
 #include <emmintrin.h>   // SSE2
 #include <smmintrin.h>   // SSE4.1 (_mm_extract_epi32, _mm_insert_epi32)
@@ -29,7 +29,7 @@ namespace jpssl {
 //  AES-NI 硬件加速实现（x86_64 only）
 // ═══════════════════════════════════════════════════════════════════════
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
 
 /// AES-NI 单块加密
 static void aesni_encrypt_block(const aes_context& ctx,
@@ -216,7 +216,7 @@ static void pclmul_ghash(const uint8_t H[16], std::span<const uint8_t> data, uin
 static bool g_use_aesni = false;
 static bool g_use_pclmul = false;
 
-#endif // __x86_64__
+#endif // __x86_64__ || _M_X64
 
 // ═══════════════════════════════════════════════════════════════════════
 //  ARM NEON AES（AESE/AESD，aarch64 + FEAT_AES）
@@ -317,7 +317,7 @@ void aes_context::init_impl(std::span<const uint8_t> key, AesKeySize ks) {
     key_size = ks;
     rounds    = aes_rounds(ks);
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
     // 检测 CPU 特性
     static bool detected = false;
     if (!detected) {
@@ -382,7 +382,7 @@ void aes_context::init_impl(std::span<const uint8_t> key, AesKeySize ks) {
 void aes_encrypt_block(const aes_context& ctx,
                        const uint8_t plain[16],
                        uint8_t cipher[16]) {
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
     if (g_use_aesni) {
         aesni_encrypt_block(ctx, plain, cipher);
         return;
@@ -470,7 +470,7 @@ static void aes_decrypt_block_sw_impl(const aes_context& ctx,
 void aes_decrypt_block(const aes_context& ctx,
                        const uint8_t cipher[16],
                        uint8_t plain[16]) {
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
     if (g_use_aesni) {
         aesni_decrypt_block(ctx, cipher, plain);
         return;
@@ -550,7 +550,7 @@ bool aes_decrypt_ecb_pkcs7_sw(const aes_context& ctx,
     }
 }
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
 /// ECB + PKCS7 加密 - AES-NI 硬件加速
 void aes_encrypt_ecb_pkcs7_aesni(const aes_context& ctx,
                                   std::span<const uint8_t> plaintext,
@@ -741,7 +741,7 @@ static bool cbc_decrypt_impl(const aes_context& ctx,
     }
 }
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
 /// AES-NI 单块加密（对外暴露的静态包装，用于 CBC/GCM 函数指针分派）
 static void aesni_enc_block_wrap(const aes_context& ctx,
                                   const uint8_t plain[16], uint8_t cipher[16]) {
@@ -776,7 +776,7 @@ void aes_cbc_encrypt_aesni(const aes_context& ctx,
                            const uint8_t iv[16],
                            std::span<const uint8_t> plaintext,
                            std::vector<uint8_t>& ciphertext) {
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
     if (g_use_aesni) {
         cbc_encrypt_impl(ctx, iv, plaintext, ciphertext, aesni_enc_block_wrap);
         return;
@@ -790,7 +790,7 @@ bool aes_cbc_decrypt_aesni(const aes_context& ctx,
                            const uint8_t iv[16],
                            std::span<const uint8_t> ciphertext,
                            std::vector<uint8_t>& plaintext) {
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
     if (g_use_aesni) {
         return cbc_decrypt_impl(ctx, iv, ciphertext, plaintext, aesni_dec_block_wrap);
     }
@@ -841,7 +841,7 @@ void gf128_mul(const uint8_t x[16], const uint8_t y[16], uint8_t out[16]) {
     // Algorithm: iterate bits of X MSB-first (byte 0 bit 7 down to byte 15 bit 0),
     // accumulating Z = Z ⊕ V when X's bit is 1, then V = V · x with reduction.
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
     if (g_use_pclmul) {
         __m128i ar = gf128_bitrev(_mm_loadu_si128((const __m128i*)x));
         __m128i br = gf128_bitrev(_mm_loadu_si128((const __m128i*)y));
@@ -894,7 +894,7 @@ void ghash(const uint8_t H[16], std::span<const uint8_t> data, uint8_t out[16]) 
     // gf128_mul operates directly on this big-endian representation with
     // reduction constant 0x87 at byte 0 for the x^128 → x^7+x^2+x+1 reduction.
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
     if (g_use_pclmul) {
         pclmul_ghash(H, data, out);
         return;
@@ -1218,7 +1218,7 @@ void aes_gcm_encrypt_aesni(const aes_context& ctx,
                             std::span<const uint8_t> aad,
                             std::vector<uint8_t>& ciphertext,
                             uint8_t* tag, size_t tag_len) {
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
     if (g_use_aesni) {
         gcm_encrypt_impl(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len,
                          aesni_enc_block_wrap);
@@ -1235,7 +1235,7 @@ bool aes_gcm_decrypt_aesni(const aes_context& ctx,
                             std::span<const uint8_t> aad,
                             const uint8_t* tag, size_t tag_len,
                             std::vector<uint8_t>& plaintext) {
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
     if (g_use_aesni) {
         return gcm_decrypt_impl(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
                                 plaintext, aesni_enc_block_wrap);

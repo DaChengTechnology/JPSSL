@@ -1378,7 +1378,7 @@ static dtls_step_result client_step(dtls_session& s, const dtls_handshake_input&
     r.ok = true;
     bool dtls13 = (s.ver == DTLSVersion::V13);
 
-    if (!s.ch_sent) {
+    if (s.client_phase == DtlsClientPhase::Idle) {
         rand_bytes(s.client_random, 32);
         generate_ecdh_keypair(s);
         std::vector<uint16_t> suites;
@@ -1393,7 +1393,7 @@ static dtls_step_result client_step(dtls_session& s, const dtls_handshake_input&
             else suites = {0xC02B, 0xC02F, 0xCCA9, 0xCCA8};
         }
         std::vector<uint8_t> body = dtls13 ? build_ch13_body(s, suites) : build_ch12_body(s, suites);
-        s.ch_sent = true;
+        s.client_phase = DtlsClientPhase::ChSent;
         if (dtls13) {
             auto inner = inner_handshake(1, body);
             transcript_add(s, inner);
@@ -1421,7 +1421,8 @@ static dtls_step_result client_step(dtls_session& s, const dtls_handshake_input&
     std::vector<uint8_t> response;
     bool build_response = false;
     bool done = false;
-    tls_certificate* server_cert = s.have_server_cert ? &s.server_cert_parsed : nullptr;
+    tls_certificate* server_cert =
+        s.have_server_cert ? s.server_cert_parsed.get() : nullptr;
     bool got_shd = false;
 
     auto process = [&](dtls_session& st, uint8_t mtype, uint16_t mseq,
@@ -1434,7 +1435,7 @@ static dtls_step_result client_step(dtls_session& s, const dtls_handshake_input&
                 size_t cl = body[2];
                 if (body.size() < 3 + cl) return false;
                 s.cookie.assign(body.begin() + 3, body.begin() + 3 + cl);
-                s.hvr_received = true;
+                s.client_phase = DtlsClientPhase::HvrReceived;
                 transcript_reset(s);
                 std::vector<uint16_t> suites = {0xC02B, 0xC02F, 0xCCA9, 0xCCA8};
                 std::vector<uint8_t> chb = build_ch12_body(s, suites);
@@ -1481,9 +1482,9 @@ static dtls_step_result client_step(dtls_session& s, const dtls_handshake_input&
                 if (!s.server_chain.empty()) {
                     auto sc = cert_from_x509(s.server_chain[0]);
                     if (!sc) return false;
-                    s.server_cert_parsed = std::move(*sc);
+                    s.server_cert_parsed = std::move(sc);
                     s.have_server_cert = true;
-                    server_cert = &s.server_cert_parsed;
+                    server_cert = s.server_cert_parsed.get();
                 }
                 if (in.trust_store) {
                     if (!verify_server_chain(s.server_chain, *in.trust_store, s.server_name)) {
@@ -1570,6 +1571,7 @@ static dtls_step_result client_step(dtls_session& s, const dtls_handshake_input&
                     build_response = true;
                     s.server_finished_received = true;
                     s.handshake_done = true;
+                    s.client_phase = DtlsClientPhase::Done;
                     s.send_epoch = 3; s.send_seq = 0;
                     done = true;
                 } else {
@@ -1582,6 +1584,7 @@ static dtls_step_result client_step(dtls_session& s, const dtls_handshake_input&
                     transcript_add_msg(s, mtype, mseq, body, false);
                     s.server_finished_received = true;
                     s.handshake_done = true;
+                    s.client_phase = DtlsClientPhase::Done;
                     done = true;
                 }
                 return true;
@@ -1683,7 +1686,7 @@ static dtls_step_result server_step(dtls_session& s, const dtls_handshake_input&
                 }
 
                 transcript_add_msg(s, mtype, mseq, body, dtls13);
-                s.client_hello_ok = true;
+                s.server_phase = DtlsServerPhase::HelloOk;
                 if (body.size() >= 2 + 32) memcpy(s.client_random, body.data() + 2, 32);
 
                 if (!ch.suites.empty()) {
@@ -1792,8 +1795,8 @@ static dtls_step_result server_step(dtls_session& s, const dtls_handshake_input&
                     auto ack_body = build_ack_body(s);
                     response = dtls13_protect(s, 26, ack_body.data(), ack_body.size());
                     build_response = true;
-                    s.peer_finished = true;
                     s.handshake_done = true;
+                    s.server_phase = DtlsServerPhase::Done;
                     s.send_epoch = 3; s.send_seq = 0;
                     done = true;
                 } else {
@@ -1817,8 +1820,8 @@ static dtls_step_result server_step(dtls_session& s, const dtls_handshake_input&
                     flight.insert(flight.end(), fin_rec.begin(), fin_rec.end());
                     response = std::move(flight);
                     build_response = true;
-                    s.peer_finished = true;
                     s.handshake_done = true;
+                    s.server_phase = DtlsServerPhase::Done;
                     done = true;
                 }
                 return true;

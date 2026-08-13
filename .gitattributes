@@ -3,6 +3,9 @@
 #   - git 索引统一存 LF，Windows 检出统一为 CRLF
 * text=auto eol=crlf
 
+# Shell scripts must stay LF so shebangs work on macOS/Linux
+*.sh text eol=lf
+
 # 二进制文件不参与换行/编码转换
 *.idx binary
 *.db binary

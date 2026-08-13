@@ -5,7 +5,12 @@
 // Copyright The OpenSSL Project Authors. All Rights Reserved.
 // Licensed under the Apache License 2.0.
 
+// 只读数据段：Apple Mach-O 用 __TEXT,__const；ELF (Linux/FreeBSD) 用 .rodata
+#if defined(__APPLE__)
 .section __TEXT,__const
+#else
+.section .rodata
+#endif
 Lpoly:
 .quad	0xffffffffffffffff,0x00000000ffffffff,0x0000000000000000,0xffffffff00000001
 LRR:
@@ -31,8 +36,8 @@ _ecp_nistz256_mul_mont:
 	ldr	x3,[x2]
 	ldp	x4,x5,[x1]
 	ldp	x6,x7,[x1,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	bl	___ecp_nistz256_mul_mont
@@ -51,8 +56,8 @@ _ecp_nistz256_sqr_mont:
 	stp	x19,x20,[sp,#16]
 	ldp	x4,x5,[x1]
 	ldp	x6,x7,[x1,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	bl	___ecp_nistz256_sqr_mont
@@ -70,8 +75,8 @@ ecp_nistz256_add:
 	ldp	x8,x9,[x2]
 	ldp	x16,x17,[x1,#16]
 	ldp	x10,x11,[x2,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	bl	___ecp_nistz256_add
@@ -85,8 +90,8 @@ ecp_nistz256_div_by_2:
 	add	x29,sp,#0
 	ldp	x14,x15,[x1]
 	ldp	x16,x17,[x1,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	bl	___ecp_nistz256_div_by_2
@@ -100,8 +105,8 @@ ecp_nistz256_mul_by_2:
 	add	x29,sp,#0
 	ldp	x14,x15,[x1]
 	ldp	x16,x17,[x1,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	mov	x8,x14
@@ -119,8 +124,8 @@ ecp_nistz256_mul_by_3:
 	add	x29,sp,#0
 	ldp	x14,x15,[x1]
 	ldp	x16,x17,[x1,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	mov	x8,x14
@@ -148,8 +153,8 @@ ecp_nistz256_sub:
 	add	x29,sp,#0
 	ldp	x14,x15,[x1]
 	ldp	x16,x17,[x1,#16]
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	bl	___ecp_nistz256_sub_from
@@ -166,8 +171,8 @@ _ecp_nistz256_neg:
 	mov	x15,xzr
 	mov	x16,xzr
 	mov	x17,xzr
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	bl	___ecp_nistz256_sub_from
@@ -507,8 +512,8 @@ _ecp_nistz256_point_double:
 	mov	x21,x0
 	ldp	x16,x17,[x1,#48]
 	mov	x22,x1
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	mov	x8,x14
 	ldr	x13,[x13,#24]
@@ -634,8 +639,8 @@ _ecp_nistz256_point_add:
 	mov	x21,x0
 	mov	x22,x1
 	mov	x23,x2
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	orr	x8,x4,x5
@@ -857,8 +862,8 @@ _ecp_nistz256_point_add_affine:
 	mov	x21,x0
 	mov	x22,x1
 	mov	x23,x2
-adrp x13, Lpoly@PAGE
-add x13, x13, Lpoly@PAGEOFF
+adrp x13, Lpoly
+add x13, x13, :lo12:Lpoly
 	ldr	x12,[x13,#8]
 	ldr	x13,[x13,#24]
 	ldp	x4,x5,[x1,#64]
@@ -985,8 +990,8 @@ add x13, x13, Lpoly@PAGEOFF
 	ldp	x10,x11,[x23,#0+48]
 	stp	x14,x15,[x21,#0]
 	stp	x16,x17,[x21,#0+16]
-adrp x23, Lone_mont@PAGE
-add x23, x23, Lone_mont@PAGEOFF
+adrp x23, Lone_mont
+add x23, x23, :lo12:Lone_mont
 	sub x23, x23, #64
 	ldp	x14,x15,[x22,#32]
 	cmp	x24,#0
@@ -1041,8 +1046,8 @@ _ecp_nistz256_ord_mul_mont:
 	stp	x19,x20,[sp,#16]
 	stp	x21,x22,[sp,#32]
 	stp	x23,x24,[sp,#48]
-adrp x23, Lord@PAGE
-add x23, x23, Lord@PAGEOFF
+adrp x23, Lord
+add x23, x23, :lo12:Lord
 	ldr	x3,[x2]
 	ldp	x4,x5,[x1]
 	ldp	x6,x7,[x1,#16]
@@ -1221,8 +1226,8 @@ _ecp_nistz256_ord_sqr_mont:
 	stp	x19,x20,[sp,#16]
 	stp	x21,x22,[sp,#32]
 	stp	x23,x24,[sp,#48]
-adrp x23, Lord@PAGE
-add x23, x23, Lord@PAGEOFF
+adrp x23, Lord
+add x23, x23, :lo12:Lord
 	ldp	x4,x5,[x1]
 	ldp	x6,x7,[x1,#16]
 	ldp	x12,x13,[x23,#0]
@@ -1571,7 +1576,11 @@ _ecp_nistz256_gather_w7:
 .align	4
 // NIST P-256 生成元预计算表（37 行 × 64 仿射点，7 位窗口 Booth 编码）
 // 数据来自 OpenSSL 3.6.3 ecp_nistz256-armv8.pl（Apache-2.0）
+#if defined(__APPLE__)
 .section __TEXT,__const
+#else
+.section .rodata
+#endif
 .align 12
 .globl _ecp_nistz256_precomputed
 _ecp_nistz256_precomputed:
@@ -3945,3 +3954,24 @@ _ecp_nistz256_precomputed:
 .byte	0x0a,0x3c,0x73,0x17,0x50,0x88,0x03,0x25,0x4a,0xe3,0x13,0x55,0x8b,0x7e,0x50,0x38,0xfc,0x14,0x0b,0x04,0x8e,0xa8,0x5b,0xd6,0x72,0x20,0x60,0xe9,0xaa,0x22,0x82,0x11,0xc6,0xc4,0xd7,0xb9,0xc8,0x0c,0x7e,0x05,0xfb,0x90,0xe4,0x9c,0x28,0x89,0x29,0x99,0x63,0x4d,0xec,0x7b,0x50,0xbd,0xd8,0xa3,0x5b,0x50,0x77,0x19,0x81,0x92,0xce,0x82
 
 .text
+
+// ELF (Linux/FreeBSD) 不自动为 C 符号加下划线（Apple Mach-O 会），
+// 因此为 C++ 使用的 ecp_nistz256_* 提供指向 _ 前缀实现的别名，保证链接成功。
+#if !defined(__APPLE__)
+.globl	ecp_nistz256_mul_mont
+.globl	ecp_nistz256_sqr_mont
+.globl	ecp_nistz256_ord_mul_mont
+.globl	ecp_nistz256_point_double
+.globl	ecp_nistz256_point_add_affine
+.globl	ecp_nistz256_gather_w7
+.globl	ecp_nistz256_neg
+.globl	ecp_nistz256_precomputed
+.set	ecp_nistz256_mul_mont, _ecp_nistz256_mul_mont
+.set	ecp_nistz256_sqr_mont, _ecp_nistz256_sqr_mont
+.set	ecp_nistz256_ord_mul_mont, _ecp_nistz256_ord_mul_mont
+.set	ecp_nistz256_point_double, _ecp_nistz256_point_double
+.set	ecp_nistz256_point_add_affine, _ecp_nistz256_point_add_affine
+.set	ecp_nistz256_gather_w7, _ecp_nistz256_gather_w7
+.set	ecp_nistz256_neg, _ecp_nistz256_neg
+.set	ecp_nistz256_precomputed, _ecp_nistz256_precomputed
+#endif

@@ -1,24 +1,24 @@
 /**
- * sm4_avx2.cpp — AVX2 加速 SM4 块加密
+ * sm4_avx2.cpp - AVX2 accelerated SM4 block cipher / CTR keystream.
  *
- * 使用 AVX2 (256-bit YMM) 并行处理 8 个 128-bit 块。
- * S-Box 使用预计算查找表 + 标量提取/插入。
- * L 变换使用 SIMD 旋转和 XOR。
+ * Processes 8 x 128-bit blocks in parallel with 256-bit YMM registers.
+ * S-Box uses a precomputed lookup table with scalar gather/scatter; the
+ * L transform uses SIMD rotations and XOR.
  *
- * 用于 CTR/GCM 模式的批量 keystream 生成。
+ * Routed at runtime by sm4_gcm_dispatch.cpp via cpu_has_avx2().
  */
 #include "sm4.hpp"
 #include "cpu_features.hpp"
 #include <cstring>
 
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
 #endif
 
 namespace jpssl {
 namespace {
 
-#if defined(__x86_64__) && defined(JP_AVX2)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX2)
 
 // SM4 S-Box (256 bytes)
 static const uint8_t SM4_SBOX[256] = {
@@ -40,10 +40,8 @@ static const uint8_t SM4_SBOX[256] = {
     0x18,0xf0,0x7d,0xec,0x3a,0xdc,0x4d,0x20,0x79,0xee,0x5f,0x3e,0xd7,0xcb,0x39,0x48
 };
 
-// ── SIMD helper: apply S-box to 8 independent 32-bit words ──────────────
-
+// Apply the S-box to 8 independent 32-bit words.
 static inline __m256i avx2_sm4_tau(__m256i x) {
-    // Extract 8 uint32 lanes, apply S-box bytewise, recombine
     alignas(32) uint32_t words[8];
     _mm256_store_si256((__m256i*)words, x);
     for (int i = 0; i < 8; ++i) {
@@ -56,10 +54,8 @@ static inline __m256i avx2_sm4_tau(__m256i x) {
     return _mm256_load_si256((const __m256i*)words);
 }
 
-// ── SIMD L transform: L(B) = B ⊕ (B<<<2) ⊕ (B<<<10) ⊕ (B<<<18) ⊕ (B<<<24) ──
-
+// L transform: L(B) = B ^ (B<<<2) ^ (B<<<10) ^ (B<<<18) ^ (B<<<24)
 static inline __m256i avx2_sm4_L(__m256i b) {
-    // ROTL 2, 10, 18, 24 using _mm256_slli_epi32 + _mm256_srli_epi32 + OR
     auto rot = [](__m256i x, int n) -> __m256i {
         return _mm256_or_si256(_mm256_slli_epi32(x, n), _mm256_srli_epi32(x, 32 - n));
     };
@@ -69,20 +65,7 @@ static inline __m256i avx2_sm4_L(__m256i b) {
     return _mm256_xor_si256(t, rot(b, 24));
 }
 
-// ── L' transform (key expansion): L'(B) = B ⊕ (B<<<13) ⊕ (B<<<23) ──────
-
-static inline __m256i avx2_sm4_Lp(__m256i b) {
-    auto rot = [](__m256i x, int n) -> __m256i {
-        return _mm256_or_si256(_mm256_slli_epi32(x, n), _mm256_srli_epi32(x, 32 - n));
-    };
-    __m256i t = _mm256_xor_si256(b, rot(b, 13));
-    return _mm256_xor_si256(t, rot(b, 23));
-}
-
-// ── Round function F on 8 blocks ────────────────────────────────────────
-
-// Input: X0..X3 are 8-element vectors (each lane is one block's state word)
-// rk is broadcast to all 8 lanes
+// Round function F on 8 blocks; rk is broadcast to all 8 lanes.
 static inline __m256i avx2_sm4_F(__m256i x0, __m256i x1, __m256i x2, __m256i x3, __m256i rk) {
     __m256i t = _mm256_xor_si256(x1, x2);
     t = _mm256_xor_si256(t, x3);
@@ -92,16 +75,10 @@ static inline __m256i avx2_sm4_F(__m256i x0, __m256i x1, __m256i x2, __m256i x3,
     return _mm256_xor_si256(x0, t);
 }
 
-// ── 8-way SM4 block encryption (one round key set, 8 blocks) ────────────
-
 /// Encrypt 8 blocks (16 bytes each) in parallel.
-/// round_keys: 32 round keys (scalar, for key expansion)
-/// plain: 128 bytes (8 * 16), cipher: 128 bytes (output)
 static void sm4_encrypt_8blocks_avx2(const uint32_t rk[32],
-                                      const uint8_t* plain,
-                                      uint8_t* cipher) {
-    // Load 8 blocks: each block is 4 x uint32 (big-endian)
-    // We de-interleave: X0 gets all blocks' word 0, X1 gets word 1, etc.
+                                     const uint8_t* plain,
+                                     uint8_t* cipher) {
     alignas(32) uint32_t buf[32]; // 8 blocks * 4 words
     for (int blk = 0; blk < 8; ++blk) {
         const uint8_t* p = plain + blk * 16;
@@ -115,7 +92,6 @@ static void sm4_encrypt_8blocks_avx2(const uint32_t rk[32],
     __m256i x2 = _mm256_load_si256((const __m256i*)(buf + 16));
     __m256i x3 = _mm256_load_si256((const __m256i*)(buf + 24));
 
-    // 32 rounds
     for (int r = 0; r < 32; ++r) {
         __m256i rkv = _mm256_set1_epi32((int)rk[r]);
         __m256i x4 = avx2_sm4_F(x0, x1, x2, x3, rkv);
@@ -128,7 +104,6 @@ static void sm4_encrypt_8blocks_avx2(const uint32_t rk[32],
     _mm256_store_si256((__m256i*)(buf + 16), x1);
     _mm256_store_si256((__m256i*)(buf + 24), x0);
 
-    // Store big-endian
     for (int blk = 0; blk < 8; ++blk) {
         uint8_t* c = cipher + blk * 16;
         uint32_t w0 = buf[blk], w1 = buf[blk+8], w2 = buf[blk+16], w3 = buf[blk+24];
@@ -139,21 +114,46 @@ static void sm4_encrypt_8blocks_avx2(const uint32_t rk[32],
     }
 }
 
-// ── CTR 模式 (8-way parallel) ───────────────────────────────────────────
+#endif // (__x86_64__ || _M_X64) && JP_AVX2
 
-static void sm4_ctr_avx2(const sm4_ctx* ctx,
-                         const uint8_t* ctr_block,
-                         const uint8_t* input, uint8_t* output, size_t len) {
+} // anonymous namespace
+
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX2)
+
+/// Scalar CTR tail: byte-by-byte XOR with SM4 keystream, big-endian inc32.
+static void sm4_ctr_xor_scalar(const sm4_ctx* ctx, const uint8_t ctr[16],
+                               const uint8_t* input, uint8_t* output, size_t len) {
+    uint8_t counter[16];
+    std::memcpy(counter, ctr, 16);
+    size_t pos = 0;
+    while (pos < len) {
+        uint8_t keystream[16];
+        sm4_encrypt_block(ctx, counter, keystream);
+        size_t n = (len - pos < 16) ? (len - pos) : 16;
+        for (size_t i = 0; i < n; ++i)
+            output[pos + i] = input[pos + i] ^ keystream[i];
+        pos += n;
+        // Increment counter (big-endian, low 32 bits - GCM inc32).
+        for (int i = 15; i >= 12; --i) {
+            if (++counter[i] != 0) break;
+        }
+    }
+}
+
+/// AVX2 8-way parallel SM4-CTR. `input` and `output` may alias (in-place).
+void sm4_ctr_avx2(const sm4_ctx* ctx,
+                  const uint8_t* ctr_block,
+                  const uint8_t* input, uint8_t* output, size_t len) {
     uint8_t counters[128]; // 8 blocks * 16 bytes
     uint8_t keystream[128];
 
-    // Initialize 8 consecutive counter values
+    // Initialize 8 consecutive counter values.
     uint8_t base_ctr[16];
     std::memcpy(base_ctr, ctr_block, 16);
     for (int i = 0; i < 8; ++i) {
         std::memcpy(counters + i * 16, base_ctr, 16);
-        // Increment counter by i (big-endian)
-        uint32_t carry = i;
+        // Add i to the 32-bit counter part (big-endian).
+        uint32_t carry = (uint32_t)i;
         for (int j = 15; j >= 12 && carry; --j) {
             uint32_t v = counters[i*16 + j] + carry;
             counters[i*16 + j] = (uint8_t)v;
@@ -167,22 +167,23 @@ static void sm4_ctr_avx2(const sm4_ctx* ctx,
         for (int i = 0; i < 128; ++i)
             output[pos + i] = input[pos + i] ^ keystream[i];
         pos += 128;
-        // Increment all 8 counters by 8 (big-endian add)
-        uint32_t carry = 8;
-        for (int j = 15; j >= 12 && carry; --j) {
-            uint32_t v = counters[j] + carry;
-            counters[j] = (uint8_t)v;
-            carry = v >> 8;
+        // Advance each of the 8 counters by 8 (big-endian inc32 per block).
+        for (int blk = 0; blk < 8; ++blk) {
+            uint32_t carry = 8;
+            for (int j = 15; j >= 12 && carry; --j) {
+                uint32_t v = counters[blk * 16 + j] + carry;
+                counters[blk * 16 + j] = (uint8_t)v;
+                carry = v >> 8;
+            }
         }
     }
 
-    // Remaining: fall back to scalar
+    // Remaining: fall back to scalar using the already-advanced counter state.
     if (pos < len) {
-        sm4_ctr_xor_scalar(ctx, ctr_block, input + pos, output + pos, len - pos, pos);
+        sm4_ctr_xor_scalar(ctx, counters, input + pos, output + pos, len - pos);
     }
 }
 
-#endif // __x86_64__ && JP_AVX2
+#endif // (__x86_64__ || _M_X64) && JP_AVX2
 
-} // anonymous namespace
 } // namespace jpssl
