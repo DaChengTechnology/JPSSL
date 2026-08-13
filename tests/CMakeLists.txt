@@ -153,6 +153,34 @@ if(JP_MBEDTLS_PREFIX)
     endif()
 endif()
 
+# ---- rustls TLS 1.2/1.3 interop（rustls 0.23 ring，Rust 独立实现） ----
+find_program(CARGO_EXECUTABLE cargo)
+if(CARGO_EXECUTABLE)
+    set(RUSTLS_INTEROP_TOOL_DIR ${CMAKE_BINARY_DIR}/rustls-interop-tool)
+    set(RUSTLS_INTEROP_TOOL_EXE
+        ${RUSTLS_INTEROP_TOOL_DIR}/release/rustls_interop${CMAKE_EXECUTABLE_SUFFIX})
+    add_custom_command(
+        OUTPUT ${RUSTLS_INTEROP_TOOL_EXE}
+        COMMAND ${CARGO_EXECUTABLE} build --release
+                --manifest-path ${CMAKE_SOURCE_DIR}/tools/rustls_interop/Cargo.toml
+                --target-dir ${RUSTLS_INTEROP_TOOL_DIR}
+        DEPENDS
+            ${CMAKE_SOURCE_DIR}/tools/rustls_interop/Cargo.toml
+            ${CMAKE_SOURCE_DIR}/tools/rustls_interop/src/main.rs
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Building rustls interop tool (cargo build --release)"
+        VERBATIM)
+    add_custom_target(rustls_interop_tool DEPENDS ${RUSTLS_INTEROP_TOOL_EXE})
+    add_executable(test_tls_rustls_interop test_tls_rustls_interop.cpp)
+    target_include_directories(test_tls_rustls_interop PRIVATE ${INCLUDE_DIR})
+    target_link_libraries(test_tls_rustls_interop PRIVATE jpssl_cpu ${MUSA_LIBS})
+    target_compile_definitions(test_tls_rustls_interop PRIVATE
+        JPSSL_TLS_CERT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/certs/tls")
+    add_dependencies(test_tls_rustls_interop rustls_interop_tool)
+    add_test(NAME test_tls_rustls_interop COMMAND
+        test_tls_rustls_interop ${RUSTLS_INTEROP_TOOL_EXE})
+endif()
+
 # ---- QUIC v1/v2 合规性检测（quic-parser，Rust 独立实现） ----
 find_program(CARGO_EXECUTABLE cargo)
 if(CARGO_EXECUTABLE)
