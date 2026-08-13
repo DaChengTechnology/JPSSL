@@ -76,8 +76,9 @@ bool sm4_gcm_decrypt_inplace(const sm4_ctx* ctx,
                              std::span<const uint8_t> aad,
                              const uint8_t* tag, size_t tag_len);
 
-// Auto-dispatched in-place variants (AVX2 > scalar CPU), used by the
-// TLS 1.2 record layer.
+// Auto-dispatched in-place variants (GFNI > AVX2 > scalar CPU), used by
+// the TLS record layer. SM4 cipher suites are TLS 1.3 only (RFC 8998);
+// TLS 1.2 has no standardized SM4 suite and rejects it at the client.
 void sm4_gcm_encrypt_inplace_auto(const sm4_ctx* ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,

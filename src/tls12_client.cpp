@@ -191,6 +191,16 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
     uint16_t sel_cs = (server_response[cs_off]<<8) | server_response[cs_off+1];
     CipherSuite cs = select_cipher_suite(sel_cs);
     if (cs == CipherSuite::UNKNOWN) return false;   // 未知套件直接拒绝
+    // TLS 1.2 没有标准 SM4 套件：RFC 8998 仅定义 TLS_SM4_GCM_SM3 /
+    // TLS_SM4_CCM_SM3 于 TLS 1.3（SM4 在 TLS 1.2 只存在于国标 TLCP/非标准草案），
+    // 因此服务端在 TLS 1.2 选中 SM4 一律拒绝。
+    if (tls_use_sm4(cs)) return false;
+    // RFC 5246 7.4.1.3: 服务端选中的套件必须是客户端 offer 过的，
+    // 防止不合规服务端强塞未通告的套件（含 SM4）。
+    bool cs_offered = false;
+    for (uint16_t c : tls12_client_suite_list(s))
+        if (c == sel_cs) { cs_offered = true; break; }
+    if (!cs_offered) return false;
     s.cipher_suite = cs;
     // 解析 ServerHello 扩展：extended_master_secret (0x0017)
     s.tls12_ems = false;
