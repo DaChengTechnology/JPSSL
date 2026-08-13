@@ -389,7 +389,11 @@ private:
     bool chain_ok(const std::vector<std::vector<uint8_t>>& chain,
                   bool expect_precert, std::string* error) const;
 
-    uint64_t now() const { return now_fn_ ? now_fn_() : (uint64_t)time(nullptr); }
+    // RFC 6962 §3.2: timestamp 为自 1970-01-01 00:00:00 UTC 起的毫秒数。
+    // time(nullptr) 返回秒，必须放大 1000 倍；自定义 now_fn 同样须返回毫秒。
+    uint64_t now() const {
+        return now_fn_ ? now_fn_() : (uint64_t)time(nullptr) * 1000ULL;
+    }
 
     CtHashAlg hash_alg_ = CtHashAlg::SM3;
     CtSigAlg sig_alg_ = CtSigAlg::SM2;

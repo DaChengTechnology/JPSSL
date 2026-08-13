@@ -10,6 +10,7 @@
  *   - In-memory append-only SM2 CT log
  */
 #include "ct.hpp"
+#include "tls.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -732,7 +733,14 @@ signed_certificate_timestamp issue_sct_std(const uint8_t log_priv[32],
     auto data = sct_signed_data(timestamp, entry_type, signed_entry, extensions);
     uint8_t sig[ECDSA_P256_SIG_SIZE];
     ecdsa_p256_sign(log_priv, data.data(), data.size(), sig);
-    sct.signature.assign(sig, sig + ECDSA_P256_SIG_SIZE);
+    // RFC 6962 §3.2 / RFC 5246 §4.7：DigitallySigned 中 ECDSA 签名为
+    // DER 编码的 ECDSA-Sig-Value（裸 r||s 会被标准解析器拒绝）。
+    uint8_t der[80];
+    size_t der_len = 0;
+    if (!jpssl::tls::ecdsa_sign_to_der(sig, ECDSA_P256_SIG_SIZE,
+                                       der, sizeof(der), der_len))
+        return {};
+    sct.signature.assign(der, der + der_len);
     return sct;
 }
 
@@ -744,9 +752,19 @@ bool verify_sct_std(const signed_certificate_timestamp& sct,
     if (sct.hash_algorithm != CT_HASH_ALG_SHA256 ||
         sct.signature_algorithm != CT_SIG_ALG_ECDSA)
         return false;
-    if (sct.signature.size() != ECDSA_P256_SIG_SIZE) return false;
     auto data = sct_signed_data(sct.timestamp, entry_type, signed_entry, sct.extensions);
-    return ecdsa_p256_verify(log_pub, data.data(), data.size(), sct.signature.data());
+    if (sct.signature.size() == ECDSA_P256_SIG_SIZE) {
+        // 兼容旧格式：裸 r||s
+        return ecdsa_p256_verify(log_pub, data.data(), data.size(),
+                                 sct.signature.data());
+    }
+    // 标准格式：DER ECDSA-Sig-Value
+    uint8_t raw[ECDSA_P256_SIG_SIZE];
+    if (!jpssl::tls::ecdsa_sig_from_der(sct.signature.data(),
+                                        sct.signature.size(),
+                                        raw, sizeof(raw)))
+        return false;
+    return ecdsa_p256_verify(log_pub, data.data(), data.size(), raw);
 }
 
 signed_certificate_timestamp issue_sct_rsa(const rsa_crt_key& log_priv,
@@ -972,25 +990,49 @@ jpssl::optional<std::vector<uint8_t>> precert_tbs_from_final(const std::vector<u
 
 std::vector<uint8_t> encode_sct_list_extn(const std::vector<signed_certificate_timestamp>& scts) {
     std::vector<uint8_t> tls_list;
-    for (const auto& s : scts) append(tls_list, serialize_sct(s));
+    // RFC 6962 3.3: SignedCertificateTimestampList =
+    //   uint16 sct_list_length;
+    //   SCT sct_list<sct_list_length>;
+    // Each SCT element is preceded by a uint16 length prefix
+    // (TLS opaque SignedCertificateTimestamp<0..2^16-1>).
+    for (const auto& s : scts) {
+        auto ser = serialize_sct(s);
+        if (ser.size() > 0xFFFF) return {};
+        append(tls_list, encode_u16((uint16_t)ser.size()));
+        append(tls_list, ser);
+    }
     auto wrapped = encode_tls_vector16(tls_list);
     return x509::der::encode_octet_string(wrapped.data(), wrapped.size());
 }
 
 jpssl::optional<std::vector<signed_certificate_timestamp>>
 decode_sct_list_extn(const std::vector<uint8_t>& extn_value) {
+    const uint8_t* list = extn_value.data();
+    size_t list_len = extn_value.size();
+    std::vector<uint8_t> inner;
+    // 兼容旧编码：extn_value 可能仍是 DER OCTET STRING（04 .. 00 xx ...）
+    {
+        size_t off = 0;
+        auto oct = x509::der::decode_tlv(extn_value.data(), extn_value.size(), off);
+        if (oct && oct->tag == x509::ASN1Tag::OCTET_STRING && off == extn_value.size()) {
+            inner = oct->value;
+            list = inner.data();
+            list_len = inner.size();
+        }
+    }
     size_t off = 0;
-    auto oct = x509::der::decode_tlv(extn_value.data(), extn_value.size(), off);
-    if (!oct || oct->tag != x509::ASN1Tag::OCTET_STRING) return jpssl::nullopt;
     size_t lo = 0;
     uint16_t total;
-    if (!read_u16(oct->value.data(), oct->value.size(), lo, total)) return jpssl::nullopt;
-    if ((size_t)total != oct->value.size() - 2) return jpssl::nullopt;
+    if (!read_u16(list, list_len, lo, total)) return jpssl::nullopt;
+    if ((size_t)total != list_len - 2) return jpssl::nullopt;
     std::vector<signed_certificate_timestamp> scts;
-    while (lo < oct->value.size()) {
-        auto sct = deserialize_sct(oct->value.data() + lo, oct->value.size() - lo);
+    while (lo < list_len) {
+        uint16_t item_len;
+        if (!read_u16(list, list_len, lo, item_len)) return jpssl::nullopt;
+        if (lo + item_len > list_len) return jpssl::nullopt;
+        auto sct = deserialize_sct(list + lo, item_len);
         if (!sct) return jpssl::nullopt;
-        lo += serialize_sct(*sct).size();
+        lo += item_len;
         scts.push_back(std::move(*sct));
     }
     return scts;
@@ -1085,7 +1127,8 @@ bool ct_log::chain_ok(const std::vector<std::vector<uint8_t>>& chain,
                 return fail("chain signature invalid");
     }
 
-    uint64_t t = now();
+    // 证书有效期以秒计（RFC 5280），now() 为毫秒（RFC 6962），需换算。
+    uint64_t t = now() / 1000;
     for (const auto& c : certs)
         if (!c.is_valid_at(t)) return fail("certificate expired or not yet valid");
     return true;

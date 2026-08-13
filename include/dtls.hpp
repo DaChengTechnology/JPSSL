@@ -59,6 +59,24 @@ enum class DTLShandshakeType : uint8_t {
     KEY_UPDATE = 24
 };
 
+/// 客户端握手阶段（互斥状态，替代 ch_sent / hvr_received / client_flight_sent
+/// 布尔组；uint8_t 枚举与 bool 同宽，但一个字段表达多状态）。
+enum class DtlsClientPhase : uint8_t {
+    Idle = 0,       ///< 尚未发出 ClientHello
+    ChSent,         ///< 已发出首个 ClientHello
+    HvrReceived,    ///< 已收到 HelloVerifyRequest（DTLS 1.2）
+    FlightSent,     ///< 已发出客户端 flight（CKE/Finished）
+    Done            ///< 客户端握手完成
+};
+
+/// 服务端握手阶段（替代 client_hello_ok 布尔）。
+enum class DtlsServerPhase : uint8_t {
+    Idle = 0,       ///< 等待首个 ClientHello
+    HvrSent,        ///< 已发出 HelloVerifyRequest（DTLS 1.2 cookie）
+    HelloOk,        ///< 已收到带有效 cookie 的 ClientHello
+    Done            ///< 服务端握手完成（已收到客户端 Finished）
+};
+
 /// DTLS 会话状态。
 struct dtls_session {
     DTLSVersion ver = DTLSVersion::V12;
@@ -103,19 +121,11 @@ struct dtls_session {
     // ── 握手状态 ────────────────────────────────────────────────
     uint16_t send_msg_seq = 0;   ///< 本端 message_seq（每侧从 0 起）
     uint16_t recv_msg_seq = 0;   ///< 期望接收的对端 message_seq
-    bool handshake_done = false;
-
-    /// 握手完成标志（服务端收到对端 Finished 即置位）
-    bool peer_finished = false;
-    /// 客户端收到的服务端 Finished（握手完成）
-    bool server_finished_received = false;
+    DtlsClientPhase client_phase = DtlsClientPhase::Idle;  ///< 客户端握手阶段
+    DtlsServerPhase server_phase = DtlsServerPhase::Idle;  ///< 服务端握手阶段
 
     // cookie（DTLS 1.2 cookie 字段 / DTLS 1.3 cookie 扩展）
     std::vector<uint8_t> cookie;
-    bool cookie_exchanged = false;   ///< 是否已完成 cookie 交换（1.2：HVR 往返）
-
-    /// 服务端：是否要求 cookie 交换（默认关闭；RFC 建议对 DoS 敏感场景开启）
-    bool require_cookie = false;
     /// 服务端：cookie 签名密钥（首次生成 CH 响应时初始化）
     std::vector<uint8_t> cookie_secret;
 
@@ -126,13 +136,6 @@ struct dtls_session {
     uint16_t reassembly_msg_seq = 0;
     uint32_t reassembly_total_len = 0;
 
-    // 客户端握手阶段标志
-    bool ch_sent = false;             ///< 已发出（首个）ClientHello
-    bool client_flight_sent = false;  ///< 已发出客户端 flight（CKE/Finished）
-    bool hvr_received = false;        ///< 已收到 HelloVerifyRequest（DTLS 1.2）
-    // 服务端握手阶段标志
-    bool client_hello_ok = false;     ///< 已收到带有效 cookie 的 ClientHello
-
     // 握手中继：记录号加密 / ACK
     uint8_t client_sn_key[32] = {};
     uint8_t server_sn_key[32] = {};
@@ -140,22 +143,28 @@ struct dtls_session {
 
     /// 最近一次发出的 flight（供重传）
     std::vector<uint8_t> last_sent;
-    /// 是否已识别到对端重传（等待重发 last_sent）
-    bool retransmit_requested = false;
 
     // transcript（DTLS 1.2：DTLS-framed 消息；DTLS 1.3：TLS-1.3 风格内层消息）。
     // cookie 交换时 DTLS 1.2 在第二个 ClientHello 处重置（排除首个 CH 与 HVR）。
     std::vector<uint8_t> transcript_buf;
     uint8_t transcript_hash[48] = {};
-    bool transcript_valid = false;
     // 服务端选择的本证书签名方案
     uint16_t selected_sig_alg = 0;
 
+    // ── 独立状态标志（打包为位域：8 个标志仅占 1 字节）──────────────
+    bool handshake_done : 1 = false;            ///< 本端握手完成
+    bool server_finished_received : 1 = false;  ///< 客户端收到服务端 Finished
+    bool require_cookie : 1 = false;            ///< 服务端是否要求 cookie 交换
+    bool retransmit_requested : 1 = false;      ///< 识别到对端重传，重发 last_sent
+    bool transcript_valid : 1 = false;
+    bool have_server_cert : 1 = false;
+
     // Client-side: parsed server certificate chain, kept across step calls
-    // (RFC 6347 allows each handshake message in its own datagram).
+    // (RFC 6347 allows each handshake message in its own datagram)。
+    // 证书按需堆分配：tls_certificate 含全部密钥类型缓冲（约 2.7KB），
+    // 未解析证书的会话零占用；shared_ptr 保持 dtls_session 可拷贝。
     std::vector<x509::x509_cert> server_chain;
-    bool have_server_cert = false;
-    tls::tls_certificate server_cert_parsed;
+    std::shared_ptr<tls::tls_certificate> server_cert_parsed;
 };
 
 /// 握手步进输入。

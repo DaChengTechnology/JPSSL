@@ -1910,6 +1910,44 @@ void test_tls12_psk_unknown_identity() {
                                             dummy, &psk_store));
 }
 
+// TLS 1.2 没有标准 SM4 套件（RFC 8998 只定义 TLS_SM4_GCM_SM3 / TLS_SM4_CCM_SM3
+// 于 TLS 1.3）。服务端若在 TLS 1.2 选中 SM4 或客户端未通告的套件，必须拒绝。
+void test_tls12_client_rejects_sm4_and_unadvertised() {
+    tls_session client;
+    std::vector<uint8_t> client_hello;
+    TEST("TLS 1.2 make CH", tls12_make_client_hello(client, client_hello));
+
+    auto make_server_hello = [](uint16_t suite) {
+        std::vector<uint8_t> sh;
+        sh.push_back((uint8_t)HandshakeType::SERVER_HELLO);
+        // body: version(2) + random(32) + sid_len(1) + sid(0) +
+        //       cipher_suite(2) + compression(1) + ext_len(2)
+        const uint32_t body_len = 2 + 32 + 1 + 0 + 2 + 1 + 2;
+        sh.push_back((uint8_t)(body_len >> 16));
+        sh.push_back((uint8_t)(body_len >> 8));
+        sh.push_back((uint8_t)body_len);
+        sh.push_back(0x03); sh.push_back(0x03);   // TLS 1.2
+        sh.insert(sh.end(), 32, 0x00);            // random
+        sh.push_back(0x00);                       // session_id length = 0
+        sh.push_back((uint8_t)(suite >> 8));
+        sh.push_back((uint8_t)suite);
+        sh.push_back(0x00);                       // compression: null
+        sh.push_back(0x00); sh.push_back(0x00);   // extensions: none
+        return sh;
+    };
+
+    std::vector<uint8_t> cke, cf;
+    auto sh_sm4 = make_server_hello(0x00C6);      // TLS_SM4_GCM_SM3 (TLS 1.3 only)
+    TEST("TLS 1.2 client rejects SM4-GCM suite",
+         !tls12_process_server_flight(client, sh_sm4.data(), sh_sm4.size(),
+                                      nullptr, 0, cf, &cke));
+
+    auto sh_unad = make_server_hello(0x009C);     // known but not offered
+    TEST("TLS 1.2 client rejects unadvertised suite",
+         !tls12_process_server_flight(client, sh_unad.data(), sh_unad.size(),
+                                      nullptr, 0, cf, &cke));
+}
+
 // ========================================================================
 //  入口
 // ========================================================================
@@ -1955,6 +1993,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_tls12_psk_handshake);
     RUN_TEST(test_tls12_dhe_psk_handshake);
     RUN_TEST(test_tls12_psk_unknown_identity);
+    RUN_TEST(test_tls12_client_rejects_sm4_and_unadvertised);
 
     return test_summary();
 }

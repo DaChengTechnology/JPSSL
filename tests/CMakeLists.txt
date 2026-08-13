@@ -117,9 +117,68 @@ if(JP_WOLFSSL_PREFIX)
         target_compile_definitions(test_dtls_wolfssl_interop PRIVATE
             JP_WOLFSSL_CERT_DIR="${JP_WOLFSSL_CERT_DIR}")
         add_test(NAME test_dtls_wolfssl_interop COMMAND test_dtls_wolfssl_interop)
+
+        # TLS 1.3 SM2-SM4-SM3 (RFC 8998) x wolfSSL 互操作
+        add_executable(test_tls_wolfssl_interop test_tls_wolfssl_interop.cpp)
+        target_include_directories(test_tls_wolfssl_interop PRIVATE ${INCLUDE_DIR})
+        target_link_libraries(test_tls_wolfssl_interop PRIVATE jpssl_cpu wolfssl::wolfssl)
+        target_compile_definitions(test_tls_wolfssl_interop PRIVATE
+            JPSSL_SM2_CERT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/certs/sm2"
+            JPSSL_TLS_CERT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/certs/tls"
+            WOLFSSL_SM2 WOLFSSL_SM3 WOLFSSL_SM4 WOLFSSL_BASE16)
+        add_test(NAME test_tls_wolfssl_interop COMMAND test_tls_wolfssl_interop)
     else()
         message(WARNING "tests: JP_WOLFSSL_PREFIX set but wolfssl-config.cmake not found; skipping")
     endif()
+endif()
+
+# ---- Mbed TLS TLS 1.2/1.3 interop (requires Mbed TLS 3.6+ install) ----
+set(JP_MBEDTLS_PREFIX "" CACHE PATH "Mbed TLS install prefix (enables Mbed TLS TLS interop tests)")
+if(JP_MBEDTLS_PREFIX)
+    find_library(MBEDTLS_LIB mbedtls PATHS ${JP_MBEDTLS_PREFIX}/lib NO_DEFAULT_PATH)
+    find_library(MBEDX509_LIB mbedx509 PATHS ${JP_MBEDTLS_PREFIX}/lib NO_DEFAULT_PATH)
+    find_library(MBEDCRYPTO_LIB mbedcrypto PATHS ${JP_MBEDTLS_PREFIX}/lib NO_DEFAULT_PATH)
+    if(MBEDTLS_LIB AND MBEDX509_LIB AND MBEDCRYPTO_LIB)
+        message(STATUS "tests: build Mbed TLS interop test (${JP_MBEDTLS_PREFIX})")
+        add_executable(test_tls_mbedtls_interop test_tls_mbedtls_interop.cpp)
+        target_include_directories(test_tls_mbedtls_interop PRIVATE
+            ${INCLUDE_DIR} "${JP_MBEDTLS_PREFIX}/include")
+        target_link_libraries(test_tls_mbedtls_interop PRIVATE
+            jpssl_cpu ${MBEDTLS_LIB} ${MBEDX509_LIB} ${MBEDCRYPTO_LIB})
+        target_compile_definitions(test_tls_mbedtls_interop PRIVATE
+            JPSSL_TLS_CERT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/certs/tls")
+        add_test(NAME test_tls_mbedtls_interop COMMAND test_tls_mbedtls_interop)
+    else()
+        message(WARNING "tests: JP_MBEDTLS_PREFIX set but Mbed TLS libs not found; skipping")
+    endif()
+endif()
+
+# ---- rustls TLS 1.2/1.3 interop（rustls 0.23 ring，Rust 独立实现） ----
+find_program(CARGO_EXECUTABLE cargo)
+if(CARGO_EXECUTABLE)
+    set(RUSTLS_INTEROP_TOOL_DIR ${CMAKE_BINARY_DIR}/rustls-interop-tool)
+    set(RUSTLS_INTEROP_TOOL_EXE
+        ${RUSTLS_INTEROP_TOOL_DIR}/release/rustls_interop${CMAKE_EXECUTABLE_SUFFIX})
+    add_custom_command(
+        OUTPUT ${RUSTLS_INTEROP_TOOL_EXE}
+        COMMAND ${CARGO_EXECUTABLE} build --release
+                --manifest-path ${CMAKE_SOURCE_DIR}/tools/rustls_interop/Cargo.toml
+                --target-dir ${RUSTLS_INTEROP_TOOL_DIR}
+        DEPENDS
+            ${CMAKE_SOURCE_DIR}/tools/rustls_interop/Cargo.toml
+            ${CMAKE_SOURCE_DIR}/tools/rustls_interop/src/main.rs
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Building rustls interop tool (cargo build --release)"
+        VERBATIM)
+    add_custom_target(rustls_interop_tool DEPENDS ${RUSTLS_INTEROP_TOOL_EXE})
+    add_executable(test_tls_rustls_interop test_tls_rustls_interop.cpp)
+    target_include_directories(test_tls_rustls_interop PRIVATE ${INCLUDE_DIR})
+    target_link_libraries(test_tls_rustls_interop PRIVATE jpssl_cpu ${MUSA_LIBS})
+    target_compile_definitions(test_tls_rustls_interop PRIVATE
+        JPSSL_TLS_CERT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/certs/tls")
+    add_dependencies(test_tls_rustls_interop rustls_interop_tool)
+    add_test(NAME test_tls_rustls_interop COMMAND
+        test_tls_rustls_interop ${RUSTLS_INTEROP_TOOL_EXE})
 endif()
 
 # ---- QUIC v1/v2 合规性检测（quic-parser，Rust 独立实现） ----
@@ -186,6 +245,63 @@ target_link_libraries(test_tls_stability PRIVATE jpssl_cpu ${MUSA_LIBS})
 add_executable(test_tls_large_msg test_tls_large_msg.cpp)
 target_include_directories(test_tls_large_msg PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_tls_large_msg PRIVATE jpssl_cpu ${MUSA_LIBS})
+
+# ---- TLS record layer fuzz regression ----
+# 确定性 PRNG 生成畸形/变异记录输入，覆盖全部 cipher suite × 双方向；
+# 在 ASan/UBSan 构建（-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined）下
+# 运行即可把记录层内存错误转化为进程崩溃，由 ctest 捕获。
+add_executable(test_tls_record_fuzz fuzz_tls_record.cpp)
+target_include_directories(test_tls_record_fuzz PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_tls_record_fuzz PRIVATE jpssl_cpu ${MUSA_LIBS})
+
+# ---- DTLS record layer fuzz regression ----
+# 覆盖 DTLS 1.2/1.3（RFC 6347/9147）记录层：dtls_unprotect_application，
+# 语料含 DTLS 1.3 首字节位组合穷举、epoch/seq/长度字段篡改与真实数据报变异。
+add_executable(test_dtls_record_fuzz fuzz_dtls_record.cpp)
+target_include_directories(test_dtls_record_fuzz PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_dtls_record_fuzz PRIVATE jpssl_cpu ${MUSA_LIBS})
+
+# ---- TLS message-layer fuzz regression (record-layer neighbors) ----
+# early data 解密 + TLS 1.3/1.2 服务端 flight 解析（真实握手状态 + 变异 flight）
+add_executable(test_tls_handshake_fuzz fuzz_tls_handshake.cpp)
+target_include_directories(test_tls_handshake_fuzz PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_tls_handshake_fuzz PRIVATE jpssl_cpu ${MUSA_LIBS})
+
+# ---- TLS / DTLS record layer libFuzzer harnesses (optional, needs clang) ----
+# 启用: cmake -DJP_ENABLE_LIBFUZZER=ON 且编译器支持 -fsanitize=fuzzer。
+# MSVC 无 libFuzzer（-fsanitize=fuzzer 为 clang 特性），自动跳过；
+# Windows 下 fuzz 回归仍由 test_*_record_fuzz / test_tls_handshake_fuzz 保护
+# （MSVC /utf-8 已由顶层 CMakeLists 全局提供，含中文字符串的源文件无需额外设置）。
+option(JP_ENABLE_LIBFUZZER "Build libFuzzer-based record layer fuzz targets" OFF)
+if(JP_ENABLE_LIBFUZZER)
+    if(MSVC)
+        message(WARNING "JP_ENABLE_LIBFUZZER: libFuzzer 需要 clang 的 -fsanitize=fuzzer，MSVC 不支持，跳过 libFuzzer harness（回归 fuzz 仍可用）")
+    else()
+        add_executable(fuzz_tls_record fuzz_tls_record.cpp)
+        target_include_directories(fuzz_tls_record PRIVATE ${INCLUDE_DIR})
+        target_link_libraries(fuzz_tls_record PRIVATE jpssl_cpu ${MUSA_LIBS})
+        target_compile_definitions(fuzz_tls_record PRIVATE JP_FUZZ_LIBFUZZER)
+        target_compile_options(fuzz_tls_record PRIVATE
+            -fsanitize=fuzzer,address,undefined -g -O1 -fno-omit-frame-pointer)
+        target_link_options(fuzz_tls_record PRIVATE -fsanitize=fuzzer,address,undefined)
+
+        add_executable(fuzz_dtls_record fuzz_dtls_record.cpp)
+        target_include_directories(fuzz_dtls_record PRIVATE ${INCLUDE_DIR})
+        target_link_libraries(fuzz_dtls_record PRIVATE jpssl_cpu ${MUSA_LIBS})
+        target_compile_definitions(fuzz_dtls_record PRIVATE JP_FUZZ_LIBFUZZER)
+        target_compile_options(fuzz_dtls_record PRIVATE
+            -fsanitize=fuzzer,address,undefined -g -O1 -fno-omit-frame-pointer)
+        target_link_options(fuzz_dtls_record PRIVATE -fsanitize=fuzzer,address,undefined)
+
+        add_executable(fuzz_tls_handshake fuzz_tls_handshake.cpp)
+        target_include_directories(fuzz_tls_handshake PRIVATE ${INCLUDE_DIR})
+        target_link_libraries(fuzz_tls_handshake PRIVATE jpssl_cpu ${MUSA_LIBS})
+        target_compile_definitions(fuzz_tls_handshake PRIVATE JP_FUZZ_LIBFUZZER)
+        target_compile_options(fuzz_tls_handshake PRIVATE
+            -fsanitize=fuzzer,address,undefined -g -O1 -fno-omit-frame-pointer)
+        target_link_options(fuzz_tls_handshake PRIVATE -fsanitize=fuzzer,address,undefined)
+    endif()
+endif()
 
 # ── ECDSA 单元测试 (OpenSSL 对比) ────────────────────────────────────────
 if(OpenSSL_FOUND)
@@ -369,6 +485,9 @@ add_test(NAME test_tls_openssl_interop COMMAND test_tls_openssl_interop)
 endif()
 add_test(NAME test_tls_stability COMMAND test_tls_stability)
 add_test(NAME test_tls_large_msg COMMAND test_tls_large_msg)
+add_test(NAME test_tls_record_fuzz COMMAND test_tls_record_fuzz)
+add_test(NAME test_dtls_record_fuzz COMMAND test_dtls_record_fuzz)
+add_test(NAME test_tls_handshake_fuzz COMMAND test_tls_handshake_fuzz)
 if(OpenSSL_FOUND)
 add_test(NAME test_ed25519_rfc   COMMAND test_ed25519_rfc)
 add_test(NAME test_ed448_rfc     COMMAND test_ed448_rfc)

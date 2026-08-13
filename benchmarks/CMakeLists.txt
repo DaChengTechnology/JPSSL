@@ -97,6 +97,48 @@ if(OpenSSL_FOUND)
     add_executable(bench_x25519_ossl bench_x25519_ossl.cpp)
     target_include_directories(bench_x25519_ossl PRIVATE ${BENCH_INCLUDE_DIR} ${BENCH_SRC_DIR})
     target_link_libraries(bench_x25519_ossl PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+    # ── 多长度 × 多实现 × OpenSSL 对比基准（非国密算法族）────────────
+    add_executable(bench_sym_multi bench_sym_multi.cpp)
+    target_include_directories(bench_sym_multi PRIVATE ${BENCH_INCLUDE_DIR} ${BENCH_SRC_DIR})
+    target_link_libraries(bench_sym_multi PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+    add_executable(bench_hash_multi bench_hash_multi.cpp)
+    target_include_directories(bench_hash_multi PRIVATE ${BENCH_INCLUDE_DIR} ${BENCH_SRC_DIR})
+    target_link_libraries(bench_hash_multi PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+    add_executable(bench_sig_multi bench_sig_multi.cpp)
+    target_include_directories(bench_sig_multi PRIVATE ${BENCH_INCLUDE_DIR} ${BENCH_SRC_DIR})
+    target_link_libraries(bench_sig_multi PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+    add_executable(bench_ecdh_multi bench_ecdh_multi.cpp)
+    target_include_directories(bench_ecdh_multi PRIVATE ${BENCH_INCLUDE_DIR} ${BENCH_SRC_DIR})
+    target_link_libraries(bench_ecdh_multi PRIVATE jpssl_cpu OpenSSL::Crypto)
+
+    # ── 按算法拆分的全量测试：每算法一程序（多实现 × 多长度 × OpenSSL）─
+    set(BENCH_PER_ALGO
+        bench_aes_ecb bench_aes_cbc bench_aes_gcm bench_chacha20
+        bench_sha1 bench_sha256 bench_sha512_full bench_sha3 bench_hmac bench_hkdf
+        bench_rsa bench_ecdsa bench_ed25519 bench_ed448
+        bench_x25519 bench_x448 bench_ecdh_nist)
+    foreach(bench_src ${BENCH_PER_ALGO})
+        add_executable(${bench_src} ${bench_src}.cpp)
+        target_include_directories(${bench_src} PRIVATE ${BENCH_INCLUDE_DIR} ${BENCH_SRC_DIR})
+        target_link_libraries(${bench_src} PRIVATE jpssl_cpu OpenSSL::Crypto)
+    endforeach()
+
+    # ── 非对齐（unaligned）测试对比组：非对齐长度 × 非对齐指针 × OpenSSL ─
+    set(BENCH_UNALIGN
+        bench_aes_ecb_unalign bench_aes_cbc_unalign bench_aes_gcm_unalign bench_chacha20_unalign
+        bench_sha1_unalign bench_sha256_unalign bench_sha512_unalign bench_sha3_unalign
+        bench_hmac_unalign bench_hkdf_unalign
+        bench_rsa_unalign bench_ecdsa_unalign bench_ed25519_unalign bench_ed448_unalign
+        bench_x25519_unalign bench_x448_unalign bench_ecdh_nist_unalign)
+    foreach(bench_src ${BENCH_UNALIGN})
+        add_executable(${bench_src} ${bench_src}.cpp)
+        target_include_directories(${bench_src} PRIVATE ${BENCH_INCLUDE_DIR} ${BENCH_SRC_DIR})
+        target_link_libraries(${bench_src} PRIVATE jpssl_cpu OpenSSL::Crypto)
+    endforeach()
 endif()
 
 # ── CTest 注册 ──────────────────────────────────────────────────────────
@@ -124,3 +166,25 @@ endif()
 if(TARGET bench_x25519_ossl)
     add_test(NAME bench_x25519_ossl COMMAND bench_x25519_ossl)
 endif()
+if(TARGET bench_sym_multi)
+    add_test(NAME bench_sym_multi COMMAND bench_sym_multi)
+endif()
+if(TARGET bench_hash_multi)
+    add_test(NAME bench_hash_multi COMMAND bench_hash_multi)
+endif()
+if(TARGET bench_sig_multi)
+    add_test(NAME bench_sig_multi COMMAND bench_sig_multi)
+endif()
+if(TARGET bench_ecdh_multi)
+    add_test(NAME bench_ecdh_multi COMMAND bench_ecdh_multi)
+endif()
+foreach(bench_src ${BENCH_PER_ALGO})
+    if(TARGET ${bench_src})
+        add_test(NAME ${bench_src} COMMAND ${bench_src})
+    endif()
+endforeach()
+foreach(bench_src ${BENCH_UNALIGN})
+    if(TARGET ${bench_src})
+        add_test(NAME ${bench_src} COMMAND ${bench_src})
+    endif()
+endforeach()

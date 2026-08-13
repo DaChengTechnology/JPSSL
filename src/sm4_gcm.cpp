@@ -1,8 +1,9 @@
 /** sm4_gcm.cpp - SM4-GCM AEAD mode
  *
  *  Reuses the generic GF(2^128) `ghash` as a software fallback;
- *  when PCLMULQDQ is available, GHASH runs incrementally with a
- *  fast CLMUL implementation instead of materializing the padded
+ *  when PCLMULQDQ is available, GHASH runs on a fast CLMUL
+ *  implementation with a 4-way parallel core (Gueron's method,
+ *  precomputed H^2/H^3/H^4) instead of materializing the padded
  *  input buffer.  NIST SP 800-38D.
  */
 #include "sm4_gcm.hpp"
@@ -47,9 +48,9 @@ static void sm4_ctr_xor(const sm4_ctx* ctx,
 /// IV length == 12: J0 = IV || 0^31 || 1.
 /// Otherwise: J0 = GHASH_H(IV || 0^(s+64) || [len(IV)]_64),
 /// where s = 128*ceil(len(IV)/128) - len(IV) in bits (NIST SP 800-38D 7.1).
-static void sm4_gcm_make_j0(const uint8_t H[16],
-                            const uint8_t* iv, size_t iv_len,
-                            uint8_t j0[16]) {
+void sm4_gcm_make_j0(const uint8_t H[16],
+                     const uint8_t* iv, size_t iv_len,
+                     uint8_t j0[16]) {
     if (iv_len == 12) {
         std::memcpy(j0, iv, 12);
         j0[12] = 0; j0[13] = 0; j0[14] = 0; j0[15] = 1;
@@ -118,20 +119,54 @@ static inline __m128i sm4_gcm_gf128_mul(__m128i x, __m128i y) {
     return res;
 }
 
-/// Incremental GHASH: state = (state XOR block) * H,
-/// zero-padding a partial final block (GCM padding semantics).
-static inline void sm4_gcm_ghash_feed(__m128i& state, __m128i H,
-                                      const uint8_t* data, size_t len) {
+/// GHASH core (single-block update): state = (state ^ block) * H.
+/// state / block / H are all in the natural domain (per-byte bit-reversed).
+static inline __m128i sm4_gcm_ghash_core(__m128i state, __m128i block, __m128i H) {
+    return sm4_gcm_gf128_mul(_mm_xor_si128(state, block), H);
+}
+
+/// 4-way parallel GHASH: four consecutive blocks X1..X4 expand to
+///   S' = (S ^ X1)*H^4 ^ X2*H^3 ^ X3*H^2 ^ X4*H
+/// The four multiplications are independent, so the per-block serial
+/// dependency chain is broken (Gueron's method). H2/H3/H4 are the
+/// precomputed powers of H.
+static inline __m128i sm4_gcm_ghash4(__m128i state, __m128i b0, __m128i b1,
+                                     __m128i b2, __m128i b3,
+                                     __m128i H, __m128i H2,
+                                     __m128i H3, __m128i H4) {
+    __m128i p0 = sm4_gcm_gf128_mul(_mm_xor_si128(state, b0), H4);
+    __m128i p1 = sm4_gcm_gf128_mul(b1, H3);
+    __m128i p2 = sm4_gcm_gf128_mul(b2, H2);
+    __m128i p3 = sm4_gcm_gf128_mul(b3, H);
+    return _mm_xor_si128(p0, _mm_xor_si128(p1, _mm_xor_si128(p2, p3)));
+}
+
+/// Bulk GHASH over a byte buffer: 64-byte groups go through the 4-way
+/// path, the tail is processed block-by-block, and a partial final block
+/// is zero-padded (GCM padding semantics).
+static inline void sm4_gcm_ghash_bulk_4way(__m128i& state,
+                                           const uint8_t* data, size_t len,
+                                           __m128i H, __m128i H2,
+                                           __m128i H3, __m128i H4) {
     size_t pos = 0;
-    for (; pos + 16 <= len; pos += 16) {
+    while (pos + 64 <= len) {
+        __m128i b0 = sm4_gcm_bitrev(_mm_loadu_si128((const __m128i*)(data + pos)));
+        __m128i b1 = sm4_gcm_bitrev(_mm_loadu_si128((const __m128i*)(data + pos + 16)));
+        __m128i b2 = sm4_gcm_bitrev(_mm_loadu_si128((const __m128i*)(data + pos + 32)));
+        __m128i b3 = sm4_gcm_bitrev(_mm_loadu_si128((const __m128i*)(data + pos + 48)));
+        state = sm4_gcm_ghash4(state, b0, b1, b2, b3, H, H2, H3, H4);
+        pos += 64;
+    }
+    while (pos + 16 <= len) {
         __m128i blk = sm4_gcm_bitrev(_mm_loadu_si128((const __m128i*)(data + pos)));
-        state = sm4_gcm_gf128_mul(_mm_xor_si128(state, blk), H);
+        state = sm4_gcm_ghash_core(state, blk, H);
+        pos += 16;
     }
     if (pos < len) {
         uint8_t last[16] = {};
         std::memcpy(last, data + pos, len - pos);
         __m128i blk = sm4_gcm_bitrev(_mm_loadu_si128((const __m128i*)last));
-        state = sm4_gcm_gf128_mul(_mm_xor_si128(state, blk), H);
+        state = sm4_gcm_ghash_core(state, blk, H);
     }
 }
 
@@ -148,10 +183,10 @@ static void sm4_gcm_detect_pclmul() {
 
 /// GHASH(AAD, C)
 /// Input = AAD || 0-pad || C || 0-pad || len(A)_64 || len(C)_64.
-static void sm4_gcm_ghash(const uint8_t H[16],
-                          const uint8_t* aad, size_t aad_len,
-                          const uint8_t* ct, size_t ct_len,
-                          uint8_t out[16]) {
+void sm4_gcm_ghash(const uint8_t H[16],
+                   const uint8_t* aad, size_t aad_len,
+                   const uint8_t* ct, size_t ct_len,
+                   uint8_t out[16]) {
     sm4_gcm_detect_pclmul();
     const uint64_t aad_bits = (uint64_t)aad_len * 8;
     const uint64_t ct_bits  = (uint64_t)ct_len * 8;
@@ -159,9 +194,12 @@ static void sm4_gcm_ghash(const uint8_t H[16],
 #if defined(__x86_64__) || defined(_M_X64)
     if (g_sm4_gcm_pclmul_ok) {
         __m128i Hv = sm4_gcm_bitrev(_mm_loadu_si128((const __m128i*)H));
+        __m128i H2 = sm4_gcm_gf128_mul(Hv, Hv);
+        __m128i H3 = sm4_gcm_gf128_mul(H2, Hv);
+        __m128i H4 = sm4_gcm_gf128_mul(H3, Hv);
         __m128i state = _mm_setzero_si128();
-        sm4_gcm_ghash_feed(state, Hv, aad, aad_len);
-        sm4_gcm_ghash_feed(state, Hv, ct, ct_len);
+        sm4_gcm_ghash_bulk_4way(state, aad, aad_len, Hv, H2, H3, H4);
+        sm4_gcm_ghash_bulk_4way(state, ct, ct_len, Hv, H2, H3, H4);
 
         uint8_t len_block[16] = {};
         for (int i = 0; i < 8; ++i) {
@@ -169,7 +207,7 @@ static void sm4_gcm_ghash(const uint8_t H[16],
             len_block[8 + i] = (uint8_t)(ct_bits  >> (56 - i * 8));
         }
         __m128i blk = sm4_gcm_bitrev(_mm_loadu_si128((const __m128i*)len_block));
-        state = sm4_gcm_gf128_mul(_mm_xor_si128(state, blk), Hv);
+        state = sm4_gcm_ghash_core(state, blk, Hv);
         _mm_storeu_si128((__m128i*)out, sm4_gcm_bitrev(state));
         return;
     }

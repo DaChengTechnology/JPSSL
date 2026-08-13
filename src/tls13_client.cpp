@@ -209,10 +209,11 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         memcpy(s.ks_priv, ecdh_priv, 32);
         memcpy(s.ks_pub, ecdh_pub, 64);
         ext.push_back(0x00);ext.push_back(0x33); // key_share
-        ext.push_back(0x00);ext.push_back(0x46); // 70 = 2 + 68
-        ext.push_back(0x00);ext.push_back(0x44); // client_shares 68
+        ext.push_back(0x00);ext.push_back(0x47); // 71 = 2 + 69
+        ext.push_back(0x00);ext.push_back(0x45); // client_shares 69
         ext.push_back(0x00);ext.push_back(0x17); // secp256r1
-        ext.push_back(0x00);ext.push_back(0x40); // 64
+        ext.push_back(0x00);ext.push_back(0x41); // 65（SEC1 非压缩点）
+        ext.push_back(0x04);
         ext.insert(ext.end(), ecdh_pub, ecdh_pub + 64);
     } else if (s.ks_group == NamedGroup::secp384r1) {
         // secp384r1 (P-384) ECDHE：key_exchange = x||y �?96 字节
@@ -221,10 +222,11 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         memcpy(s.ks_priv, ecdh_priv, 48);
         memcpy(s.ks_pub, ecdh_pub, 96);
         ext.push_back(0x00);ext.push_back(0x33); // key_share
-        ext.push_back(0x00);ext.push_back(0x66); // 102 = 2 + 100
-        ext.push_back(0x00);ext.push_back(0x64); // client_shares 100
+        ext.push_back(0x00);ext.push_back(0x67); // 103 = 2 + 101
+        ext.push_back(0x00);ext.push_back(0x65); // client_shares 101
         ext.push_back(0x00);ext.push_back(0x18); // secp384r1
-        ext.push_back(0x00);ext.push_back(0x60); // 96
+        ext.push_back(0x00);ext.push_back(0x61); // 97（SEC1 非压缩点）
+        ext.push_back(0x04);
         ext.insert(ext.end(), ecdh_pub, ecdh_pub + 96);
     } else {
         // X25519 (默认)
@@ -293,6 +295,10 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
     size_t sh_len=(data[offset+1]<<16)|(data[offset+2]<<8)|data[offset+3];
     size_t sh_start=offset;
     offset+=4+sh_len;if(offset>len)return false;
+    // RFC 8446 ServerHello 最小长度 40：ver(2)+random(32)+sid_len(1)+cipher(2)+
+    // compression(1)+ext_len(2)。下方按固定偏移读取 random/cipher/ext_len，
+    // sh_len<40 时这些读取会越过消息边界（fuzz 发现的越界读）。
+    if(4+sh_len < 40) return false;
     memcpy(s.server_random,data+sh_start+10,32);
 
     { size_t cs_off_in_sh = 4+2+32+1; uint16_t sel_cs = (data[sh_start+cs_off_in_sh]<<8)|data[sh_start+cs_off_in_sh+1];
@@ -315,7 +321,9 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
     uint8_t server_pub_p256[64];
     uint8_t server_pub_p384[96];
     bool found_ks_p256=false, found_ks_p384=false;
-    while(ext_off+4<=ext_start+2+ext_total){
+    while(ext_off+4<=ext_start+2+ext_total && ext_off+4<=sh_start+4+sh_len){
+        // 防御：ext_total/elen 来自输入，循环必须同时受消息末尾约束，
+        // 否则声称的大长度会让 ext_off 越过 ServerHello 边界读取（fuzz 发现）。
         uint16_t etype=(data[ext_off]<<8)|data[ext_off+1];
         uint16_t elen=(data[ext_off+2]<<8)|data[ext_off+3];
         if(etype==0x33 && elen>=4){
@@ -337,18 +345,31 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
                     server_pub_sm2_len=65;
                     found_ks_sm2=true;
                 }
-            } else if(group==(uint16_t)NamedGroup::secp256r1 && key_len==64 && elen>=4+64){
-                memcpy(server_pub_p256,data+ext_off+8,64);found_ks_p256=true;
-            } else if(group==(uint16_t)NamedGroup::secp384r1 && key_len==96 && elen>=4+96){
-                memcpy(server_pub_p384,data+ext_off+8,96);found_ks_p384=true;
+            } else if(group==(uint16_t)NamedGroup::secp256r1 && elen>=4+64){
+                // RFC 8446 §4.2.8.2：P-256 key_exchange 为 SEC1 非压缩点（0x04||x||y，65 字节）
+                if(key_len==65 && data[ext_off+8]==0x04){
+                    memcpy(server_pub_p256,data+ext_off+9,64);found_ks_p256=true;
+                } else if(key_len==64){
+                    memcpy(server_pub_p256,data+ext_off+8,64);found_ks_p256=true;
+                }
+            } else if(group==(uint16_t)NamedGroup::secp384r1 && elen>=4+96){
+                if(key_len==97 && data[ext_off+8]==0x04){
+                    memcpy(server_pub_p384,data+ext_off+9,96);found_ks_p384=true;
+                } else if(key_len==96){
+                    memcpy(server_pub_p384,data+ext_off+8,96);found_ks_p384=true;
+                }
             }
         }
         ext_off+=4+elen;
     }
     // 默认回退到偏�?50（旧 API 兼容）：X25519 情况�?
     if(!found_ks_x25519 && !found_ks_x448 && !found_ks_sm2 && !found_ks_p256 && !found_ks_p384){
-        memcpy(server_pub_x25519,data+sh_start+50,32);
-        found_ks_x25519=true;
+        // 防御：回退偏移 50..81 必须在 ServerHello 消息内（sh_len>=78），
+        // 否则读取越过消息边界（fuzz 发现的越界读路径）。
+        if (4 + sh_len >= 82) {
+            memcpy(server_pub_x25519,data+sh_start+50,32);
+            found_ks_x25519=true;
+        }
     }
 
     // 计算共享密钥（根据会话配置或找到的组选择算法�?
@@ -400,6 +421,9 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
     std::vector<uint8_t> hs_msgs;
     while(offset<len){
         if(!s.quic_mode && (data[offset]==0x17 || data[offset]==0x16)){
+            // 防御：读取 record 头长度字段前确保 5 字节头完整（offset 可能
+            // 落在输入末尾附近，data[offset+3..4] 会越界——fuzz 发现）。
+            if(offset+5>len)return false;
             size_t rlen=(data[offset+3]<<8)|data[offset+4];
             if(offset+5+rlen>len)return false;
             std::vector<uint8_t> hs;
@@ -775,7 +799,7 @@ std::vector<uint8_t> tls13_encrypt_early_data(tls_session& s,
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, s.client_early_write_key);
-            sm4_gcm_encrypt(&s.sm4, nonce, 12, inner, aad_span, ciphertext, tag, 16);
+            sm4_gcm_encrypt_auto(&s.sm4, nonce, 12, inner, aad_span, ciphertext, tag, 16);
             break;
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {

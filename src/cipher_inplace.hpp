@@ -76,6 +76,47 @@ bool sm4_gcm_decrypt_inplace(const sm4_ctx* ctx,
                              jpssl::span<const uint8_t> aad,
                              const uint8_t* tag, size_t tag_len);
 
+// Auto-dispatched in-place variants (GFNI > AVX2 > scalar CPU), used by
+// the TLS record layer. SM4 cipher suites are TLS 1.3 only (RFC 8998);
+// TLS 1.2 has no standardized SM4 suite and rejects it at the client.
+void sm4_gcm_encrypt_inplace_auto(const sm4_ctx* ctx,
+                                  const uint8_t* iv, size_t iv_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  uint8_t* tag, size_t tag_len = 16);
+
+bool sm4_gcm_decrypt_inplace_auto(const sm4_ctx* ctx,
+                                  const uint8_t* iv, size_t iv_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  const uint8_t* tag, size_t tag_len);
+
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX2)
+void sm4_gcm_encrypt_avx2_inplace(const sm4_ctx* ctx,
+                                  const uint8_t* iv, size_t iv_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  uint8_t* tag, size_t tag_len = 16);
+bool sm4_gcm_decrypt_avx2_inplace(const sm4_ctx* ctx,
+                                  const uint8_t* iv, size_t iv_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  const uint8_t* tag, size_t tag_len);
+#endif // (__x86_64__ || _M_X64) && JP_AVX2
+
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_GFNI)
+void sm4_gcm_encrypt_gfni_inplace(const sm4_ctx* ctx,
+                                  const uint8_t* iv, size_t iv_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  uint8_t* tag, size_t tag_len = 16);
+bool sm4_gcm_decrypt_gfni_inplace(const sm4_ctx* ctx,
+                                  const uint8_t* iv, size_t iv_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  const uint8_t* tag, size_t tag_len);
+#endif // (__x86_64__ || _M_X64) && JP_GFNI
+
 // ── SM4-CCM ──
 
 void sm4_ccm_encrypt_inplace(const sm4_ctx* ctx,

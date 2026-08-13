@@ -979,6 +979,88 @@ bool tls_connection::do_server_handshake(const tls_certificate_manager& cert_man
     if (!client_supports_13) {
         // ── TLS 1.2 服务端握手 ──
         std::vector<uint8_t> hello_flight;
+        // 会话恢复（RFC 5246 §7.3）：ClientHello 携带已知 session_id 且
+        // EMS 状态一致时走缩写握手，跳过证书与密钥交换。
+        tls12_session_entry resume_entry{};
+        bool do_resume = false;
+        {
+            size_t sid_off = 4 + 2 + 32; // 握手头 + version(2) + random(32)
+            uint8_t sid_len = (ch_total > sid_off) ? ch.data()[sid_off] : 0;
+            if (sid_len > 0 && sid_len <= 32 &&
+                ch_total >= sid_off + 1 + sid_len) {
+                tls12_session_entry cand{};
+                if (tls12_session_cache_lookup(ch.data() + sid_off + 1, sid_len,
+                                               cand) &&
+                    tls12_session_can_resume(ch.data(), ch_total, cand)) {
+                    resume_entry = cand;
+                    do_resume = true;
+                }
+            }
+        }
+        if (do_resume) {
+            std::vector<uint8_t> sh;
+            if (!tls12_make_server_resumption_flight(session_, ch.data(), ch_total,
+                                                     resume_entry, sh)) {
+                set_err(error, "tls12 resumption flight failed");
+                return false;
+            }
+            auto sh_rec = make_record((uint8_t)ContentType::HANDSHAKE,
+                                      sh.data(), sh.size());
+            if (!write_all(sh_rec.data(), sh_rec.size(), error)) return false;
+            auto ccs = tls_make_change_cipher_spec();
+            if (!write_all(ccs.data(), ccs.size(), error)) return false;
+            std::vector<uint8_t> sf = tls12_make_finished(session_,
+                                                          /*for_server=*/true);
+            tls_transcript_update(session_, sf.data(), sf.size());
+            std::vector<uint8_t> sf_enc = tls_encrypt(session_,
+                                                      ContentType::HANDSHAKE,
+                                                      sf.data(), sf.size());
+            if (sf_enc.empty()) {
+                set_err(error, "tls12 resumption server finished encrypt failed");
+                return false;
+            }
+            if (!write_all(sf_enc.data(), sf_enc.size(), error)) return false;
+
+            // 读客户端 CCS + 加密 Finished 并校验
+            while (true) {
+                uint8_t rtype = 0;
+                std::vector<uint8_t> payload;
+                if (!read_record(rtype, payload, error)) return false;
+                if (rtype == (uint8_t)ContentType::ALERT) {
+                    set_err(error, "TLS alert during handshake");
+                    return false;
+                }
+                if (rtype != (uint8_t)ContentType::CHANGE_CIPHER_SPEC) continue;
+                break;
+            }
+            std::vector<uint8_t> cf_plain;
+            while (true) {
+                uint8_t rtype = 0;
+                std::vector<uint8_t> payload;
+                if (!read_record(rtype, payload, error)) return false;
+                if (rtype == (uint8_t)ContentType::ALERT) {
+                    set_err(error, "TLS alert during handshake");
+                    return false;
+                }
+                if (rtype != (uint8_t)ContentType::HANDSHAKE) continue;
+                auto rec = make_record(rtype, payload.data(), payload.size());
+                ContentType ct = ContentType::HANDSHAKE;
+                if (!tls_decrypt(session_, rec.data(), rec.size(), ct, cf_plain)) {
+                    set_err(error, "tls_decrypt client finished failed");
+                    return false;
+                }
+                if (cf_plain.size() >= 4 &&
+                    cf_plain[0] == (uint8_t)HandshakeType::FINISHED) break;
+            }
+            if (!tls12_verify_finished(session_, cf_plain.data(), cf_plain.size(),
+                                       /*for_server=*/false)) {
+                set_err(error, "tls12 resumption client finished verify failed");
+                return false;
+            }
+            session_.tls12_secure = true;
+            rbuf_.shrink_to_fit();
+            return true;
+        }
         if (!tls12_make_server_hello_flight(session_, ch.data(), ch_total,
                                             hello_flight, cert_manager, psk_store)) {
             set_err(error, "tls12_make_server_hello_flight failed");
@@ -1073,6 +1155,17 @@ bool tls_connection::do_server_handshake(const tls_certificate_manager& cert_man
         }
         if (!write_all(sf_enc.data(), sf_enc.size(), error)) return false;
 
+        // 全新握手完成：将会话（id + master secret + 套件 + EMS 状态）存入缓存，
+        // 供后续 ClientHello 携带同一 session_id 时恢复。
+        {
+            tls12_session_entry e;
+            memcpy(e.id, session_.session_id, session_.session_id_len);
+            e.id_len = session_.session_id_len;
+            memcpy(e.master_secret, session_.master_secret, 48);
+            e.cipher_suite = session_.cipher_suite;
+            e.ems = session_.tls12_ems;
+            tls12_session_cache_store(e);
+        }
         session_.tls12_secure = true;
         rbuf_.shrink_to_fit();
         return true;

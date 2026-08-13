@@ -189,6 +189,51 @@ static void bench_sm4_gcm() {
     print_row("jpssl  SM4-GCM enc", jp_gcm_enc_ms, DATA_SIZE);
     print_row("jpssl  SM4-GCM dec", jp_gcm_dec_ms, DATA_SIZE);
 
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX2)
+    if (cpu_has_avx2()) {
+        double jp_gcm_cpu_enc_ms = best_ms([&] {
+            sm4_gcm_encrypt(&sctx, iv, 12, plain, {}, jp_ct, jp_tag, 16);
+        });
+        double jp_gcm_avx2_enc_ms = best_ms([&] {
+            sm4_gcm_encrypt_avx2(&sctx, iv, 12, plain, {}, jp_ct, jp_tag, 16);
+        });
+        double jp_gcm_avx2_dec_ms = best_ms([&] {
+            sm4_gcm_decrypt_avx2(&sctx, iv, 12, jp_ct, {}, jp_tag, 16, jp_pt);
+        });
+        print_row("jpssl  SM4-GCM enc (CPU)", jp_gcm_cpu_enc_ms, DATA_SIZE);
+        print_row("jpssl  SM4-GCM enc (AVX2)", jp_gcm_avx2_enc_ms, DATA_SIZE);
+        print_row("jpssl  SM4-GCM dec (AVX2)", jp_gcm_avx2_dec_ms, DATA_SIZE);
+        if (jp_gcm_cpu_enc_ms < jp_gcm_avx2_enc_ms)
+            std::printf("  %-28s scalar %.2fx faster\n", "AVX2 vs scalar (enc)",
+                        jp_gcm_avx2_enc_ms / jp_gcm_cpu_enc_ms);
+        else
+            std::printf("  %-28s AVX2 %.2fx faster\n", "AVX2 vs scalar (enc)",
+                        jp_gcm_cpu_enc_ms / jp_gcm_avx2_enc_ms);
+    }
+#endif
+
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_GFNI)
+    if (cpu_has_gfni()) {
+        double jp_gcm_cpu_enc_ms = best_ms([&] {
+            sm4_gcm_encrypt(&sctx, iv, 12, plain, {}, jp_ct, jp_tag, 16);
+        });
+        double jp_gcm_gfni_enc_ms = best_ms([&] {
+            sm4_gcm_encrypt_gfni(&sctx, iv, 12, plain, {}, jp_ct, jp_tag, 16);
+        });
+        double jp_gcm_gfni_dec_ms = best_ms([&] {
+            sm4_gcm_decrypt_gfni(&sctx, iv, 12, jp_ct, {}, jp_tag, 16, jp_pt);
+        });
+        print_row("jpssl  SM4-GCM enc (GFNI)", jp_gcm_gfni_enc_ms, DATA_SIZE);
+        print_row("jpssl  SM4-GCM dec (GFNI)", jp_gcm_gfni_dec_ms, DATA_SIZE);
+        if (jp_gcm_cpu_enc_ms < jp_gcm_gfni_enc_ms)
+            std::printf("  %-28s scalar %.2fx faster\n", "GFNI vs scalar (enc)",
+                        jp_gcm_gfni_enc_ms / jp_gcm_cpu_enc_ms);
+        else
+            std::printf("  %-28s GFNI %.2fx faster\n", "GFNI vs scalar (enc)",
+                        jp_gcm_cpu_enc_ms / jp_gcm_gfni_enc_ms);
+    }
+#endif
+
     // ---- OpenSSL SM4-GCM (if provider supports it) ----
     EVP_CIPHER* sm4_gcm = EVP_CIPHER_fetch(nullptr, "SM4-GCM", nullptr);
     if (sm4_gcm != nullptr) {
@@ -310,9 +355,13 @@ int main() {
     std::printf("=== SM4 vs OpenSSL benchmark ===\n");
     std::printf("OpenSSL: %s\n", OPENSSL_VERSION_TEXT);
     auto f = cpu_features::detect();
-    std::printf("CPU: AES-NI=%s AVX2=%s VAES+VPCLMULQDQ=%s AVX512=%s\n",
-                f.aesni ? "Y" : "N", f.avx2 ? "Y" : "N",
+    std::printf("CPU: AES-NI=%s AVX2=%s GFNI=%s VAES+VPCLMULQDQ=%s AVX512=%s\n",
+                f.aesni ? "Y" : "N", f.avx2 ? "Y" : "N", f.gfni ? "Y" : "N",
                 f.vpclmulqdq_vaes ? "Y" : "N", f.avx512 ? "Y" : "N");
+    int sm4_level = sm4_gcm_auto_level();
+    std::printf("SM4-GCM dispatch level: %d (%s)\n", sm4_level,
+                sm4_level == 2 ? "GFNI" :
+                sm4_level == 1 ? "AVX2" : "scalar CPU");
     std::printf("Data: %llu bytes (16 MiB), best of 5 runs, single-thread\n",
                 (unsigned long long)DATA_SIZE);
 
