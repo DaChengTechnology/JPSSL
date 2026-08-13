@@ -197,6 +197,8 @@ set(X86_SOURCES
     src/ed448_avx512.cpp
     src/x448_avx2.cpp
     src/x448_avx512.cpp
+    src/sm4_avx2.cpp
+    src/sm4_gcm_avx2.cpp
 )
 # VAES/AVX512 GCM 后端依赖 -mvaes 编译能力，按检测结果条件加入
 if(JP_CXX_HAS_VAES)
@@ -382,6 +384,11 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
             COMPILE_FLAGS "/arch:AVX2")
         set_source_files_properties(src/base64_avx512.cpp PROPERTIES
             COMPILE_FLAGS "/arch:AVX512")
+        # SM4 AVX2 (8-way parallel CTR keystream) + AVX2 GCM backend
+        set_source_files_properties(src/sm4_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
+        set_source_files_properties(src/sm4_gcm_avx2.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
     else()
         target_compile_options(jpssl_cpu PRIVATE -maes -mavx2 -madx)
         target_compile_options(jpssl_cpu_shared PRIVATE -maes -mavx2 -madx)

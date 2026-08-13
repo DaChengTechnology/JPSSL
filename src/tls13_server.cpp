@@ -215,6 +215,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     uint8_t client_pub_p384[96]; bool found_p384=false;
     bool client_supports_x448=false;    // 客户�?supported_groups 列表中是否包�?X448
     bool client_supports_curveSM2=false;
+    bool client_supports_x25519=false;
     bool client_supports_p256=false;
     bool client_supports_p384=false;
     std::vector<uint16_t> client_sig_algs, client_sig_algs_cert;
@@ -229,6 +230,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
             for(size_t gi=0;gi+2<=gl && goff+2<=eo+4+elen;gi+=2){
                 uint16_t g=(client_hello[goff]<<8)|client_hello[goff+1];
                 if(g==(uint16_t)NamedGroup::X448) client_supports_x448=true;
+                if(g==(uint16_t)NamedGroup::X25519) client_supports_x25519=true;
                 if(g==(uint16_t)NamedGroup::curveSM2) client_supports_curveSM2=true;
                 if(g==(uint16_t)NamedGroup::secp256r1) client_supports_p256=true;
                 if(g==(uint16_t)NamedGroup::secp384r1) client_supports_p384=true;
@@ -258,10 +260,20 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
                         memcpy(client_pub_sm2+1,client_hello+kq+4,64);
                         client_pub_sm2_len=65;found_sm2=true;
                     }
-                } else if(group==(uint16_t)NamedGroup::secp256r1 && key_len==64 && kq+4+64<=ks_end){
-                    memcpy(client_pub_p256,client_hello+kq+4,64);found_p256=true;
-                } else if(group==(uint16_t)NamedGroup::secp384r1 && key_len==96 && kq+4+96<=ks_end){
-                    memcpy(client_pub_p384,client_hello+kq+4,96);found_p384=true;
+                } else if(group==(uint16_t)NamedGroup::secp256r1 && kq+4+64<=ks_end){
+                    // RFC 8446 §4.2.8.2：P-256 key_exchange 为 SEC1 非压缩点（0x04||x||y，65 字节）；
+                    // 兼容裸 64 字节 x||y。
+                    if(key_len==65 && client_hello[kq+4]==0x04){
+                        memcpy(client_pub_p256,client_hello+kq+5,64);found_p256=true;
+                    } else if(key_len==64){
+                        memcpy(client_pub_p256,client_hello+kq+4,64);found_p256=true;
+                    }
+                } else if(group==(uint16_t)NamedGroup::secp384r1 && kq+4+96<=ks_end){
+                    if(key_len==97 && client_hello[kq+4]==0x04){
+                        memcpy(client_pub_p384,client_hello+kq+5,96);found_p384=true;
+                    } else if(key_len==96){
+                        memcpy(client_pub_p384,client_hello+kq+4,96);found_p384=true;
+                    }
                 }
                 kq += 4 + key_len;
             }
@@ -276,7 +288,8 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         }
         eo+=4+elen;
     }
-    if(!found_x25519 && !found_x448 && !found_sm2 && !found_p256 && !found_p384){
+    if(!found_x25519 && !found_x448 && !found_sm2 && !found_p256 && !found_p384 &&
+       client_supports_x25519){
         memcpy(client_pub_x25519,client_hello+50,32);found_x25519=true;
     }
 
@@ -348,14 +361,15 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         shared_len = 32;
         s.ks_group = NamedGroup::secp256r1;
 
-        uint16_t ext_total = 6 + 72; // supported_versions(6) + key_share(2+2+4+64)
+        uint16_t ext_total = 6 + 73; // supported_versions(6) + key_share(2+2+4+65)
         server_flight.push_back((uint8_t)(ext_total>>8));server_flight.push_back((uint8_t)ext_total);
         server_flight.push_back(0x00);server_flight.push_back(0x2b);server_flight.push_back(0x00);
         server_flight.push_back(0x02);server_flight.push_back(0x03);server_flight.push_back(0x04);
         server_flight.push_back(0x00);server_flight.push_back(0x33);
-        server_flight.push_back(0x00);server_flight.push_back(0x44); // 68 = 2 + 2 + 64
+        server_flight.push_back(0x00);server_flight.push_back(0x45); // 69 = 2 + 2 + 65
         server_flight.push_back(0x00);server_flight.push_back(0x17); // secp256r1
-        server_flight.push_back(0x00);server_flight.push_back(0x40); // 64
+        server_flight.push_back(0x00);server_flight.push_back(0x41); // 65
+        server_flight.push_back(0x04);
         server_flight.insert(server_flight.end(), server_pub, server_pub + 64);
     } else if (use_p384) {
         // secp384r1 (P-384) ECDHE：key_exchange = x||y �?96 字节
@@ -366,14 +380,15 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         shared_len = 48;
         s.ks_group = NamedGroup::secp384r1;
 
-        uint16_t ext_total = 6 + 104; // supported_versions(6) + key_share(2+2+4+96)
+        uint16_t ext_total = 6 + 105; // supported_versions(6) + key_share(2+2+4+97)
         server_flight.push_back((uint8_t)(ext_total>>8));server_flight.push_back((uint8_t)ext_total);
         server_flight.push_back(0x00);server_flight.push_back(0x2b);server_flight.push_back(0x00);
         server_flight.push_back(0x02);server_flight.push_back(0x03);server_flight.push_back(0x04);
         server_flight.push_back(0x00);server_flight.push_back(0x33);
-        server_flight.push_back(0x00);server_flight.push_back(0x64); // 100 = 2 + 2 + 96
+        server_flight.push_back(0x00);server_flight.push_back(0x65); // 101 = 2 + 2 + 97
         server_flight.push_back(0x00);server_flight.push_back(0x18); // secp384r1
-        server_flight.push_back(0x00);server_flight.push_back(0x60); // 96
+        server_flight.push_back(0x00);server_flight.push_back(0x61); // 97
+        server_flight.push_back(0x04);
         server_flight.insert(server_flight.end(), server_pub, server_pub + 96);
     } else if (use_x448) {
         // X448 密钥交换
@@ -394,8 +409,8 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         server_flight.push_back(0x00);server_flight.push_back(0x1e); // X448
         server_flight.push_back(0x00);server_flight.push_back(0x38); // 56
         server_flight.insert(server_flight.end(), server_pub, server_pub+56);
-    } else {
-        // X25519 密钥交换（默认）
+    } else if (found_x25519) {
+        // X25519 密钥交换
         uint8_t server_priv[32],server_pub[32];
         x25519_generate_keypair(server_pub,server_priv);
         x25519_scalar_mult(shared_secret,server_priv,client_pub_x25519);
@@ -408,6 +423,9 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         // key_share X25519
         server_flight.push_back(0x00);server_flight.push_back(0x33);server_flight.push_back(0x00);server_flight.push_back(0x24);server_flight.push_back(0x00);server_flight.push_back(0x1d);server_flight.push_back(0x00);server_flight.push_back(0x20);
         server_flight.insert(server_flight.end(),server_pub,server_pub+32);
+    } else {
+        // 客户端没有提供任何服务端支持的 key_share（RFC 8446 §4.2.8）
+        return false;
     }
 
     size_t sh_len=server_flight.size()-4;
@@ -673,9 +691,9 @@ bool tls13_decrypt_early_data(tls_session& s, const uint8_t* record, size_t reco
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, s.client_early_write_key);
-            ok = sm4_gcm_decrypt(&s.sm4, nonce, 12,
-                                 std::span<const uint8_t>(ciphertext,ct_len),
-                                 aad_span, tag, 16, inner);
+            ok = sm4_gcm_decrypt_auto(&s.sm4, nonce, 12,
+                                      std::span<const uint8_t>(ciphertext,ct_len),
+                                      aad_span, tag, 16, inner);
             break;
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {

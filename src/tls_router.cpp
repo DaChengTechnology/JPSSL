@@ -16,6 +16,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <mutex>
 #include <algorithm>
 
@@ -501,8 +502,8 @@ static bool rsa_pss_verify(const rsa_public_key& pub, uint16_t scheme,
 //  证书签名/验证
 // ══════════════════════════════════════════════════════════════════════�?
 // ECDSA 签名 DER 编解码（RFC 8446 §4.4.3 / RFC 8422 §5.5�?
-static bool ecdsa_sign_to_der(const uint8_t* raw, size_t raw_len,
-                              uint8_t* out, size_t out_cap, size_t& out_len) {
+bool ecdsa_sign_to_der(const uint8_t* raw, size_t raw_len,
+                       uint8_t* out, size_t out_cap, size_t& out_len) {
     size_t half = raw_len / 2;
     if (half == 0 || half * 2 != raw_len) return false;
     const uint8_t* r = raw;
@@ -531,8 +532,8 @@ static bool ecdsa_sign_to_der(const uint8_t* raw, size_t raw_len,
     return true;
 }
 
-static bool ecdsa_sig_from_der(const uint8_t* der, size_t der_len,
-                               uint8_t* raw, size_t raw_len) {
+bool ecdsa_sig_from_der(const uint8_t* der, size_t der_len,
+                        uint8_t* raw, size_t raw_len) {
     size_t half = raw_len / 2;
     size_t off = 0;
     if (der_len < 8 || der[off++] != 0x30) return false;
@@ -1400,7 +1401,7 @@ switch(s.cipher_suite){
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, write_key);
-            sm4_gcm_encrypt(&s.sm4,nonce,12,inner,aad_span,ciphertext,tag,16);
+            sm4_gcm_encrypt_auto(&s.sm4,nonce,12,inner,aad_span,ciphertext,tag,16);
             break;
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
@@ -1460,7 +1461,7 @@ bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_t recor
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, read_key);
-            ok = sm4_gcm_decrypt(&s.sm4,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
+            ok = sm4_gcm_decrypt_auto(&s.sm4,nonce,12,std::span<const uint8_t>(ciphertext,ct_len),aad_span,tag,16,inner);
             break;
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
@@ -1599,9 +1600,28 @@ void tls12_derive_keys(tls_session& s, const uint8_t* pre_master, size_t pms_len
     s.ver=TLSVersion::V12;
     bool use_sha384 = tls_use_sha384(s.cipher_suite);
     if (pms_len == 0) pms_len = 48;  // 兼容旧调用（RSA premaster 48 字节�?
-    uint8_t seed[64];memcpy(seed,s.client_random,32);memcpy(seed+32,s.server_random,32);
-    if(use_sha384) tls12_prf_sha384(pre_master,pms_len,"master secret",seed,64,s.master_secret,48);
-    else tls12_prf(pre_master,pms_len,"master secret",seed,64,s.master_secret,48);
+    if (s.tls12_ems) {
+        // RFC 7627：master_secret = PRF(pre_master, "extended master secret", session_hash)，
+        // session_hash = Hash(截至 ClientKeyExchange 的握手消息)。
+        tls_transcript_finalize(s);
+        size_t hl = tls_hash_len(s.cipher_suite);
+        if(use_sha384)
+            tls12_prf_sha384(pre_master,pms_len,"extended master secret",
+                             s.transcript_hash,hl,s.master_secret,48);
+        else
+            tls12_prf(pre_master,pms_len,"extended master secret",
+                      s.transcript_hash,hl,s.master_secret,48);
+    } else {
+        uint8_t seed[64];memcpy(seed,s.client_random,32);memcpy(seed+32,s.server_random,32);
+        if(use_sha384) tls12_prf_sha384(pre_master,pms_len,"master secret",seed,64,s.master_secret,48);
+        else tls12_prf(pre_master,pms_len,"master secret",seed,64,s.master_secret,48);
+    }
+    tls12_derive_key_block(s);
+
+}
+// ????? master_secret ?? key_block ????????????RFC 5246 6.3?
+void tls12_derive_key_block(tls_session& s){
+    bool use_sha384 = tls_use_sha384(s.cipher_suite);
     // RFC 5288/7905：AES-128-GCM 16 字节 key、AES-256-GCM �?ChaCha20-Poly1305 32 字节 key
     size_t key_len = aes_key_len(s.cipher_suite);
     bool is_chacha = tls12_is_chacha(s.cipher_suite);
@@ -1645,6 +1665,90 @@ void tls12_derive_keys(tls_session& s, const uint8_t* pre_master, size_t pms_len
     s.client_seq=0;s.server_seq=0;
     init_cipher_ctx(s, s.client_write_key);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TLS 1.2 会话恢复缓存（RFC 5246 §7.3）
+// ═══════════════════════════════════════════════════════════════════════
+namespace {
+
+constexpr size_t kTls12SessionCacheMax = 256;
+constexpr uint64_t kTls12SessionTtlSec = 8 * 3600;
+
+struct tls12_session_cache_impl {
+    std::mutex mtx;
+    std::vector<tls12_session_entry> entries;
+
+    static uint64_t now_sec() {
+        return (uint64_t)std::time(nullptr);
+    }
+
+    void store(const tls12_session_entry& e) {
+        std::lock_guard<std::mutex> lock(mtx);
+        uint64_t t = now_sec();
+        // 剔除过期条目
+        entries.erase(
+            std::remove_if(entries.begin(), entries.end(),
+                           [&](const tls12_session_entry& x) {
+                               return t > x.created &&
+                                      t - x.created > kTls12SessionTtlSec;
+                           }),
+            entries.end());
+        // 剔除同 id 旧条目
+        entries.erase(
+            std::remove_if(entries.begin(), entries.end(),
+                           [&](const tls12_session_entry& x) {
+                               return x.id_len == e.id_len &&
+                                      memcmp(x.id, e.id, e.id_len) == 0;
+                           }),
+            entries.end());
+        // 容量超限时淘汰最旧条目
+        if (entries.size() >= kTls12SessionCacheMax) {
+            auto oldest = std::min_element(
+                entries.begin(), entries.end(),
+                [](const tls12_session_entry& a, const tls12_session_entry& b) {
+                    return a.created < b.created;
+                });
+            if (oldest != entries.end()) entries.erase(oldest);
+        }
+        tls12_session_entry copy = e;
+        copy.created = t;
+        entries.push_back(copy);
+    }
+
+    bool lookup(const uint8_t* id, size_t id_len, tls12_session_entry& out) {
+        std::lock_guard<std::mutex> lock(mtx);
+        uint64_t t = now_sec();
+        for (auto it = entries.begin(); it != entries.end();) {
+            if (t > it->created && t - it->created > kTls12SessionTtlSec) {
+                it = entries.erase(it);
+                continue;
+            }
+            if (it->id_len == id_len && memcmp(it->id, id, id_len) == 0) {
+                out = *it;
+                return true;
+            }
+            ++it;
+        }
+        return false;
+    }
+};
+
+tls12_session_cache_impl& global_tls12_session_cache() {
+    static tls12_session_cache_impl cache;
+    return cache;
+}
+
+} // namespace
+
+bool tls12_session_cache_lookup(const uint8_t* id, size_t id_len,
+                                tls12_session_entry& out) {
+    return global_tls12_session_cache().lookup(id, id_len, out);
+}
+
+void tls12_session_cache_store(const tls12_session_entry& entry) {
+    global_tls12_session_cache().store(entry);
+}
+
 
 // PSK premaster：uint16(other_len) || other || uint16(psk_len) || psk
 // 纯 PSK 时 other=nullptr：OpenSSL 4.0 在 ssl_generate_master_secret 中规定
@@ -1847,8 +1951,8 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
                 }
                 case CipherSuite::TLS_SM4_GCM_SM3: {
                     sm4_ctx_init_from_key(s.sm4, write_key);
-                    sm4_gcm_encrypt_inplace(&s.sm4, nonce, 12, inner, inner_len,
-                                            aad_span, tag, 16);
+                    sm4_gcm_encrypt_inplace_auto(&s.sm4, nonce, 12, inner, inner_len,
+                                                 aad_span, tag, 16);
                     break;
                 }
                 case CipherSuite::TLS_SM4_CCM_SM3: {
@@ -1992,9 +2096,9 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, read_key);
-            ok = sm4_gcm_decrypt(&s.sm4, nonce, 12,
-                                 std::span<const uint8_t>(ciphertext,ct_len),
-                                 aad_span, tag, 16, inner);
+            ok = sm4_gcm_decrypt_auto(&s.sm4, nonce, 12,
+                                      std::span<const uint8_t>(ciphertext,ct_len),
+                                      aad_span, tag, 16, inner);
             break;
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {

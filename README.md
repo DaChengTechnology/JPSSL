@@ -1390,7 +1390,7 @@ jpssl/
 │   ├── hmac.cpp / hkdf.cpp
 │   ├── sha512_cpu.cpp / sha512_opt.cpp / sha512_musa.cpp / sha512_gpu.mu
 │   ├── x25519.cpp / ed25519.cpp / ecdsa.cpp
-│   ├── sm2.cpp / sm3.cpp / sm4.cpp / sm4_gcm.cpp / sm4_ccm.cpp / sm4_gcm_dispatch.cpp
+│   ├── sm2.cpp / sm3.cpp / sm4.cpp / sm4_gcm.cpp / sm4_ccm.cpp / sm4_gcm_dispatch.cpp / sm4_avx2.cpp / sm4_gcm_avx2.cpp
 │   ├── x509.cpp                 X.509 v3 DER 编解码/自签名/证书链验证
 │   ├── tls_router.cpp (公共基座 + 版本选择)
 │   ├── tls13_server.cpp / tls13_client.cpp (TLS 1.3 RFC 8446 + RFC 8998)

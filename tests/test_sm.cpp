@@ -4,6 +4,7 @@
 #include "sm4.hpp"
 #include "sm4_gcm.hpp"
 #include "sm2_mont_asm.hpp"
+#include "cpu_features.hpp"
 #include <openssl/evp.h>
 #include <openssl/ec.h>
 #include <openssl/obj_mac.h>
@@ -306,6 +307,86 @@ static void test_sm4_gcm_ossl() {
     }
 
     EVP_CIPHER_free(ossl_gcm);
+}
+
+// SM4-GCM dispatch: scalar CPU vs auto vs AVX2 (cross-check all lengths)
+static void test_sm4_gcm_dispatch() {
+    std::printf("\n=== SM4-GCM dispatch (CPU / auto / AVX2) ===\n");
+
+    uint8_t key[16] = {0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,
+                       0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff,0x00};
+    uint8_t iv[12]  = {0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,
+                       0x12,0x13,0x14,0x15};
+    const uint8_t aad_fixed[] = {1,2,3,4,5,6,7,8,9,10,11,12,13};
+
+    jpssl::sm4_ctx ctx;
+    jpssl::sm4_init(&ctx, key);
+
+    const size_t lens[] = {0, 1, 15, 16, 17, 63, 127, 128, 129, 255,
+                           256, 257, 1000, 4095, 4096, 16384};
+
+    // Auto dispatch level must match the CPU feature it detected.
+    bool has_avx2 = jpssl::cpu_has_avx2();
+    int level = jpssl::sm4_gcm_auto_level();
+    ASSERT(level == (has_avx2 ? 1 : 0),
+           "SM4-GCM auto level matches cpu_has_avx2()");
+
+    for (size_t len : lens) {
+        std::vector<uint8_t> plain(len);
+        for (size_t i = 0; i < len; ++i) plain[i] = (uint8_t)(i * 13 + 7);
+        std::vector<uint8_t> aad(aad_fixed, aad_fixed + sizeof(aad_fixed));
+        if (len == 0) aad.clear();
+
+        std::span<const uint8_t> p_span(plain), a_span(aad);
+
+        // Scalar CPU reference.
+        std::vector<uint8_t> ct_cpu;
+        uint8_t tag_cpu[16];
+        jpssl::sm4_gcm_encrypt(&ctx, iv, 12, p_span, a_span, ct_cpu, tag_cpu, 16);
+
+        // Auto (routed) path must be byte-identical to scalar.
+        std::vector<uint8_t> ct_auto;
+        uint8_t tag_auto[16];
+        jpssl::sm4_gcm_encrypt_auto(&ctx, iv, 12, p_span, a_span, ct_auto, tag_auto, 16);
+        std::string l_auto = "SM4-GCM auto == CPU len=" + std::to_string(len);
+        ASSERT(ct_auto == ct_cpu && std::memcmp(tag_auto, tag_cpu, 16) == 0,
+               l_auto.c_str());
+
+        // Auto decrypt round-trip.
+        std::vector<uint8_t> pt_auto;
+        bool ok_auto = jpssl::sm4_gcm_decrypt_auto(
+            &ctx, iv, 12, std::span<const uint8_t>(ct_auto), a_span, tag_auto, 16, pt_auto);
+        ASSERT(ok_auto && pt_auto == plain, (l_auto + " decrypt").c_str());
+
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX2)
+        if (has_avx2) {
+            // Explicit AVX2 backend must match the scalar reference.
+            std::vector<uint8_t> ct_avx2;
+            uint8_t tag_avx2[16];
+            jpssl::sm4_gcm_encrypt_avx2(&ctx, iv, 12, p_span, a_span,
+                                        ct_avx2, tag_avx2, 16);
+            std::string l_avx2 = "SM4-GCM AVX2 == CPU len=" + std::to_string(len);
+            ASSERT(ct_avx2 == ct_cpu && std::memcmp(tag_avx2, tag_cpu, 16) == 0,
+                   l_avx2.c_str());
+
+            std::vector<uint8_t> pt_avx2;
+            bool ok_avx2 = jpssl::sm4_gcm_decrypt_avx2(
+                &ctx, iv, 12, std::span<const uint8_t>(ct_avx2), a_span, tag_avx2, 16, pt_avx2);
+            ASSERT(ok_avx2 && pt_avx2 == plain, (l_avx2 + " decrypt").c_str());
+
+            // Tampered tag must be rejected by the AVX2 backend.
+            uint8_t bad_tag[16];
+            std::memcpy(bad_tag, tag_avx2, 16);
+            bad_tag[0] ^= 0x01;
+            std::vector<uint8_t> pt_bad;
+            bool ok_bad = jpssl::sm4_gcm_decrypt_avx2(
+                &ctx, iv, 12, std::span<const uint8_t>(ct_avx2), a_span, bad_tag, 16, pt_bad);
+            ASSERT(!ok_bad, (l_avx2 + " rejects tampered tag").c_str());
+        }
+#endif
+    }
+
+    std::printf("  dispatch level = %d (AVX2=%s)\n", level, has_avx2 ? "Y" : "N");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -712,6 +793,7 @@ int main() {
     test_sm3();
     test_sm4();
     test_sm4_gcm_ossl();
+    test_sm4_gcm_dispatch();
     test_sm2_mont_asm();
     test_sm2();
     test_sm2_ecdh();

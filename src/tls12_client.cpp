@@ -146,6 +146,9 @@ bool tls12_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
     }
     // supported_groups：DHE 套件要求客户端通告 ffdhe2048（RFC 7919 §3）
     tls12_append_supported_groups(ext);
+    // extended_master_secret（RFC 7627）：固定空扩展
+    ext.push_back(0x00);ext.push_back(0x17);
+    ext.push_back(0x00);ext.push_back(0x00);
     // signature_algorithms + signature_algorithms_cert
     {
         const std::vector<uint16_t>& algs = effective_sig_algs(s);
@@ -189,6 +192,29 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
     CipherSuite cs = select_cipher_suite(sel_cs);
     if (cs == CipherSuite::UNKNOWN) return false;   // 未知套件直接拒绝
     s.cipher_suite = cs;
+    // 解析 ServerHello 扩展：extended_master_secret (0x0017)
+    s.tls12_ems = false;
+    {
+        size_t ext_off = cs_off + 3; // cipher_suite(2) + compression(1) 之后
+        if (ext_off + 2 <= resp_len) {
+            size_t ext_total = ((size_t)server_response[ext_off] << 8) |
+                               server_response[ext_off + 1];
+            size_t p = ext_off + 2;
+            size_t ext_end = p + ext_total;
+            if (ext_end > resp_len) ext_end = resp_len;
+            while (p + 4 <= ext_end) {
+                uint16_t et = (server_response[p] << 8) | server_response[p + 1];
+                uint16_t el = (server_response[p + 2] << 8) | server_response[p + 3];
+                if (et == 0x0017) s.tls12_ems = true;
+                p += 4 + (size_t)el;
+            }
+        }
+    }
+    // 保存服务端 session_id（供后续会话恢复使用）
+    if (sid_len > 0 && sid_len <= sizeof(s.session_id)) {
+        s.session_id_len = (uint8_t)sid_len;
+        memcpy(s.session_id, server_response + sid_off + 1, sid_len);
+    }
     // transcript hash depends on cipher_suite; ClientHello was cached in
     // tls12_make_client_hello and is replayed here after the suite is known.
     if (!s.tls12_client_hello_cache.empty())
@@ -474,9 +500,11 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
         }
     }
 
-    tls12_derive_keys(s, premaster.data(), premaster.size());
+    // RFC 7627：EMS 的 session_hash 必须包含 ClientKeyExchange，
+    // 因此先更新 transcript 再派生主密钥。
     if (!cke.empty())
         tls_transcript_update(s, cke.data(), cke.size());
+    tls12_derive_keys(s, premaster.data(), premaster.size());
     tls_transcript_finalize(s);
     uint8_t verify_data[12];
     size_t hl = tls_hash_len(s.cipher_suite);

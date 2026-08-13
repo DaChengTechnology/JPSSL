@@ -206,6 +206,7 @@ struct tls_session {
     // TLS 1.2 会话状态
     uint8_t session_id[32];       // 会话 ID (TLS 1.2 会话恢复)
     uint8_t session_id_len = 0;
+    bool tls12_ems = false;           // TLS 1.2 Extended Master Secret (RFC 7627) 已协商
     bool tls12_ccs_received = false;  // ChangeCipherSpec 已接收
     bool tls12_ccs_sent = false;     // ChangeCipherSpec 已发送
     bool tls12_secure = false;       // 加密层已激活
@@ -626,6 +627,33 @@ bool tls12_process_client_finished(tls_session& s, const uint8_t* data, size_t l
 // 密钥派生（pms_len：ECDHE 共享密钥 32 字节，RSA premaster 48 字节；默认 48 兼容旧调用）
 void tls12_derive_keys(tls_session& s, const uint8_t* pre_master, size_t pms_len = 48);
 
+/// 从已派生的 master_secret 派生 key_block 与写密钥（会话恢复复用，RFC 5246 6.3）。
+void tls12_derive_key_block(tls_session& s);
+
+/// TLS 1.2 会话缓存条目（Session ID 恢复，RFC 5246 §7.3）
+struct tls12_session_entry {
+    uint8_t id[32];
+    uint8_t id_len = 0;
+    uint8_t master_secret[48];
+    CipherSuite cipher_suite = CipherSuite::TLS_AES_128_GCM_SHA256;
+    bool ems = false;              // 原会话是否使用 Extended Master Secret
+    uint64_t created = 0;          // 创建时间（内部维护，用于 TTL 淘汰）
+};
+
+/// 全局 TLS 1.2 服务端会话缓存（线程安全；上限 256 条，TTL 8 小时）。
+bool tls12_session_cache_lookup(const uint8_t* id, size_t id_len, tls12_session_entry& out);
+void tls12_session_cache_store(const tls12_session_entry& entry);
+
+/// 判断 ClientHello 是否可恢复 entry 对应会话（session_id 匹配 + EMS 状态一致）。
+bool tls12_session_can_resume(const uint8_t* client_hello, size_t ch_len,
+                              const tls12_session_entry& entry);
+
+/// TLS 1.2 缩写握手（会话恢复）：构建 ServerHello 并从缓存主密钥派生密钥。
+/// 调用方随后发送 CCS + 加密的 Server Finished。
+bool tls12_make_server_resumption_flight(tls_session& s, const uint8_t* client_hello,
+                                         size_t ch_len, const tls12_session_entry& entry,
+                                         std::vector<uint8_t>& server_hello_out);
+
 // ── 消息构造辅助 ────────────────────────────────────────────────────────
 
 // 构造 TLS 1.2 Certificate 消息
@@ -649,6 +677,12 @@ std::vector<uint8_t> tls12_make_finished(tls_session& s, bool for_server);
 
 // 验证 TLS 1.2 Finished
 bool tls12_verify_finished(tls_session& s, const uint8_t* data, size_t len, bool for_server);
+
+/// ECDSA 原始签名 (r||s) 与 DER 编码 ECDSA-Sig-Value 互转（RFC 5246 §4.7）。
+bool ecdsa_sign_to_der(const uint8_t* raw, size_t raw_len,
+                       uint8_t* out, size_t out_cap, size_t& out_len);
+bool ecdsa_sig_from_der(const uint8_t* der, size_t der_len,
+                        uint8_t* raw, size_t raw_len);
 
 // 简化版（兼容旧 API）
 bool tls12_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,

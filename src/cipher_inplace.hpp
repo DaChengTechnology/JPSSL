@@ -76,6 +76,33 @@ bool sm4_gcm_decrypt_inplace(const sm4_ctx* ctx,
                              std::span<const uint8_t> aad,
                              const uint8_t* tag, size_t tag_len);
 
+// Auto-dispatched in-place variants (AVX2 > scalar CPU), used by the
+// TLS 1.2 record layer.
+void sm4_gcm_encrypt_inplace_auto(const sm4_ctx* ctx,
+                                  const uint8_t* iv, size_t iv_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  uint8_t* tag, size_t tag_len = 16);
+
+bool sm4_gcm_decrypt_inplace_auto(const sm4_ctx* ctx,
+                                  const uint8_t* iv, size_t iv_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  const uint8_t* tag, size_t tag_len);
+
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX2)
+void sm4_gcm_encrypt_avx2_inplace(const sm4_ctx* ctx,
+                                  const uint8_t* iv, size_t iv_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  uint8_t* tag, size_t tag_len = 16);
+bool sm4_gcm_decrypt_avx2_inplace(const sm4_ctx* ctx,
+                                  const uint8_t* iv, size_t iv_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  const uint8_t* tag, size_t tag_len);
+#endif // (__x86_64__ || _M_X64) && JP_AVX2
+
 // ── SM4-CCM ──
 
 void sm4_ccm_encrypt_inplace(const sm4_ctx* ctx,

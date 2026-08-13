@@ -208,10 +208,11 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         memcpy(s.ks_priv, ecdh_priv, 32);
         memcpy(s.ks_pub, ecdh_pub, 64);
         ext.push_back(0x00);ext.push_back(0x33); // key_share
-        ext.push_back(0x00);ext.push_back(0x46); // 70 = 2 + 68
-        ext.push_back(0x00);ext.push_back(0x44); // client_shares 68
+        ext.push_back(0x00);ext.push_back(0x47); // 71 = 2 + 69
+        ext.push_back(0x00);ext.push_back(0x45); // client_shares 69
         ext.push_back(0x00);ext.push_back(0x17); // secp256r1
-        ext.push_back(0x00);ext.push_back(0x40); // 64
+        ext.push_back(0x00);ext.push_back(0x41); // 65（SEC1 非压缩点）
+        ext.push_back(0x04);
         ext.insert(ext.end(), ecdh_pub, ecdh_pub + 64);
     } else if (s.ks_group == NamedGroup::secp384r1) {
         // secp384r1 (P-384) ECDHE：key_exchange = x||y �?96 字节
@@ -220,10 +221,11 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
         memcpy(s.ks_priv, ecdh_priv, 48);
         memcpy(s.ks_pub, ecdh_pub, 96);
         ext.push_back(0x00);ext.push_back(0x33); // key_share
-        ext.push_back(0x00);ext.push_back(0x66); // 102 = 2 + 100
-        ext.push_back(0x00);ext.push_back(0x64); // client_shares 100
+        ext.push_back(0x00);ext.push_back(0x67); // 103 = 2 + 101
+        ext.push_back(0x00);ext.push_back(0x65); // client_shares 101
         ext.push_back(0x00);ext.push_back(0x18); // secp384r1
-        ext.push_back(0x00);ext.push_back(0x60); // 96
+        ext.push_back(0x00);ext.push_back(0x61); // 97（SEC1 非压缩点）
+        ext.push_back(0x04);
         ext.insert(ext.end(), ecdh_pub, ecdh_pub + 96);
     } else {
         // X25519 (默认)
@@ -342,10 +344,19 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
                     server_pub_sm2_len=65;
                     found_ks_sm2=true;
                 }
-            } else if(group==(uint16_t)NamedGroup::secp256r1 && key_len==64 && elen>=4+64){
-                memcpy(server_pub_p256,data+ext_off+8,64);found_ks_p256=true;
-            } else if(group==(uint16_t)NamedGroup::secp384r1 && key_len==96 && elen>=4+96){
-                memcpy(server_pub_p384,data+ext_off+8,96);found_ks_p384=true;
+            } else if(group==(uint16_t)NamedGroup::secp256r1 && elen>=4+64){
+                // RFC 8446 §4.2.8.2：P-256 key_exchange 为 SEC1 非压缩点（0x04||x||y，65 字节）
+                if(key_len==65 && data[ext_off+8]==0x04){
+                    memcpy(server_pub_p256,data+ext_off+9,64);found_ks_p256=true;
+                } else if(key_len==64){
+                    memcpy(server_pub_p256,data+ext_off+8,64);found_ks_p256=true;
+                }
+            } else if(group==(uint16_t)NamedGroup::secp384r1 && elen>=4+96){
+                if(key_len==97 && data[ext_off+8]==0x04){
+                    memcpy(server_pub_p384,data+ext_off+9,96);found_ks_p384=true;
+                } else if(key_len==96){
+                    memcpy(server_pub_p384,data+ext_off+8,96);found_ks_p384=true;
+                }
             }
         }
         ext_off+=4+elen;
@@ -787,7 +798,7 @@ std::vector<uint8_t> tls13_encrypt_early_data(tls_session& s,
         }
         case CipherSuite::TLS_SM4_GCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, s.client_early_write_key);
-            sm4_gcm_encrypt(&s.sm4, nonce, 12, inner, aad_span, ciphertext, tag, 16);
+            sm4_gcm_encrypt_auto(&s.sm4, nonce, 12, inner, aad_span, ciphertext, tag, 16);
             break;
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {

@@ -47,9 +47,9 @@ static void sm4_ctr_xor(const sm4_ctx* ctx,
 /// IV length == 12: J0 = IV || 0^31 || 1.
 /// Otherwise: J0 = GHASH_H(IV || 0^(s+64) || [len(IV)]_64),
 /// where s = 128*ceil(len(IV)/128) - len(IV) in bits (NIST SP 800-38D 7.1).
-static void sm4_gcm_make_j0(const uint8_t H[16],
-                            const uint8_t* iv, size_t iv_len,
-                            uint8_t j0[16]) {
+void sm4_gcm_make_j0(const uint8_t H[16],
+                     const uint8_t* iv, size_t iv_len,
+                     uint8_t j0[16]) {
     if (iv_len == 12) {
         std::memcpy(j0, iv, 12);
         j0[12] = 0; j0[13] = 0; j0[14] = 0; j0[15] = 1;
@@ -148,10 +148,10 @@ static void sm4_gcm_detect_pclmul() {
 
 /// GHASH(AAD, C)
 /// Input = AAD || 0-pad || C || 0-pad || len(A)_64 || len(C)_64.
-static void sm4_gcm_ghash(const uint8_t H[16],
-                          const uint8_t* aad, size_t aad_len,
-                          const uint8_t* ct, size_t ct_len,
-                          uint8_t out[16]) {
+void sm4_gcm_ghash(const uint8_t H[16],
+                   const uint8_t* aad, size_t aad_len,
+                   const uint8_t* ct, size_t ct_len,
+                   uint8_t out[16]) {
     sm4_gcm_detect_pclmul();
     const uint64_t aad_bits = (uint64_t)aad_len * 8;
     const uint64_t ct_bits  = (uint64_t)ct_len * 8;
