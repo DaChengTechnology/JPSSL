@@ -9,11 +9,12 @@
  *     record”的混合缓冲，发送时拆分处理。
  */
 #include "tls_socket.hpp"
+#include <threadpool/ThreadPool.hpp>
 
 #include <chrono>
 #include <cstring>
 #include <mutex>
-#include <threadpool/ThreadPool.hpp>
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -241,12 +242,11 @@ bool tls_socket_init(std::string* error) {
 }
 
 // ============================================================================
-// tls_co_executor —— poll 驱动 + 可选线程池派发
+// tls_co_executor —— 单线程 poll 驱动
 // ============================================================================
 
 void tls_co_executor::add_waiter(int fd, bool for_write,
                                  std::coroutine_handle<> h) {
-    std::lock_guard<std::mutex> lk(mtx_); // 协程恢复线程（pool）与驱动线程并发
     waiters_.push_back({fd, for_write, h});
 }
 
@@ -960,128 +960,6 @@ bool tls_connection::do_client_handshake_tls12(const tls_certificate_manager* tr
 
     session_.tls12_secure = true;
     rbuf_.shrink_to_fit();
-    return true;
-}
-
-// TLS 1.2 客户端握手（RFC 5246）：ClientHello → 明文服务端 flight
-// （ServerHello + [Certificate] + [ServerKeyExchange] + ServerHelloDone）
-// → ClientKeyExchange → 客户端 CCS + 加密 Finished → 服务端 CCS + 加密 Finished。
-bool tls_connection::do_client_handshake_tls12(const tls_certificate_manager* trust_store,
-                                               const tls_trust_store* trust,
-                                               std::string* error) {
-    handshake_guard hg(handshake_pending_);
-
-    // 1. ClientHello（裸握手消息）→ 明文 record
-    std::vector<uint8_t> ch;
-    if (!tls12_make_client_hello(session_, ch)) {
-        set_err(error, "tls12_make_client_hello failed");
-        return false;
-    }
-    auto ch_record = make_record((uint8_t)ContentType::HANDSHAKE, ch.data(), ch.size());
-    if (!write_all(ch_record.data(), ch_record.size(), error)) return false;
-
-    // 2. 读取明文服务端 flight：OpenSSL 等服务端把 ServerHello / Certificate /
-    //    ServerKeyExchange / ServerHelloDone 拆成多条 record 发送，逐条累积裸
-    //    握手消息，直到收到完整 ServerHelloDone 为止。
-    std::vector<uint8_t> flight;
-    bool shd = false;
-    while (!shd) {
-        uint8_t rtype = 0;
-        std::vector<uint8_t> payload;
-        if (!read_record(rtype, payload, error)) return false;
-        if (rtype == (uint8_t)ContentType::ALERT) {
-            set_err(error, "TLS alert during handshake");
-            return false;
-        }
-        if (rtype != (uint8_t)ContentType::HANDSHAKE) continue;
-        flight.insert(flight.end(), payload.begin(), payload.end());
-        size_t off = 0;
-        while (off + 4 <= flight.size()) {
-            size_t hlen = ((size_t)flight[off+1] << 16) |
-                          ((size_t)flight[off+2] << 8) | flight[off+3];
-            if (off + 4 + hlen > flight.size()) break; // 消息不完整，等待后续 record
-            if (flight[off] == (uint8_t)HandshakeType::SERVER_HELLO_DONE) {
-                shd = true;
-                break;
-            }
-            off += 4 + hlen;
-        }
-    }
-
-    // 3. 解析服务端 flight：生成 ClientKeyExchange + Client Finished。
-    //    ECDHE/DHE/PSK 套件的 premaster 由库内部计算；RSA 套件需调用方
-    //    生成 48 字节 premaster（version 0x0303 + 46 随机字节）传入。
-    uint8_t rsa_pms[48];
-    rsa_pms[0] = 0x03; rsa_pms[1] = 0x03;
-    jpssl::secure_rand_bytes(rsa_pms + 2, sizeof(rsa_pms) - 2);
-    tls_session trial = session_;
-    std::vector<uint8_t> cf, cke;
-    if (!tls12_process_server_flight(trial, flight.data(), flight.size(),
-                                     rsa_pms, sizeof(rsa_pms), cf, &cke,
-                                     trust_store, trust)) {
-        set_err(error, "tls12_process_server_flight failed");
-        return false;
-    }
-    session_ = std::move(trial);
-
-    // 4. 发送 ClientKeyExchange（明文 handshake record）
-    if (cke.empty()) {
-        set_err(error, "tls12 client key exchange empty");
-        return false;
-    }
-    auto cke_record = make_record((uint8_t)ContentType::HANDSHAKE, cke.data(), cke.size());
-    if (!write_all(cke_record.data(), cke_record.size(), error)) return false;
-
-    // 5. 发送 ChangeCipherSpec（明文）+ 加密的 Client Finished
-    auto ccs = tls_make_change_cipher_spec();
-    if (!write_all(ccs.data(), ccs.size(), error)) return false;
-    std::vector<uint8_t> cf_enc = tls_encrypt(session_, ContentType::HANDSHAKE,
-                                              cf.data(), cf.size());
-    if (cf_enc.empty()) {
-        set_err(error, "tls12 client finished encrypt failed");
-        return false;
-    }
-    if (!write_all(cf_enc.data(), cf_enc.size(), error)) return false;
-
-    // 6. 读取服务端 ChangeCipherSpec（明文）
-    while (true) {
-        uint8_t rtype = 0;
-        std::vector<uint8_t> payload;
-        if (!read_record(rtype, payload, error)) return false;
-        if (rtype == (uint8_t)ContentType::ALERT) {
-            set_err(error, "TLS alert during handshake");
-            return false;
-        }
-        if (rtype == (uint8_t)ContentType::CHANGE_CIPHER_SPEC) break;
-    }
-
-    // 7. 读取加密的 Server Finished 并校验（transcript 已含客户端 Finished）
-    std::vector<uint8_t> sf_plain;
-    while (true) {
-        uint8_t rtype = 0;
-        std::vector<uint8_t> payload;
-        if (!read_record(rtype, payload, error)) return false;
-        if (rtype == (uint8_t)ContentType::ALERT) {
-            set_err(error, "TLS alert during handshake");
-            return false;
-        }
-        if (rtype != (uint8_t)ContentType::HANDSHAKE) continue;
-        auto rec = make_record(rtype, payload.data(), payload.size());
-        ContentType ct = ContentType::HANDSHAKE;
-        if (!tls_decrypt(session_, rec.data(), rec.size(), ct, sf_plain)) {
-            set_err(error, "tls_decrypt server finished failed");
-            return false;
-        }
-        if (sf_plain.size() >= 4 &&
-            sf_plain[0] == (uint8_t)HandshakeType::FINISHED) break;
-    }
-    if (!tls12_verify_finished(session_, sf_plain.data(), sf_plain.size(),
-                               /*for_server=*/true)) {
-        set_err(error, "tls12 server finished verify failed");
-        return false;
-    }
-
-    session_.tls12_secure = true;
     return true;
 }
 
