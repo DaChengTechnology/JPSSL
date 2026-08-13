@@ -124,6 +124,7 @@ if(JP_WOLFSSL_PREFIX)
         target_link_libraries(test_tls_wolfssl_interop PRIVATE jpssl_cpu wolfssl::wolfssl)
         target_compile_definitions(test_tls_wolfssl_interop PRIVATE
             JPSSL_SM2_CERT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/certs/sm2"
+            JPSSL_TLS_CERT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/certs/tls"
             WOLFSSL_SM2 WOLFSSL_SM3 WOLFSSL_SM4 WOLFSSL_BASE16)
         add_test(NAME test_tls_wolfssl_interop COMMAND test_tls_wolfssl_interop)
     else()
