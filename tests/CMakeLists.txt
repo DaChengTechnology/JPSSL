@@ -117,6 +117,15 @@ if(JP_WOLFSSL_PREFIX)
         target_compile_definitions(test_dtls_wolfssl_interop PRIVATE
             JP_WOLFSSL_CERT_DIR="${JP_WOLFSSL_CERT_DIR}")
         add_test(NAME test_dtls_wolfssl_interop COMMAND test_dtls_wolfssl_interop)
+
+        # TLS 1.3 SM2-SM4-SM3 (RFC 8998) x wolfSSL 互操作
+        add_executable(test_tls_wolfssl_interop test_tls_wolfssl_interop.cpp)
+        target_include_directories(test_tls_wolfssl_interop PRIVATE ${INCLUDE_DIR})
+        target_link_libraries(test_tls_wolfssl_interop PRIVATE jpssl_cpu wolfssl::wolfssl)
+        target_compile_definitions(test_tls_wolfssl_interop PRIVATE
+            JPSSL_SM2_CERT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/certs/sm2"
+            WOLFSSL_SM2 WOLFSSL_SM3 WOLFSSL_SM4 WOLFSSL_BASE16)
+        add_test(NAME test_tls_wolfssl_interop COMMAND test_tls_wolfssl_interop)
     else()
         message(WARNING "tests: JP_WOLFSSL_PREFIX set but wolfssl-config.cmake not found; skipping")
     endif()
