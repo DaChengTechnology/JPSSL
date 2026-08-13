@@ -44,15 +44,15 @@ int sm4_gcm_auto_level();
 // AVX2 backend: 8-way parallel SM4-CTR + PCLMULQDQ/software GHASH.
 void sm4_gcm_encrypt_avx2(const sm4_ctx* ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> plaintext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> plaintext,
+                          jpssl::span<const uint8_t> aad,
                           std::vector<uint8_t>& ciphertext,
                           uint8_t* tag, size_t tag_len = 16);
 
 bool sm4_gcm_decrypt_avx2(const sm4_ctx* ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> ciphertext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> ciphertext,
+                          jpssl::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext);
 #endif // (__x86_64__ || _M_X64) && JP_AVX2
@@ -62,15 +62,15 @@ bool sm4_gcm_decrypt_avx2(const sm4_ctx* ctx,
 // (VGF2P8AFFINEQB + VGF2P8AFFINEINVQB) + PCLMULQDQ/software GHASH.
 void sm4_gcm_encrypt_gfni(const sm4_ctx* ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> plaintext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> plaintext,
+                          jpssl::span<const uint8_t> aad,
                           std::vector<uint8_t>& ciphertext,
                           uint8_t* tag, size_t tag_len = 16);
 
 bool sm4_gcm_decrypt_gfni(const sm4_ctx* ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> ciphertext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> ciphertext,
+                          jpssl::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext);
 #endif // (__x86_64__ || _M_X64) && JP_GFNI

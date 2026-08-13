@@ -38,8 +38,8 @@ static void sm4_gcm_ctr_start(const uint8_t j0[16], size_t iv_len, uint8_t ctr[1
 
 void sm4_gcm_encrypt_avx2(const sm4_ctx* ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> plaintext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> plaintext,
+                          jpssl::span<const uint8_t> aad,
                           std::vector<uint8_t>& ciphertext,
                           uint8_t* tag, size_t tag_len) {
     uint8_t zero[16] = {};
@@ -67,8 +67,8 @@ void sm4_gcm_encrypt_avx2(const sm4_ctx* ctx,
 
 bool sm4_gcm_decrypt_avx2(const sm4_ctx* ctx,
                           const uint8_t* iv, size_t iv_len,
-                          std::span<const uint8_t> ciphertext,
-                          std::span<const uint8_t> aad,
+                          jpssl::span<const uint8_t> ciphertext,
+                          jpssl::span<const uint8_t> aad,
                           const uint8_t* tag, size_t tag_len,
                           std::vector<uint8_t>& plaintext) {
     uint8_t zero[16] = {};
@@ -110,7 +110,7 @@ bool sm4_gcm_decrypt_avx2(const sm4_ctx* ctx,
 void sm4_gcm_encrypt_avx2_inplace(const sm4_ctx* ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> aad,
                                   uint8_t* tag, size_t tag_len) {
     uint8_t zero[16] = {};
     uint8_t H[16];
@@ -135,7 +135,7 @@ void sm4_gcm_encrypt_avx2_inplace(const sm4_ctx* ctx,
 bool sm4_gcm_decrypt_avx2_inplace(const sm4_ctx* ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> aad,
                                   const uint8_t* tag, size_t tag_len) {
     uint8_t zero[16] = {};
     uint8_t H[16];

@@ -338,7 +338,7 @@ static void test_sm4_gcm_dispatch() {
         std::vector<uint8_t> aad(aad_fixed, aad_fixed + sizeof(aad_fixed));
         if (len == 0) aad.clear();
 
-        std::span<const uint8_t> p_span(plain), a_span(aad);
+    jpssl::span<const uint8_t> p_span(plain), a_span(aad);
 
         // Scalar CPU reference.
         std::vector<uint8_t> ct_cpu;
@@ -356,7 +356,7 @@ static void test_sm4_gcm_dispatch() {
         // Auto decrypt round-trip.
         std::vector<uint8_t> pt_auto;
         bool ok_auto = jpssl::sm4_gcm_decrypt_auto(
-            &ctx, iv, 12, std::span<const uint8_t>(ct_auto), a_span, tag_auto, 16, pt_auto);
+    &ctx, iv, 12, jpssl::span<const uint8_t>(ct_auto), a_span, tag_auto, 16, pt_auto);
         ASSERT(ok_auto && pt_auto == plain, (l_auto + " decrypt").c_str());
 
 #if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_AVX2)
@@ -372,7 +372,7 @@ static void test_sm4_gcm_dispatch() {
 
             std::vector<uint8_t> pt_avx2;
             bool ok_avx2 = jpssl::sm4_gcm_decrypt_avx2(
-                &ctx, iv, 12, std::span<const uint8_t>(ct_avx2), a_span, tag_avx2, 16, pt_avx2);
+    &ctx, iv, 12, jpssl::span<const uint8_t>(ct_avx2), a_span, tag_avx2, 16, pt_avx2);
             ASSERT(ok_avx2 && pt_avx2 == plain, (l_avx2 + " decrypt").c_str());
 
             // Tampered tag must be rejected by the AVX2 backend.
@@ -381,7 +381,7 @@ static void test_sm4_gcm_dispatch() {
             bad_tag[0] ^= 0x01;
             std::vector<uint8_t> pt_bad;
             bool ok_bad = jpssl::sm4_gcm_decrypt_avx2(
-                &ctx, iv, 12, std::span<const uint8_t>(ct_avx2), a_span, bad_tag, 16, pt_bad);
+    &ctx, iv, 12, jpssl::span<const uint8_t>(ct_avx2), a_span, bad_tag, 16, pt_bad);
             ASSERT(!ok_bad, (l_avx2 + " rejects tampered tag").c_str());
         }
 #endif
@@ -398,7 +398,7 @@ static void test_sm4_gcm_dispatch() {
 
             std::vector<uint8_t> pt_gfni;
             bool ok_gfni = jpssl::sm4_gcm_decrypt_gfni(
-                &ctx, iv, 12, std::span<const uint8_t>(ct_gfni), a_span,
+    &ctx, iv, 12, jpssl::span<const uint8_t>(ct_gfni), a_span,
                 tag_gfni, 16, pt_gfni);
             ASSERT(ok_gfni && pt_gfni == plain, (l_gfni + " decrypt").c_str());
 
@@ -408,7 +408,7 @@ static void test_sm4_gcm_dispatch() {
             bad_tag[0] ^= 0x01;
             std::vector<uint8_t> pt_bad;
             bool ok_bad = jpssl::sm4_gcm_decrypt_gfni(
-                &ctx, iv, 12, std::span<const uint8_t>(ct_gfni), a_span,
+    &ctx, iv, 12, jpssl::span<const uint8_t>(ct_gfni), a_span,
                 bad_tag, 16, pt_bad);
             ASSERT(!ok_bad, (l_gfni + " rejects tampered tag").c_str());
         }

@@ -22,6 +22,8 @@
 #include "tls.hpp"
 #include "ed25519.hpp"
 #include "rsa.hpp"
+#include "jpssl_span.hpp"
+#include "jpssl_memory.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -117,7 +119,7 @@ struct HandshakePair {
 };
 
 std::unique_ptr<tls_certificate> make_ed25519_cert() {
-    auto cert = std::make_unique<tls_certificate>();
+    auto cert = jpssl::make_unique<tls_certificate>();
     cert->subject_name = "fuzz.local";
     cert->sig_alg = SignatureAlgorithm::ED25519;
     ed25519_keygen(cert->pub.ed25519, cert->priv.ed25519);
@@ -157,7 +159,7 @@ bool prepare_tls12(HandshakePair& p, std::vector<uint8_t>& pre_master) {
     const tls_certificate* cert_ptr = cert_mgr.get_default_certificate();
     if (!cert_ptr) return false;
     // rsa_encrypt 填充 encrypted_pms（RSA-2048 密文 256 字节）
-    rsa_encrypt(cert_ptr->pub.rsa, std::span<const uint8_t>(pre_master.data(), 48),
+    rsa_encrypt(cert_ptr->pub.rsa, jpssl::span<const uint8_t>(pre_master.data(), 48),
                 encrypted_pms);
 
     tls_session server;

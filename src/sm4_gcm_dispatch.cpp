@@ -92,7 +92,7 @@ bool sm4_gcm_decrypt_auto(const sm4_ctx* ctx,
 void sm4_gcm_encrypt_inplace_auto(const sm4_ctx* ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> aad,
                                   uint8_t* tag, size_t tag_len) {
     sm4_detect_best();
     switch (g_sm4_level) {
@@ -118,7 +118,7 @@ void sm4_gcm_encrypt_inplace_auto(const sm4_ctx* ctx,
 bool sm4_gcm_decrypt_inplace_auto(const sm4_ctx* ctx,
                                   const uint8_t* iv, size_t iv_len,
                                   uint8_t* buf, size_t data_len,
-                                  std::span<const uint8_t> aad,
+                                  jpssl::span<const uint8_t> aad,
                                   const uint8_t* tag, size_t tag_len) {
     sm4_detect_best();
     switch (g_sm4_level) {

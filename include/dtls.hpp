@@ -151,13 +151,13 @@ struct dtls_session {
     // 服务端选择的本证书签名方案
     uint16_t selected_sig_alg = 0;
 
-    // ── 独立状态标志（打包为位域：8 个标志仅占 1 字节）──────────────
-    bool handshake_done : 1 = false;            ///< 本端握手完成
-    bool server_finished_received : 1 = false;  ///< 客户端收到服务端 Finished
-    bool require_cookie : 1 = false;            ///< 服务端是否要求 cookie 交换
-    bool retransmit_requested : 1 = false;      ///< 识别到对端重传，重发 last_sent
-    bool transcript_valid : 1 = false;
-    bool have_server_cert : 1 = false;
+    // ── 独立状态标志（C++11 兼容：位域默认初始化需 C++20，此处用普通 bool）──
+    bool handshake_done = false;            ///< 本端握手完成
+    bool server_finished_received = false;  ///< 客户端收到服务端 Finished
+    bool require_cookie = false;            ///< 服务端是否要求 cookie 交换
+    bool retransmit_requested = false;      ///< 识别到对端重传，重发 last_sent
+    bool transcript_valid = false;
+    bool have_server_cert = false;
 
     // Client-side: parsed server certificate chain, kept across step calls
     // (RFC 6347 allows each handshake message in its own datagram)。
