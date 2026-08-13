@@ -115,7 +115,7 @@ void test_dtls12_aes128() {
     TEST("DTLS1.2 AES-128 handshake", run_handshake(client, server, cert_mgr, &trust));
     TEST("client done", client.handshake_done);
     TEST("server done", server.handshake_done);
-    TEST("peer finished", server.peer_finished);
+    TEST("peer finished", server.server_phase == DtlsServerPhase::Done);
 
     static const uint8_t msg[] = "Hello DTLS 1.2 AES-GCM!";
     TEST("c->s app data", app_roundtrip(client, server, msg, sizeof(msg) - 1));
@@ -178,7 +178,7 @@ void test_dtls12_cookie() {
     in2.trust_store = &trust;
     auto cstep = dtls_handshake_step(client, in2);
     TEST("client resends CH with cookie", cstep.ok && !cstep.out.empty());
-    TEST("client got HVR", client.hvr_received);
+    TEST("client got HVR", client.client_phase == DtlsClientPhase::HvrReceived);
 
     // 剩余握手：从服务端处理带 cookie 的 CH 开始
     std::vector<uint8_t> dg = cstep.out;
@@ -204,7 +204,7 @@ void test_dtls12_cookie() {
         if (client.handshake_done && dg.empty()) break;
     }
     TEST("DTLS1.2 cookie handshake completes", client.handshake_done && server.handshake_done);
-    TEST("server validated cookie", server.client_hello_ok);
+    TEST("server validated cookie", server.server_phase >= DtlsServerPhase::HelloOk);
 }
 
 void test_dtls12_record_format() {
