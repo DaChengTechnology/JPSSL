@@ -1,5 +1,53 @@
 # Changelog
 
+## [1.1.7] - 2026-08-13
+
+### Added
+- **第三方 TLS 实现全量多长度互操作测试**（在 DTLS 1.2/1.3 wolfSSL 互操作之上扩展）：
+  - OpenSSL SM2 证书服务端互通（SM2-SM4-SM3 全链路）；
+  - SM2-SM4-SM3（RFC 8998）与 wolfSSL 双向互通；
+  - wolfSSL TLS 1.2/1.3 全量多长度互通：30 套件 × 2 方向 × 31 长度，
+    含大量非 8 字节对齐边界（1..17、31/32/33、…、65535/65536/65537）；
+  - Mbed TLS 3.6 TLS 1.2/1.3 互操作（`test_tls_mbedtls_interop`，
+    `-DJP_MBEDTLS_PREFIX` 注入安装前缀，30 套件 × 2 方向 × 31 长度）；
+  - rustls 0.23（ring provider）TLS 1.2/1.3 互操作（`tools/rustls_interop`
+    Rust 独立实现，覆盖 rustls 支持的 9 套件 × 2 方向 × 31 长度）。
+- **DTLS 服务器/客户端示例**（`examples/dtls/`）：`dtls_server` / `dtls_client`，
+  基于 `dtls_connection` 的 UDP 回显演示，支持 DTLS 1.2/1.3、密码套件、
+  密钥交换组、cookie 交换（HelloVerifyRequest）与 PEM 证书加载；
+  未提供证书时内存生成 ECDSA P-256 自签证书，开箱即用。
+- **SM4-GCM 算法路由与加速后端**：
+  - 运行时算法路由（GFNI > AVX2 > 标量），TLS 1.3 记录层接入；
+  - GFNI 常量时间 S-Box 后端（VGF2P8AFFINEQB / VGF2P8AFFINEINVQB），
+    SM4-GCM 提速 2.85×；
+  - GHASH 4 路并行 PCLMULQDQ，GHASH 提速 2.0×。
+- **TLS/DTLS 记录层 fuzz 测试**：`test_tls_record_fuzz` /
+  `test_dtls_record_fuzz` / `test_tls_handshake_fuzz`，并修复 5 处内存安全缺陷。
+- **系统信任库证书校验**：Windows ROOT 库加载、RSA-PSS（SHA-256/384/512）
+  与 RSA-4096 链验证。
+
+### Fixed
+- **TLS 1.3 记录填充解析（RFC 8446 §5.2）**：`TLSInnerPlaintext` 允许内容
+  类型字节后追加零填充；此前假定 type 为最后一个字节，Mbed TLS 填充记录
+  会解密失败。
+- **TLS 1.2 套件协商**：仅从客户端通告列表中选择并拒绝未知套件；TLS 1.2
+  不再接受 SM4 套件（TLS 1.2 协议不支持 SM4）。
+- **AES-GCM VAES counter 进位**：修复 8 块流水 counter 递增 bug 与跨
+  255→256 进位丢失（长消息 ≥4096B 密文错误）。
+- **TLS socket**：恢复 Windows localhost 阻塞 connect 语义；握手 I/O 受
+  握手超时约束，服务端 flight 异常时快速失败。
+
+### Perf
+- **内存优化**：
+  - `dtls_session`：内嵌 2688B `tls_certificate` 改为 `shared_ptr` 按需堆分配，
+    握手互斥布尔合并为 uint8 阶段枚举，3840B → 1112B（-71%）；
+  - `tls_session`：按成员对齐重排消除全部填充空隙，2976B → 2912B。
+- **P-256 ECDSA**：comb_mul_G 固定点汇编（Linux/macOS x86-64）+ ADX 内联
+  汇编加速。
+- **X25519**：fe51（radix-2^51）域运算汇编原语（移植 OpenSSL
+  x25519-x86_64.pl）。
+- **批量 ECDH**：OpenMP 线程数按 CPU 核数自适应；HMAC 微优化。
+
 ## [1.1.0] - 2026-08-08
 
 ### Added
