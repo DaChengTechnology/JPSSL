@@ -32,6 +32,9 @@
 #include <openssl/x509.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
+#include <openssl/obj_mac.h>
+#include <openssl/core_names.h>
+#include <openssl/params.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -246,6 +249,81 @@ static X509* ossl_self_signed(EVP_PKEY* pkey) {
         return nullptr;
     }
     return x;
+}
+
+// OpenSSL 生成 SM2 密钥对；xy 输出 64 字节 x||y（jpssl tls_certificate 布局，
+// 不带 0x04 前缀）。返回 provider-native "SM2" keytype 的私钥：
+// OpenSSL 4.0 的 RFC 8998 TLS 服务端要求该 keytype，直接 EVP keygen 得到的是
+// legacy EC 密钥（握手会报 unsupported protocol），因此生成后经 PKCS#8 DER
+// 往返转换（与 `openssl req` 产出的密钥一致）。ec_key_out 返回用于证书
+// 自签的 legacy EC 密钥（X509_sign 需要它）。
+static EVP_PKEY* ossl_gen_sm2_key(uint8_t xy[64], EVP_PKEY** ec_key_out) {
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
+    if (!ctx) return nullptr;
+    EVP_PKEY* ec = nullptr;
+    if (EVP_PKEY_keygen_init(ctx) <= 0 ||
+        EVP_PKEY_CTX_set_ec_paramgen_curve_nid(ctx, NID_sm2) <= 0 ||
+        EVP_PKEY_keygen(ctx, &ec) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        return nullptr;
+    }
+    EVP_PKEY_CTX_free(ctx);
+
+    unsigned char raw[128];
+    size_t raw_len = 0;
+    if (EVP_PKEY_get_octet_string_param(ec, OSSL_PKEY_PARAM_PUB_KEY,
+                                        raw, sizeof(raw), &raw_len) != 1 ||
+        raw_len != 65 || raw[0] != 0x04) {
+        EVP_PKEY_free(ec);
+        return nullptr;
+    }
+    std::memcpy(xy, raw + 1, 64);
+
+    unsigned char* der = nullptr;
+    int dlen = i2d_PrivateKey(ec, &der);
+    EVP_PKEY* sm2 = nullptr;
+    if (dlen > 0 && der) {
+        const unsigned char* p = der;
+        sm2 = d2i_AutoPrivateKey(nullptr, &p, dlen);
+    }
+    if (der) OPENSSL_free(der);
+    if (ec_key_out) *ec_key_out = ec;
+    else EVP_PKEY_free(ec);
+    return sm2;
+}
+
+// OpenSSL SM2 自签证书（CN=localhost）。用 legacy EC 密钥签名（SHA256），
+// 再经 DER 往返使证书公钥同样成为 provider-native（与 openssl req 输出一致）。
+// TLS 1.3 中证书自身签名算法与握手 CertificateVerify 相互独立，jpssl 客户端
+// 只校验叶证书公钥 + CertificateVerify，因此自签算法不影响互操作。
+static X509* ossl_sm2_self_signed(EVP_PKEY* ec_key) {
+    X509* x = X509_new();
+    if (!x) return nullptr;
+    X509_set_version(x, 2);  // v3
+    ASN1_INTEGER_set(X509_get_serialNumber(x), 0x1234);
+    X509_gmtime_adj(X509_getm_notBefore(x), -60);
+    X509_gmtime_adj(X509_getm_notAfter(x), 60L * 60 * 24 * 30);
+    X509_set_pubkey(x, ec_key);
+    X509_NAME* name = X509_NAME_new();
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                               (const unsigned char*)"localhost", -1, -1, 0);
+    X509_set_subject_name(x, name);
+    X509_set_issuer_name(x, name);
+    X509_NAME_free(name);
+    if (X509_sign(x, ec_key, EVP_sha256()) <= 0) {
+        X509_free(x);
+        return nullptr;
+    }
+    unsigned char* der = nullptr;
+    int dlen = i2d_X509(x, &der);
+    X509_free(x);
+    X509* out = nullptr;
+    if (dlen > 0 && der) {
+        const unsigned char* p = der;
+        out = d2i_X509(nullptr, &p, dlen);
+    }
+    if (der) OPENSSL_free(der);
+    return out;
 }
 
 // ============================================================
@@ -861,15 +939,20 @@ static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why) {
 //  方向 B：OpenSSL 服务端（TLS 1.3）↔ jpssl 客户端
 // ============================================================
 
-static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why) {
+static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why,
+                                             bool sm2_cert = false) {
     const char* cs_name = ossl_cs_name(cs);
     if (!cs_name) { why = "no ossl suite name"; return false; }
 
     // OpenSSL 服务端密钥对 + 自签证书；公钥同时放入 jpssl 端预期证书
     uint8_t xy[64];
-    EVP_PKEY* pkey = ossl_gen_ecdsa_p256(xy);
+    EVP_PKEY* ec_for_signing = nullptr;
+    EVP_PKEY* pkey = sm2_cert ? ossl_gen_sm2_key(xy, &ec_for_signing)
+                              : ossl_gen_ecdsa_p256(xy);
     if (!pkey) { why = "ossl keygen failed"; return false; }
-    X509* x509 = ossl_self_signed(pkey);
+    X509* x509 = sm2_cert ? ossl_sm2_self_signed(ec_for_signing)
+                          : ossl_self_signed(pkey);
+    if (sm2_cert) { EVP_PKEY_free(ec_for_signing); ec_for_signing = nullptr; }
     if (!x509) { EVP_PKEY_free(pkey); why = "ossl cert failed"; return false; }
 
     SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
@@ -879,8 +962,18 @@ static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why) {
         why = "SKIP: OpenSSL 不支持该套件";
         return true;
     }
-    SSL_CTX_use_certificate(ctx, x509);
-    SSL_CTX_use_PrivateKey(ctx, pkey);
+    if (SSL_CTX_use_certificate(ctx, x509) != 1 ||
+        SSL_CTX_use_PrivateKey(ctx, pkey) != 1) {
+        SSL_CTX_free(ctx); X509_free(x509); EVP_PKEY_free(pkey);
+        why = "ossl use cert/key failed";
+        return false;
+    }
+    // SM2 变体：强制 curveSM2 密钥交换（RFC 8998）
+    if (sm2_cert && SSL_CTX_set1_groups_list(ctx, "SM2") != 1) {
+        SSL_CTX_free(ctx); X509_free(x509); EVP_PKEY_free(pkey);
+        why = "SKIP: OpenSSL 不支持 curveSM2 group";
+        return true;
+    }
 
     jp_sock_t lfd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (lfd == (jp_sock_t)-1) { why = "socket failed"; SSL_CTX_free(ctx); X509_free(x509); EVP_PKEY_free(pkey); return false; }
@@ -926,6 +1019,12 @@ static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why) {
             }
         } else {
             srv_err = "SSL_accept failed";
+            for (unsigned long ossl_e = ERR_get_error(); ossl_e != 0;
+                 ossl_e = ERR_get_error()) {
+                char ebuf[256];
+                ERR_error_string_n(ossl_e, ebuf, sizeof(ebuf));
+                srv_err += std::string(" | ") + ebuf;
+            }
         }
         SSL_shutdown(ssl);
         SSL_free(ssl);
@@ -936,8 +1035,10 @@ static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why) {
     tls_certificate_manager cli_mgr;
     auto expect_cert = std::make_unique<tls_certificate>();
     expect_cert->subject_name = "localhost";
-    expect_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
-    std::memcpy(expect_cert->pub.ecdsa_p256, xy, 64);
+    expect_cert->sig_alg = sm2_cert ? SignatureAlgorithm::SM2_SM3
+                                    : SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
+    if (sm2_cert) std::memcpy(expect_cert->pub.sm2, xy, 64);
+    else          std::memcpy(expect_cert->pub.ecdsa_p256, xy, 64);
     cli_mgr.add_certificate("localhost", std::move(expect_cert));
 
     bool ok = false;
@@ -974,6 +1075,9 @@ static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why) {
     EVP_PKEY_free(pkey);
 
     if (!ok && why.empty()) why = srv_err.empty() ? "unknown" : srv_err;
+    if (!ok && !why.empty() && !srv_err.empty() &&
+        why.find("server:") == std::string::npos)
+        why += " | server: " + srv_err;
     if (ok && !srv_ok) { ok = false; why = srv_err.empty() ? "ossl server failed" : srv_err; }
     return ok;
 }
@@ -1092,9 +1196,28 @@ void test_tls13_openssl_interop() {
                 std::cout << "  \xE2\x9C\x97 " << tag << " - " << why << std::endl;
             }
         }
+
+        // B2: OpenSSL server presents a real SM2 certificate (full
+        // SM2-SM4-SM3 chain: SM2 cert + SM2-SM3 CertificateVerify +
+        // curveSM2 ECDHE + SM4-GCM/CCM-SM3 suite).
+        if (sm_suite) {
+            std::string why2;
+            bool r2 = interop_ossl_server_jpssl_client(cs, why2, true);
+            std::string tag2 = std::string("B2 ossl-server(SM2-cert) <-> jpssl-client ") + short_name;
+            if (r2 && why2.rfind("SKIP", 0) == 0) {
+                ++skip;
+                std::cout << "  - " << tag2 << " : " << why2 << std::endl;
+            } else if (r2) {
+                ++pass;
+                std::cout << "  \xE2\x9C\x93 " << tag2 << std::endl;
+            } else {
+                ++fail;
+                std::cout << "  \xE2\x9C\x97 " << tag2 << " - " << why2 << std::endl;
+            }
+        }
     }
 
-    std::printf("  OpenSSL interop: %d pass, %d skip, %d fail (共 %d 套件 × 2 方向)\n",
+    std::printf("  OpenSSL interop: %d pass, %d skip, %d fail (共 %d 套件 × 2 方向 + 2 个 SM2 证书变体)\n",
                 pass, skip, fail, kTotal);
     TEST("TLS 1.3 OpenSSL 互操作可用套件全部通过", fail == 0);
 }
