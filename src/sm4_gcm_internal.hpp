@@ -4,7 +4,8 @@
  *
  * Not installed / not part of the public API. Shared between the scalar
  * backend (sm4_gcm.cpp), the AVX2 backend (sm4_gcm_avx2.cpp) and the
- * AVX2 CTR engine (sm4_avx2.cpp).
+ * AVX2 CTR engine (sm4_avx2.cpp), plus the GFNI block engines used by the
+ * SM4-GCM and SM4-CCM GFNI backends (sm4_gfni.cpp / sm4_ccm_gfni.cpp).
  */
 #include "sm4.hpp"
 
@@ -36,6 +37,10 @@ void sm4_ctr_avx2(const sm4_ctx* ctx, const uint8_t* ctr_block,
 #if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_GFNI)
 void sm4_ctr_gfni(const sm4_ctx* ctx, const uint8_t* ctr_block,
                   const uint8_t* input, uint8_t* output, size_t len);
+
+/// GFNI 8-way parallel SM4 block encryption (128 bytes in, 128 bytes out).
+void sm4_encrypt_8blocks_gfni(const uint32_t rk[32],
+                              const uint8_t* plain, uint8_t* cipher);
 #endif
 
 } // namespace jpssl

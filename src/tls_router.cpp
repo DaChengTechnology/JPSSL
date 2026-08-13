@@ -1406,7 +1406,7 @@ switch(s.cipher_suite){
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, write_key);
-            sm4_ccm_encrypt(&s.sm4, nonce, 12, inner, aad_span, ciphertext, tag, 16);
+            sm4_ccm_encrypt_auto(&s.sm4, nonce, 12, inner, aad_span, ciphertext, tag, 16);
             break;
         }
     }
@@ -1466,9 +1466,9 @@ bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_t recor
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, read_key);
-            ok = sm4_ccm_decrypt(&s.sm4, nonce, 12,
-                                 std::span<const uint8_t>(ciphertext,ct_len),
-                                 aad_span, tag, 16, inner);
+            ok = sm4_ccm_decrypt_auto(&s.sm4, nonce, 12,
+                                      std::span<const uint8_t>(ciphertext,ct_len),
+                                      aad_span, tag, 16, inner);
             break;
         }
     }
@@ -1962,8 +1962,8 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
                 }
                 case CipherSuite::TLS_SM4_CCM_SM3: {
                     sm4_ctx_init_from_key(s.sm4, write_key);
-                    sm4_ccm_encrypt_inplace(&s.sm4, nonce, 12, inner, inner_len,
-                                            aad_span, tag, 16);
+                    sm4_ccm_encrypt_inplace_auto(&s.sm4, nonce, 12, inner, inner_len,
+                                                 aad_span, tag, 16);
                     break;
                 }
             }
@@ -2108,9 +2108,9 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, read_key);
-            ok = sm4_ccm_decrypt(&s.sm4, nonce, 12,
-                                 std::span<const uint8_t>(ciphertext,ct_len),
-                                 aad_span, tag, 16, inner);
+            ok = sm4_ccm_decrypt_auto(&s.sm4, nonce, 12,
+                                      std::span<const uint8_t>(ciphertext,ct_len),
+                                      aad_span, tag, 16, inner);
             break;
         }
     }

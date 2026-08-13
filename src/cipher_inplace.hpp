@@ -131,6 +131,33 @@ bool sm4_ccm_decrypt_inplace(const sm4_ctx* ctx,
                              std::span<const uint8_t> aad,
                              const uint8_t* tag, size_t tag_len);
 
+// Auto-dispatched in-place variants (GFNI > scalar CPU), used by the TLS
+// record layer.
+void sm4_ccm_encrypt_inplace_auto(const sm4_ctx* ctx,
+                                  const uint8_t* nonce, size_t nonce_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  uint8_t* tag, size_t tag_len);
+
+bool sm4_ccm_decrypt_inplace_auto(const sm4_ctx* ctx,
+                                  const uint8_t* nonce, size_t nonce_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  const uint8_t* tag, size_t tag_len);
+
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_GFNI)
+void sm4_ccm_encrypt_gfni_inplace(const sm4_ctx* ctx,
+                                  const uint8_t* nonce, size_t nonce_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  uint8_t* tag, size_t tag_len);
+bool sm4_ccm_decrypt_gfni_inplace(const sm4_ctx* ctx,
+                                  const uint8_t* nonce, size_t nonce_len,
+                                  uint8_t* buf, size_t data_len,
+                                  std::span<const uint8_t> aad,
+                                  const uint8_t* tag, size_t tag_len);
+#endif // (__x86_64__ || _M_X64) && JP_GFNI
+
 // ── GCM 后端就地入口（aes_gcm_auto 分派内部使用，不对外）──
 
 void aes_gcm_encrypt_avx2_inplace(const aes_context& ctx,

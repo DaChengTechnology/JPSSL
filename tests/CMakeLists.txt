@@ -324,6 +324,10 @@ target_include_directories(test_sm PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_sm PRIVATE jpssl_cpu OpenSSL::Crypto)
 endif()
 
+add_executable(test_sm4_ccm test_sm4_ccm.cpp)
+target_include_directories(test_sm4_ccm PRIVATE ${INCLUDE_DIR} ${SRC_DIR})
+target_link_libraries(test_sm4_ccm PRIVATE jpssl_cpu)
+
 # ── AES-CCM 单元测试 ─────────────────────────────────────────────────────
 add_executable(test_aes_ccm test_aes_ccm.cpp)
 target_include_directories(test_aes_ccm PRIVATE ${INCLUDE_DIR})
@@ -455,6 +459,7 @@ add_test(NAME test_aes           COMMAND test_aes)
 add_test(NAME test_aes_ccm       COMMAND test_aes_ccm)
 add_test(NAME test_aes_modes     COMMAND test_aes_modes)
 add_test(NAME test_gcm_simple    COMMAND test_gcm_simple)
+add_test(NAME test_sm4_ccm       COMMAND test_sm4_ccm)
 if(OpenSSL_FOUND)
 add_test(NAME test_sha3          COMMAND test_sha3)
 add_test(NAME test_sha512        COMMAND test_sha512)

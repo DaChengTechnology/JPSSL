@@ -803,7 +803,7 @@ std::vector<uint8_t> tls13_encrypt_early_data(tls_session& s,
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, s.client_early_write_key);
-            sm4_ccm_encrypt(&s.sm4, nonce, 12, inner, aad_span, ciphertext, tag, 16);
+            sm4_ccm_encrypt_auto(&s.sm4, nonce, 12, inner, aad_span, ciphertext, tag, 16);
             break;
         }
     }
