@@ -127,6 +127,24 @@ inline bool cpu_has_pclmulqdq() {
 #endif
 }
 
+/// Checks whether GFNI (GF2P8AFFINEQB / GF2P8AFFINEINVQB) is available.
+/// Used for the constant-time SIMD SM4 S-Box: the inversion polynomial
+/// baked into GF2P8AFFINEINVQB matches SM4's x^8+x^4+x^3+x+1.
+inline bool cpu_has_gfni() {
+#if defined(__x86_64__) || defined(_M_X64)
+#if defined(_MSC_VER)
+    if (!detail_cpu::os_avx_supported()) return false;
+    int r[4];
+    detail_cpu::cpuid(7, 0, r);
+    return (r[2] & (1u << 8)) != 0;  // GFNI (leaf 7, ECX bit 8)
+#else
+    return __builtin_cpu_supports("gfni");
+#endif
+#else
+    return false;
+#endif
+}
+
 /// 检查 AVX512F + AVX512VL 是否可用
 inline bool cpu_has_avx512() {
 #if defined(__x86_64__) || defined(_M_X64)
@@ -406,6 +424,7 @@ struct cpu_features {
     bool aesni;
     bool avx2;
     bool pclmulqdq;
+    bool gfni;
     bool avx512;
     bool vpclmulqdq_vaes;
     bool sha_ni;
@@ -426,6 +445,7 @@ struct cpu_features {
             cpu_has_aesni(),
             cpu_has_avx2(),
             cpu_has_pclmulqdq(),
+            cpu_has_gfni(),
             cpu_has_avx512(),
             cpu_has_vpclmulqdq_vaes(),
             cpu_has_sha_ni(),

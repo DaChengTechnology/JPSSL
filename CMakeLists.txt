@@ -71,6 +71,13 @@ else()
     check_cxx_compiler_flag("-mvaes" JP_CXX_HAS_VAES)
 endif()
 
+# GFNI: MSVC exposes intrinsics under /arch:AVX2; GCC/Clang need -mgfni.
+if(MSVC)
+    set(JP_CXX_HAS_GFNI TRUE)
+else()
+    check_cxx_compiler_flag("-mgfni" JP_CXX_HAS_GFNI)
+endif()
+
 # ── x86 硬件加速 ──────────────────────────────────────────────────────
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     if(NOT MSVC)
@@ -200,6 +207,11 @@ set(X86_SOURCES
     src/sm4_avx2.cpp
     src/sm4_gcm_avx2.cpp
 )
+# GFNI SM4 backend (constant-time S-Box)
+if(JP_CXX_HAS_GFNI)
+    list(APPEND X86_SOURCES src/sm4_gfni.cpp src/sm4_gcm_gfni.cpp)
+endif()
+
 # VAES/AVX512 GCM 后端依赖 -mvaes 编译能力，按检测结果条件加入
 if(JP_CXX_HAS_VAES)
     if(JP_ENABLE_AVX512)
@@ -389,6 +401,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
             COMPILE_FLAGS "/arch:AVX2")
         set_source_files_properties(src/sm4_gcm_avx2.cpp PROPERTIES
             COMPILE_FLAGS "/arch:AVX2")
+        # SM4 GFNI: 8-way constant-time S-Box, GFNI intrinsics under /arch:AVX2
+        set_source_files_properties(src/sm4_gfni.cpp src/sm4_gcm_gfni.cpp PROPERTIES
+            COMPILE_FLAGS "/arch:AVX2")
     else()
         target_compile_options(jpssl_cpu PRIVATE -maes -mavx2 -madx)
         target_compile_options(jpssl_cpu_shared PRIVATE -maes -mavx2 -madx)
@@ -463,6 +478,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
         set_source_files_properties(
             src/base64_avx512.cpp PROPERTIES
             COMPILE_FLAGS "-mavx512f -mavx512bw")
+        # SM4 GFNI: GF2P8AFFINEQB / GF2P8AFFINEINVQB intrinsics
+        set_source_files_properties(src/sm4_gfni.cpp src/sm4_gcm_gfni.cpp PROPERTIES
+            COMPILE_FLAGS "-mavx2 -mgfni")
     endif()
 endif()
 
@@ -470,6 +488,10 @@ if(JP_ENABLE_AVX2 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     # PUBLIC：让测试/示例代码知道该构建提供 AVX2 路径（aes.hpp 据此声明/不声明接口）
     target_compile_definitions(jpssl_cpu PUBLIC JP_AVX2)
     target_compile_definitions(jpssl_cpu_shared PUBLIC JP_AVX2)
+endif()
+if(JP_CXX_HAS_GFNI AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+    target_compile_definitions(jpssl_cpu PUBLIC JP_GFNI)
+    target_compile_definitions(jpssl_cpu_shared PUBLIC JP_GFNI)
 endif()
 if(JP_ENABLE_AVX512 AND JP_CXX_HAS_VAES AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     target_compile_definitions(jpssl_cpu PUBLIC JP_AVX512)

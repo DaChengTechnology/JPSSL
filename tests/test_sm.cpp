@@ -327,9 +327,10 @@ static void test_sm4_gcm_dispatch() {
 
     // Auto dispatch level must match the CPU feature it detected.
     bool has_avx2 = jpssl::cpu_has_avx2();
+    bool has_gfni = jpssl::cpu_has_gfni();
     int level = jpssl::sm4_gcm_auto_level();
-    ASSERT(level == (has_avx2 ? 1 : 0),
-           "SM4-GCM auto level matches cpu_has_avx2()");
+    ASSERT(level == (has_gfni && has_avx2 ? 2 : has_avx2 ? 1 : 0),
+           "SM4-GCM auto level matches cpu_has_avx2()/cpu_has_gfni()");
 
     for (size_t len : lens) {
         std::vector<uint8_t> plain(len);
@@ -384,9 +385,38 @@ static void test_sm4_gcm_dispatch() {
             ASSERT(!ok_bad, (l_avx2 + " rejects tampered tag").c_str());
         }
 #endif
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_GFNI)
+        if (has_gfni) {
+            // Explicit GFNI backend must match the scalar reference.
+            std::vector<uint8_t> ct_gfni;
+            uint8_t tag_gfni[16];
+            jpssl::sm4_gcm_encrypt_gfni(&ctx, iv, 12, p_span, a_span,
+                                        ct_gfni, tag_gfni, 16);
+            std::string l_gfni = "SM4-GCM GFNI == CPU len=" + std::to_string(len);
+            ASSERT(ct_gfni == ct_cpu && std::memcmp(tag_gfni, tag_cpu, 16) == 0,
+                   l_gfni.c_str());
+
+            std::vector<uint8_t> pt_gfni;
+            bool ok_gfni = jpssl::sm4_gcm_decrypt_gfni(
+                &ctx, iv, 12, std::span<const uint8_t>(ct_gfni), a_span,
+                tag_gfni, 16, pt_gfni);
+            ASSERT(ok_gfni && pt_gfni == plain, (l_gfni + " decrypt").c_str());
+
+            // Tampered tag must be rejected by the GFNI backend.
+            uint8_t bad_tag[16];
+            std::memcpy(bad_tag, tag_gfni, 16);
+            bad_tag[0] ^= 0x01;
+            std::vector<uint8_t> pt_bad;
+            bool ok_bad = jpssl::sm4_gcm_decrypt_gfni(
+                &ctx, iv, 12, std::span<const uint8_t>(ct_gfni), a_span,
+                bad_tag, 16, pt_bad);
+            ASSERT(!ok_bad, (l_gfni + " rejects tampered tag").c_str());
+        }
+#endif
     }
 
-    std::printf("  dispatch level = %d (AVX2=%s)\n", level, has_avx2 ? "Y" : "N");
+    std::printf("  dispatch level = %d (GFNI=%s AVX2=%s)\n",
+                level, has_gfni ? "Y" : "N", has_avx2 ? "Y" : "N");
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -32,4 +32,10 @@ void sm4_ctr_avx2(const sm4_ctx* ctx, const uint8_t* ctr_block,
                   const uint8_t* input, uint8_t* output, size_t len);
 #endif
 
+/// GFNI 8-way parallel SM4-CTR (constant-time S-Box via GF2P8AFFINE*).
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_GFNI)
+void sm4_ctr_gfni(const sm4_ctx* ctx, const uint8_t* ctr_block,
+                  const uint8_t* input, uint8_t* output, size_t len);
+#endif
+
 } // namespace jpssl
