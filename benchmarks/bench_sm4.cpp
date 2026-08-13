@@ -16,6 +16,7 @@
 #include "test_utils.hpp"
 #include "sm4.hpp"
 #include "sm4_gcm.hpp"
+#include "sm4_ccm.hpp"
 #include "aes.hpp"
 #include "cpu_features.hpp"
 
@@ -282,6 +283,64 @@ static void bench_sm4_gcm() {
 }
 
 // ========================================================================
+//  SM4-CCM: jpssl scalar vs auto dispatch vs GFNI backend
+// ========================================================================
+static void bench_sm4_ccm() {
+    std::printf("\n=== SM4-CCM (16 MiB, best of 5) ===\n");
+
+    uint8_t key[16], nonce[12];
+    RAND_bytes(key, 16);
+    RAND_bytes(nonce, 12);
+    std::vector<uint8_t> plain(DATA_SIZE);
+    RAND_bytes(plain.data(), (int)DATA_SIZE);
+
+    sm4_ctx sctx;
+    sm4_init(&sctx, key);
+
+    std::vector<uint8_t> ct, pt;
+    uint8_t tag[16];
+    sm4_ccm_encrypt(&sctx, nonce, 12, plain, {}, ct, tag, 16);
+    bool ok = sm4_ccm_decrypt_auto(&sctx, nonce, 12, ct, {}, tag, 16, pt);
+    TEST("jpssl SM4-CCM round-trip",
+         ok && pt.size() == DATA_SIZE &&
+         std::memcmp(pt.data(), plain.data(), DATA_SIZE) == 0);
+
+    double scalar_ms = best_ms([&] {
+        sm4_ccm_encrypt(&sctx, nonce, 12, plain, {}, ct, tag, 16);
+    });
+    double auto_ms = best_ms([&] {
+        sm4_ccm_encrypt_auto(&sctx, nonce, 12, plain, {}, ct, tag, 16);
+    });
+    print_row("jpssl  SM4-CCM enc (scalar)", scalar_ms, DATA_SIZE);
+    print_row("jpssl  SM4-CCM enc (auto)", auto_ms, DATA_SIZE);
+    if (scalar_ms < auto_ms)
+        std::printf("  %-28s scalar %.2fx faster\n", "auto vs scalar (enc)",
+                    auto_ms / scalar_ms);
+    else
+        std::printf("  %-28s auto %.2fx faster\n", "auto vs scalar (enc)",
+                    scalar_ms / auto_ms);
+
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_GFNI)
+    if (cpu_has_gfni()) {
+        double gfni_ms = best_ms([&] {
+            sm4_ccm_encrypt_gfni(&sctx, nonce, 12, plain, {}, ct, tag, 16);
+        });
+        double gfni_dec_ms = best_ms([&] {
+            sm4_ccm_decrypt_gfni(&sctx, nonce, 12, ct, {}, tag, 16, pt);
+        });
+        print_row("jpssl  SM4-CCM enc (GFNI)", gfni_ms, DATA_SIZE);
+        print_row("jpssl  SM4-CCM dec (GFNI)", gfni_dec_ms, DATA_SIZE);
+        if (scalar_ms < gfni_ms)
+            std::printf("  %-28s scalar %.2fx faster\n", "GFNI vs scalar (enc)",
+                        gfni_ms / scalar_ms);
+        else
+            std::printf("  %-28s GFNI %.2fx faster\n", "GFNI vs scalar (enc)",
+                        scalar_ms / gfni_ms);
+    }
+#endif
+}
+
+// ========================================================================
 //  3. Reference: AES-128 (hardware accelerated)
 // ========================================================================
 static void bench_aes128_reference() {
@@ -362,11 +421,14 @@ int main() {
     std::printf("SM4-GCM dispatch level: %d (%s)\n", sm4_level,
                 sm4_level == 2 ? "GFNI" :
                 sm4_level == 1 ? "AVX2" : "scalar CPU");
+    std::printf("SM4-CCM dispatch level: %d (%s)\n", sm4_ccm_auto_level(),
+                sm4_ccm_auto_level() == 1 ? "GFNI" : "scalar CPU");
     std::printf("Data: %llu bytes (16 MiB), best of 5 runs, single-thread\n",
                 (unsigned long long)DATA_SIZE);
 
     bench_sm4_ecb();
     bench_sm4_gcm();
+    bench_sm4_ccm();
     bench_aes128_reference();
 
     std::printf("\nDone.\n");

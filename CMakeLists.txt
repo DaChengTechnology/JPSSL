@@ -178,6 +178,7 @@ set(CPU_SOURCES
     src/sm4_gcm.cpp
     src/sm4_ccm.cpp
     src/sm4_gcm_dispatch.cpp
+    src/sm4_ccm_dispatch.cpp
     src/rsa_batch_dispatch.cpp
     src/rsa_prim.cpp
     src/rsa_oaep.cpp
@@ -211,7 +212,7 @@ set(X86_SOURCES
 )
 # GFNI SM4 backend (constant-time S-Box)
 if(JP_CXX_HAS_GFNI)
-    list(APPEND X86_SOURCES src/sm4_gfni.cpp src/sm4_gcm_gfni.cpp)
+    list(APPEND X86_SOURCES src/sm4_gfni.cpp src/sm4_gcm_gfni.cpp src/sm4_ccm_gfni.cpp)
 endif()
 
 # VAES/AVX512 GCM 后端依赖 -mvaes 编译能力，按检测结果条件加入
@@ -404,7 +405,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
         set_source_files_properties(src/sm4_gcm_avx2.cpp PROPERTIES
             COMPILE_FLAGS "/arch:AVX2")
         # SM4 GFNI: 8-way constant-time S-Box, GFNI intrinsics under /arch:AVX2
-        set_source_files_properties(src/sm4_gfni.cpp src/sm4_gcm_gfni.cpp PROPERTIES
+        set_source_files_properties(src/sm4_gfni.cpp src/sm4_gcm_gfni.cpp src/sm4_ccm_gfni.cpp PROPERTIES
             COMPILE_FLAGS "/arch:AVX2")
     else()
         target_compile_options(jpssl_cpu PRIVATE -maes -mavx2 -madx)
@@ -481,7 +482,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
             src/base64_avx512.cpp PROPERTIES
             COMPILE_FLAGS "-mavx512f -mavx512bw")
         # SM4 GFNI: GF2P8AFFINEQB / GF2P8AFFINEINVQB intrinsics
-        set_source_files_properties(src/sm4_gfni.cpp src/sm4_gcm_gfni.cpp PROPERTIES
+        set_source_files_properties(src/sm4_gfni.cpp src/sm4_gcm_gfni.cpp src/sm4_ccm_gfni.cpp PROPERTIES
             COMPILE_FLAGS "-mavx2 -mgfni")
     endif()
 endif()

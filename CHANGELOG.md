@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Perf
+- **SM4-CCM GFNI 加速**：新增运行时自动派发（GFNI > 标量），CTR 阶段复用
+  8 路并行 GFNI 引擎（CCM 计数器语义：末 15-nonce_len 字节自增），CBC-MAC
+  串行链与 CTR 融合为单趟处理；16 MiB 单线程加密 172 ms → 118 ms（约 1.46x），
+  解密约 1.43x。SM4-CCM 单元测试（独立参考实现 + 600 组合标量/auto/GFNI
+  一致性矩阵）与 TLS 回归均通过。
+
 ## [1.1.7] - 2026-08-13
 
 ### Added

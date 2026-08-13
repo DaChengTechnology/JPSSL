@@ -68,10 +68,16 @@ static inline __m256i gfni_sm4_F(__m256i x0, __m256i x1, __m256i x2,
     return _mm256_xor_si256(x0, t);
 }
 
+#endif // (__x86_64__ || _M_X64) && JP_GFNI
+
+} // anonymous namespace
+
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_GFNI)
+
 /// Encrypt 8 blocks (16 bytes each) in parallel.
-static void sm4_encrypt_8blocks_gfni(const uint32_t rk[32],
-                                     const uint8_t* plain,
-                                     uint8_t* cipher) {
+void sm4_encrypt_8blocks_gfni(const uint32_t rk[32],
+                              const uint8_t* plain,
+                              uint8_t* cipher) {
     alignas(32) uint32_t buf[32]; // 8 blocks * 4 words
     for (int blk = 0; blk < 8; ++blk) {
         const uint8_t* p = plain + blk * 16;
@@ -106,12 +112,6 @@ static void sm4_encrypt_8blocks_gfni(const uint32_t rk[32],
         c[12]=w3>>24;c[13]=w3>>16;c[14]=w3>>8;c[15]=w3;
     }
 }
-
-#endif // (__x86_64__ || _M_X64) && JP_GFNI
-
-} // anonymous namespace
-
-#if (defined(__x86_64__) || defined(_M_X64)) && defined(JP_GFNI)
 
 /// Scalar CTR tail: byte-by-byte XOR with SM4 keystream, big-endian inc32.
 static void sm4_ctr_xor_scalar(const sm4_ctx* ctx, const uint8_t ctr[16],

@@ -699,9 +699,9 @@ bool tls13_decrypt_early_data(tls_session& s, const uint8_t* record, size_t reco
         }
         case CipherSuite::TLS_SM4_CCM_SM3: {
             sm4_ctx_init_from_key(s.sm4, s.client_early_write_key);
-            ok = sm4_ccm_decrypt(&s.sm4, nonce, 12,
-                                 jpssl::span<const uint8_t>(ciphertext,ct_len),
-                                 aad_span, tag, 16, inner);
+            ok = sm4_ccm_decrypt_auto(&s.sm4, nonce, 12,
+                                      jpssl::span<const uint8_t>(ciphertext,ct_len),
+                                      aad_span, tag, 16, inner);
             break;
         }
     }
