@@ -1474,8 +1474,13 @@ bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_t recor
     }
     if(!ok) return false;
 
-    if(inner.empty() || inner.back()!=(uint8_t)ContentType::HANDSHAKE)return false;
-    hs_out.assign(inner.begin(),inner.end()-1);
+    // RFC 8446 5.2：TLSInnerPlaintext = content || type || zeros(padding)，
+    // 从尾部跳过零填充后第一个非零字节即 ContentType。
+    size_t epos = inner.size();
+    while (epos > 0 && inner[epos - 1] == 0) --epos;
+    if (epos == 0 || inner[epos - 1] != (uint8_t)ContentType::HANDSHAKE)
+        return false;
+    hs_out.assign(inner.begin(), inner.begin() + (epos - 1));
     return true;
 }
 bool tls12_is_ecdhe(CipherSuite cs){
@@ -2110,10 +2115,12 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
         }
     }
     if(!ok) return false;
-    if(inner.empty())return false;
-    // RFC 8446 5.2：type 在末�?
-    ct=(ContentType)inner.back();
-    out.assign(inner.begin(),inner.end()-1);
+    // RFC 8446 5.2：TLSInnerPlaintext = content || type || zeros(padding)
+    size_t epos = inner.size();
+    while (epos > 0 && inner[epos - 1] == 0) --epos;
+    if (epos == 0) return false;
+    ct=(ContentType)inner[epos - 1];
+    out.assign(inner.begin(), inner.begin() + (epos - 1));
     return true;
 }
 

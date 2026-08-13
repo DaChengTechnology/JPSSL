@@ -132,6 +132,27 @@ if(JP_WOLFSSL_PREFIX)
     endif()
 endif()
 
+# ---- Mbed TLS TLS 1.2/1.3 interop (requires Mbed TLS 3.6+ install) ----
+set(JP_MBEDTLS_PREFIX "" CACHE PATH "Mbed TLS install prefix (enables Mbed TLS TLS interop tests)")
+if(JP_MBEDTLS_PREFIX)
+    find_library(MBEDTLS_LIB mbedtls PATHS ${JP_MBEDTLS_PREFIX}/lib NO_DEFAULT_PATH)
+    find_library(MBEDX509_LIB mbedx509 PATHS ${JP_MBEDTLS_PREFIX}/lib NO_DEFAULT_PATH)
+    find_library(MBEDCRYPTO_LIB mbedcrypto PATHS ${JP_MBEDTLS_PREFIX}/lib NO_DEFAULT_PATH)
+    if(MBEDTLS_LIB AND MBEDX509_LIB AND MBEDCRYPTO_LIB)
+        message(STATUS "tests: build Mbed TLS interop test (${JP_MBEDTLS_PREFIX})")
+        add_executable(test_tls_mbedtls_interop test_tls_mbedtls_interop.cpp)
+        target_include_directories(test_tls_mbedtls_interop PRIVATE
+            ${INCLUDE_DIR} "${JP_MBEDTLS_PREFIX}/include")
+        target_link_libraries(test_tls_mbedtls_interop PRIVATE
+            jpssl_cpu ${MBEDTLS_LIB} ${MBEDX509_LIB} ${MBEDCRYPTO_LIB})
+        target_compile_definitions(test_tls_mbedtls_interop PRIVATE
+            JPSSL_TLS_CERT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/certs/tls")
+        add_test(NAME test_tls_mbedtls_interop COMMAND test_tls_mbedtls_interop)
+    else()
+        message(WARNING "tests: JP_MBEDTLS_PREFIX set but Mbed TLS libs not found; skipping")
+    endif()
+endif()
+
 # ---- QUIC v1/v2 合规性检测（quic-parser，Rust 独立实现） ----
 find_program(CARGO_EXECUTABLE cargo)
 if(CARGO_EXECUTABLE)
