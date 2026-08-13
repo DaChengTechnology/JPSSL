@@ -187,8 +187,40 @@ struct tls12_dhe_keys {
 };
 
 struct tls_session {
+    // ═══ 16 字节对齐成员：aes_context（含 AES-NI key schedule，alignof=16）
+    aes_context aes_ctx;
+
+    // ═══ 8 字节对齐成员（string/vector/shared_ptr/uint64）══════════
+    std::string server_name;             // SNI: 客户端请求的服务器名称
+    transcript_ctx_union transcript_ctx; // TLS 1.3 握手 transcript 哈希
+    quic_transport_parameters quic_transport_params;      // 本端 QUIC 传输参数
+    quic_transport_parameters quic_peer_transport_params; // 对端 QUIC 传输参数
+    std::shared_ptr<jpssl::rsa_private_key> rsa_key;      // TLS 1.2 服务端 RSA 私钥（按需堆分配）
+    std::shared_ptr<tls12_dhe_keys> dhe_keys;             // TLS 1.2 DHE 临时密钥对（按需）
+    std::shared_ptr<quic_secrets_block> quic_secrets;     // QUIC 数据包保护 secret（按需）
+    std::vector<uint8_t> tls12_client_hello_cache;        // 客户端 ClientHello 缓存
+    std::vector<uint16_t> sig_algs;                       // signature_algorithms
+    std::vector<uint16_t> sig_algs_cert;                  // signature_algorithms_cert
+    std::vector<std::string> alpn_protos;                 // ALPN 本地协议列表
+    std::string alpn_selected;                            // 本次协商出的协议
+    uint64_t client_seq, server_seq;
+    uint64_t ticket_issue_time = 0;      // ticket 签发时间戳 (用于 replay 保护)
+    uint64_t client_early_seq = 0;       // early data 序号
+    size_t tls12_psk_identity_len = 0;
+    size_t tls12_psk_value_len = 0;
+
+    // ═══ 4 字节对齐成员 ═══════════════════════════════════════════
+    sm4_ctx sm4;                         // SM4 cipher context for SM cipher suites
     TLSVersion ver;
-    std::string server_name; // SNI: 客户端请求的服务器名称
+    QuicVersion quic_version = QuicVersion::V1;
+    uint32_t ticket_age_add = 0;         // ticket 混淆 age
+
+    // ═══ 2 字节对齐成员 ═══════════════════════════════════════════
+    CipherSuite cipher_suite = CipherSuite::TLS_AES_128_GCM_SHA256;
+    NamedGroup ks_group = NamedGroup::X25519;
+    uint16_t selected_sig_alg = 0;       // 本次握手协商出的签名方案
+
+    // ═══ 1 字节成员（标志位与密钥/随机数数组，无对齐要求）════════
     uint8_t client_random[32], server_random[32];
     uint8_t handshake_secret[48], master_secret[48]; // 48 for SHA-384 suites, first 32 for SHA-256
     // RFC 8446 7.1：handshake traffic secrets（Finished 密钥的 BaseKey）
@@ -199,104 +231,37 @@ struct tls_session {
     // TLS 1.2 CBC 独立 MAC secret（RFC 5246 6.3：key_block 先排 MAC secret，
     // SHA-256 为 32 字节，SHA-384 为 48 字节）；AEAD 套件不使用
     uint8_t client_write_mac[48], server_write_mac[48];
-    uint64_t client_seq, server_seq;
-    aes_context aes_ctx;
-    sm4_ctx   sm4;                // SM4 cipher context for SM cipher suites
-
-    // TLS 1.2 会话状态
-    uint8_t session_id[32];       // 会话 ID (TLS 1.2 会话恢复)
+    uint8_t transcript_hash[48];         // 已计算的 transcript 哈希
+    uint8_t session_id[32];              // 会话 ID (TLS 1.2 会话恢复)
     uint8_t session_id_len = 0;
-    bool tls12_ems = false;           // TLS 1.2 Extended Master Secret (RFC 7627) 已协商
-    bool tls12_ccs_received = false;  // ChangeCipherSpec 已接收
-    bool tls12_ccs_sent = false;     // ChangeCipherSpec 已发送
-    bool tls12_secure = false;       // 加密层已激活
-
-    bool is_server = false;
-    CipherSuite cipher_suite = CipherSuite::TLS_AES_128_GCM_SHA256;
-    bool cipher_suite_pinned = false;   // 用户显式固定 cipher_suite（默认值视为未固定）
-    transcript_ctx_union transcript_ctx; // TLS 1.3 握手 transcript 哈希
-    uint8_t transcript_hash[48]; // 已计算的 transcript 哈希 (32 for SHA-256, 48 for SHA-384)
-    bool transcript_ready = false;
-    NamedGroup ks_group = NamedGroup::X25519;
     uint8_t ks_priv[56];       // curveSM2(32) / X448(56) / X25519(32) / secp256r1(32) / secp384r1(48)
     uint8_t ks_pub[96];        // secp384r1(96) / curveSM2(64) / X448(56) / X25519(32) / secp256r1(64)
     // SM 套件客户端额外生成的 X25519 兜底临时对（RFC 8998 要求 curveSM2
     // 必须出现，但非 SM 服务器可能回落到 X25519）
     uint8_t ks_priv_x25519[32];
     uint8_t ks_pub_x25519[32];
-
-    // TLS 1.2 服务端：RSA 密钥交换/签名所需的服务器私钥（由握手流程注入，
-    // 仅服务端会话填充；ECDHE 套件仅用于 SKX 签名，RSA 套件用于 premaster 解密）
-    // TLS 1.2 服务端 RSA 套件专用私钥：按需堆分配（默认 TLS 1.3 / ECDSA 不占
-    // 这 2KB），shared_ptr 保证 tls_session 仍可拷贝（客户端 trial 回滚路径）。
-    std::shared_ptr<jpssl::rsa_private_key> rsa_key;
-
-    // TLS 1.2 客户端：ClientHello 原始字节缓存。客户端生成 ClientHello 时
-    // 还不知道服务端将选定的 cipher_suite（transcript 哈希算法依赖它），
-    // 因此推迟到收到 ServerHello、解析出套件后再初始化 transcript 并补入。
-    std::vector<uint8_t> tls12_client_hello_cache;
-
-    // TLS 1.2 DHE（RFC 7919 ffdhe2048）：服务端临时密钥对。
-    // 按需堆分配（tls12_dhe_keys），仅 DHE 套件填充；共享指针保证
-    // tls_session 保持可拷贝（客户端 trial 回滚路径）。
-    std::shared_ptr<tls12_dhe_keys> dhe_keys;
-
-    // TLS 1.2 PSK（RFC 4279 / RFC 5487）
-    //   客户端：调用方配置 identity + value 后置 tls12_psk_valid=true；
-    //   服务端：tls12_make_server_hello_flight 选定 PSK 套件后由 psk_store
-    //   在 ClientKeyExchange 阶段查表填入 value（身份在 CKE 中携带）。
-    bool tls12_psk_valid = false;
-    uint8_t tls12_psk_identity[128];   // identity 上限 128 字节（RFC 允许 2^16-1，实际足够）
-    size_t tls12_psk_identity_len = 0;
-    uint8_t tls12_psk_value[64];       // PSK 上限 64 字节
-    size_t tls12_psk_value_len = 0;
-
-    // 0-RTT / PSK 支持
-    bool psk_valid = false;                // 客户端: 是否有可用 PSK
-    uint8_t psk_identity[32];              // PSK 标识 (ticket)
+    uint8_t tls12_psk_identity[128];     // identity 上限 128 字节（RFC 允许 2^16-1，实际足够）
+    uint8_t tls12_psk_value[64];         // PSK 上限 64 字节
+    uint8_t psk_identity[32];            // PSK 标识 (ticket)
     uint8_t psk_identity_len = 0;
-    uint8_t psk_value[48];                 // PSK 值 (resumption secret, hash_len bytes)
-    uint32_t ticket_age_add = 0;           // ticket 混淆 age
-    uint64_t ticket_issue_time = 0;        // ticket 签发时间戳 (用于 replay 保护)
-
-    // 0-RTT early data 密钥 (仅客户端发送, 服务端接收)
-    uint8_t client_early_write_key[32];
+    uint8_t psk_value[48];               // PSK 值 (resumption secret, hash_len bytes)
+    uint8_t client_early_write_key[32];  // 0-RTT early data 密钥 (仅客户端发送)
     uint8_t client_early_write_iv[12];
-    uint64_t client_early_seq = 0;
-    bool early_data_accepted = false;      // 服务端: 是否接受了 early_data
-    bool server_finished_received = false; // 客户端: 服务端 flight 中已解析到 Server Finished
 
-    // 可配置的 signature_algorithms / signature_algorithms_cert 列表
-    // 为空时使用 tls_default_signature_algorithms() 全量默认值
-    std::vector<uint16_t> sig_algs;
-    std::vector<uint16_t> sig_algs_cert;
-    // 本次握手协商出的签名方案（CertificateVerify / ServerKeyExchange）
-    uint16_t selected_sig_alg = 0;
-
-    // ALPN（RFC 7301，扩展类型 0x0010）：
-    //   客户端：按偏好序要发送的协议列表（如 {"h2","http/1.1"}）
-    //   服务端：本地支持的协议列表（用于与客户端列表匹配选择）
-    // 任一为空表示不进行 ALPN 协商。
-    std::vector<std::string> alpn_protos;
-    // 本次握手协商出的协议（两端一致），为空表示未协商 ALPN。
-    std::string alpn_selected;
-
-    // ── QUIC 模式（RFC 9001 / 9369）：TLS 握手承载于 QUIC CRYPTO 帧 ──
-    // 置为 true 后，TLS 1.3 握手不再使用记录层（无 record 头/无 ChangeCipherSpec），
-    // 握手消息以原始 TLS Handshake 字节流交付；ClientHello 与 EncryptedExtensions
-    // 自动携带 quic_transport_parameters 扩展（RFC 9001 §8.2）。
-    bool quic_mode = false;
-    QuicVersion quic_version = QuicVersion::V1;
-    /// 本端要发送的 QUIC 传输参数（客户端 → CH，服务端 → EE）。
-    quic_transport_parameters quic_transport_params;
-    /// 对端传输参数（握手解析后有效）。
-    quic_transport_parameters quic_peer_transport_params;
+    // 独立状态标志（bool 1 字节；互不相关故不做位域，保持可寻址）
+    bool is_server = false;
+    bool tls12_ems = false;              // TLS 1.2 Extended Master Secret (RFC 7627) 已协商
+    bool tls12_ccs_received = false;     // ChangeCipherSpec 已接收
+    bool tls12_ccs_sent = false;         // ChangeCipherSpec 已发送
+    bool tls12_secure = false;           // 加密层已激活
+    bool cipher_suite_pinned = false;    // 用户显式固定 cipher_suite
+    bool transcript_ready = false;
+    bool tls12_psk_valid = false;
+    bool psk_valid = false;              // 客户端: 是否有可用 PSK
+    bool early_data_accepted = false;    // 服务端: 是否接受了 early_data
+    bool server_finished_received = false; // 客户端: 已解析到 Server Finished
+    bool quic_mode = false;              // QUIC 模式（RFC 9001 / 9369）
     bool quic_peer_params_valid = false;
-
-    // QUIC 数据包保护 secret（RFC 9001 §5.1）：按需堆分配
-    // （quic_secrets_block），仅 quic_mode 会话填充；普通 TLS 连接不占 192 字节。
-    // 由 tls13_derive_handshake_keys / tls13_derive_application_keys 在 quic_mode 下派生。
-    std::shared_ptr<quic_secrets_block> quic_secrets;
     bool quic_hs_secrets_ready = false;
     bool quic_app_secrets_ready = false;
 };
