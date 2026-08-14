@@ -14,6 +14,8 @@
 #include "sm3.hpp"
 #include "rand_os.hpp"
 #include "cipher_inplace.hpp"   // 内部：零拷贝 AEAD（仅记录层使用）
+#include "base64.hpp"
+#include <cctype>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -830,6 +832,24 @@ std::string read_file_string(const char* path) {
 }
 
 // 解析 PEM 中全部证书块（CA bundle 可含多张�?
+// 提取 PEM 中第一个证书块的原始 DER（base64 解码）。
+// 用于 tls_certificate::from_pem：证书必须原样发送原始 DER，
+// 不能经 x509_cert::to_der() 重新序列化——to_der 会重排 X.509 扩展顺序，
+// 使 TBS 字节与证书签名不匹配，客户端链验证将失败（root self-sig fail）。
+std::optional<std::vector<uint8_t>> pem_extract_first_cert_der(const std::string& pem) {
+    size_t b = pem.find("-----BEGIN CERTIFICATE-----");
+    if (b == std::string::npos) return std::nullopt;
+    size_t e = pem.find("-----END CERTIFICATE-----", b);
+    if (e == std::string::npos) return std::nullopt;
+    std::string b64 = pem.substr(b + std::string("-----BEGIN CERTIFICATE-----").size(),
+                                 e - (b + std::string("-----BEGIN CERTIFICATE-----").size()));
+    std::string clean;
+    clean.reserve(b64.size());
+    for (char ch : b64)
+        if (!std::isspace((unsigned char)ch)) clean.push_back(ch);
+    return base64_decode(clean);
+}
+
 std::vector<x509::x509_cert> parse_all_pem_certs(const std::string& pem) {
     std::vector<x509::x509_cert> out;
     size_t pos = 0;
@@ -852,8 +872,10 @@ void set_err(std::string* err, const std::string& msg) { if (err) *err = msg; }
 std::unique_ptr<tls_certificate> tls_certificate::from_pem(const std::string& cert_pem,
                                                            const std::string& key_pem,
                                                            std::string* err) {
-    auto c = x509::x509_cert::from_pem(cert_pem);
-    if (!c) { set_err(err, "certificate PEM parse failed"); return nullptr; }
+    auto der = pem_extract_first_cert_der(cert_pem);
+    if (!der || der->empty()) { set_err(err, "certificate PEM parse failed"); return nullptr; }
+    auto c = x509::x509_cert::from_der(*der);
+    if (!c) { set_err(err, "certificate DER parse failed"); return nullptr; }
     auto k = x509::private_key::from_pem(key_pem);
     if (!k) { set_err(err, "private key PEM parse failed"); return nullptr; }
     if (c->key_type == x509::KeyType::RSA_4096) {
@@ -866,7 +888,7 @@ std::unique_ptr<tls_certificate> tls_certificate::from_pem(const std::string& ce
     }
     auto out = jpssl::make_unique<tls_certificate>();
     out->subject_name = c->common_name();
-    out->cert_data = c->to_der();
+    out->cert_data = std::move(*der);  // 原始 DER，原样发送（保证 TBS 与签名一致）
     out->sig_alg = tls_key_type_to_sig_alg(c->key_type);
     if (!fill_pub(*out, c->key_type, c->public_key)) {
         set_err(err, "failed to import certificate public key");
