@@ -14,6 +14,7 @@
  */
 
 #include "x509.hpp"
+#include "base64.hpp"
 #include "tls.hpp"
 #include "ed25519.hpp"
 #include "ed448.hpp"
@@ -56,6 +57,7 @@ static void usage() {
   --days <n>                    有效期天数 (默认 365, gen/tlsgen 均支持)
   --out, --cert <file>          输出/输入 证书文件 (DER 或 PEM; 默认 ~/.ssh/cert.der)
   --key-out <file>              私钥输出文件 (默认 ~/.ssh/key.bin)
+  --key-format <pem|der>        私钥输出格式 (默认 pem; 均为 PKCS#8)
   --key <file>                  私钥输入文件 (PEM, 支持加密)
   --pass <password>             加密私钥密码 (PBES2)
   --csr <file>                  CSR 输入文件 (PEM)
@@ -172,11 +174,143 @@ static void hex_dump(const uint8_t* d, size_t n) {
     std::printf("\n");
 }
 
+// ------------------------------------------------------------
+//  Private key ASN.1 encoding (PKCS#8 / SEC1 / PKCS#1)
+// ------------------------------------------------------------
+
+// PKCS#8 PrivateKeyInfo:
+//   SEQUENCE { INTEGER 0, AlgorithmIdentifier, OCTET STRING key }
+static std::vector<uint8_t> wrap_pkcs8(const std::vector<uint8_t>& alg_id,
+                                       const std::vector<uint8_t>& key_octets) {
+    std::vector<uint8_t> body;
+    body.push_back(0x02); body.push_back(0x01); body.push_back(0x00);  // version = 0
+    body.insert(body.end(), alg_id.begin(), alg_id.end());
+    auto oct = der::encode_tlv(ASN1Tag::OCTET_STRING, key_octets);
+    body.insert(body.end(), oct.begin(), oct.end());
+    return der::encode_sequence(body);
+}
+
+// SEC1 ECPrivateKey (RFC 5915):
+//   SEQUENCE { INTEGER 1, OCTET STRING priv, [1] BIT STRING pub }
+static std::vector<uint8_t> encode_sec1_ec(const uint8_t* priv, size_t priv_len,
+                                           const uint8_t* pub, size_t pub_len) {
+    std::vector<uint8_t> body;
+    body.push_back(0x02); body.push_back(0x01); body.push_back(0x01);  // version = 1
+    auto priv_tlv = der::encode_tlv(ASN1Tag::OCTET_STRING, priv, priv_len);
+    body.insert(body.end(), priv_tlv.begin(), priv_tlv.end());
+    if (pub && pub_len > 0) {
+        std::vector<uint8_t> bits;
+        bits.push_back(0x00);              // unused bits
+        bits.push_back(0x04);              // uncompressed point prefix
+        bits.insert(bits.end(), pub, pub + pub_len);
+        auto bit = der::encode_tlv(ASN1Tag::BIT_STRING, bits);
+        auto ctx = der::encode_tlv(ASN1Tag::CONTEXT1, bit);
+        body.insert(body.end(), ctx.begin(), ctx.end());
+    }
+    return der::encode_sequence(body);
+}
+
+// PKCS#1 RSAPrivateKey (RFC 8017 3.2):
+//   SEQUENCE { version, n, e, d, p, q, dP, dQ, qInv }
+static std::vector<uint8_t> encode_pkcs1_rsa(const rsa_private_key& k) {
+    std::vector<uint8_t> body;
+    body.push_back(0x02); body.push_back(0x01); body.push_back(0x00);  // version = 0
+    auto add_bn = [&](const rsa_bignum& v) {
+        uint8_t buf[256] = {};
+        v.to_bytes(buf);
+        auto iv = der::encode_integer(std::vector<uint8_t>(buf, buf + 256));
+        body.insert(body.end(), iv.begin(), iv.end());
+    };
+    add_bn(k.n); add_bn(k.e); add_bn(k.d);
+    add_bn(k.p); add_bn(k.q); add_bn(k.dP); add_bn(k.dQ); add_bn(k.qInv);
+    return der::encode_sequence(body);
+}
+
+// Encode a private key as PKCS#8 DER. Ed25519/Ed448 use RFC 8410; EC and SM2
+// wrap a SEC1 ECPrivateKey; RSA wraps a PKCS#1 RSAPrivateKey.
+// `rsa` is required only for RSA_2048.
+static std::vector<uint8_t> encode_private_key_der(KeyType kt,
+                                                   const uint8_t* priv, size_t priv_len,
+                                                   const uint8_t* pub, size_t pub_len,
+                                                   const rsa_private_key* rsa) {
+    switch (kt) {
+        case KeyType::Ed25519: {
+            if (priv_len < 32) die("Ed25519 私钥长度不足");
+            std::vector<uint8_t> seed(priv, priv + 32);
+            std::vector<uint8_t> alg = der::encode_sequence(
+                der::encode_oid(OID_ED25519, sizeof(OID_ED25519)));
+            // OpenSSL 使用嵌套 OCTET STRING 包裹 seed（RFC 8410 兼容写法）
+            return wrap_pkcs8(alg, der::encode_tlv(ASN1Tag::OCTET_STRING, seed));
+        }
+        case KeyType::Ed448: {
+            if (priv_len < 57) die("Ed448 私钥长度不足");
+            std::vector<uint8_t> seed(priv, priv + 57);
+            std::vector<uint8_t> alg = der::encode_sequence(
+                der::encode_oid(OID_ED448, sizeof(OID_ED448)));
+            return wrap_pkcs8(alg, der::encode_tlv(ASN1Tag::OCTET_STRING, seed));
+        }
+        case KeyType::ECDSA_P256:
+        case KeyType::ECDSA_P384:
+        case KeyType::ECDSA_P521:
+        case KeyType::SM2: {
+            const uint8_t* curve = nullptr; size_t curve_len = 0;
+            size_t scalar_len = 0; size_t pt_len = 0;
+            switch (kt) {
+                case KeyType::ECDSA_P256:
+                    curve = OID_EC_SECP256R1; curve_len = sizeof(OID_EC_SECP256R1);
+                    scalar_len = 32; pt_len = 64; break;
+                case KeyType::ECDSA_P384:
+                    curve = OID_EC_SECP384R1; curve_len = sizeof(OID_EC_SECP384R1);
+                    scalar_len = 48; pt_len = 96; break;
+                case KeyType::ECDSA_P521:
+                    curve = OID_EC_SECP521R1; curve_len = sizeof(OID_EC_SECP521R1);
+                    scalar_len = 66; pt_len = 132; break;
+                default:
+                    curve = OID_SM2; curve_len = sizeof(OID_SM2);
+                    scalar_len = 32; pt_len = 64; break;
+            }
+            if (priv_len < scalar_len) die("EC 私钥长度不足");
+            if (pub_len < pt_len) die("EC 公钥长度不足");
+            std::vector<uint8_t> sec1 = encode_sec1_ec(priv, scalar_len, pub, pt_len);
+            std::vector<uint8_t> alg;
+            auto oid = der::encode_oid(OID_EC_PUBLIC_KEY, sizeof(OID_EC_PUBLIC_KEY));
+            alg.insert(alg.end(), oid.begin(), oid.end());
+            auto params = der::encode_oid(curve, curve_len);
+            alg.insert(alg.end(), params.begin(), params.end());
+            return wrap_pkcs8(der::encode_sequence(alg), sec1);
+        }
+        case KeyType::RSA_2048: {
+            if (!rsa) die("RSA 私钥参数缺失");
+            std::vector<uint8_t> pkcs1 = encode_pkcs1_rsa(*rsa);
+            std::vector<uint8_t> alg;
+            auto oid = der::encode_oid(OID_RSA_ENCRYPTION, sizeof(OID_RSA_ENCRYPTION));
+            alg.insert(alg.end(), oid.begin(), oid.end());
+            auto nul = der::encode_tlv(ASN1Tag::NULL_TAG, (const uint8_t*)nullptr, 0);
+            alg.insert(alg.end(), nul.begin(), nul.end());
+            return wrap_pkcs8(der::encode_sequence(alg), pkcs1);
+        }
+        default:
+            die("不支持的私钥类型");
+            return {};
+    }
+}
+
+// Wrap PKCS#8 DER bytes as PEM (-----BEGIN PRIVATE KEY-----)
+static std::string pem_encode_key(const std::vector<uint8_t>& der, const char* label) {
+    std::string b64 = base64_encode(der.data(), der.size());
+    std::string out = std::string("-----BEGIN ") + label + "-----\n";
+    for (size_t i = 0; i < b64.size(); i += 64)
+        out += b64.substr(i, 64) + "\n";
+    out += std::string("-----END ") + label + "-----\n";
+    return out;
+}
+
 // ── key I/O ────────────────────────────────────────────────────────────────
 struct KeyPair {
     KeyType kt;
     std::vector<uint8_t> pub;
     std::vector<uint8_t> priv;
+    rsa_private_key rsa_prv;   // RSA-2048 完整 CRT 参数（编码 PKCS#1 用）
 };
 
 static KeyPair gen_keypair(const std::string& type) {
@@ -197,6 +331,7 @@ static KeyPair gen_keypair(const std::string& type) {
         kp.kt = KeyType::RSA_2048;
         rsa_public_key pub; rsa_private_key prv;
         if (!rsa_keygen(pub, prv)) die("RSA 密钥生成失败");
+        kp.rsa_prv = prv;
         kp.pub.resize(259);
         pub.n.to_bytes(kp.pub.data());
         kp.pub[256] = 0x01; kp.pub[257] = 0x00; kp.pub[258] = 0x01;
@@ -219,6 +354,7 @@ static void cmd_gen(int argc, char** argv) {
     int days = 365;
     std::string out_file = "~/.ssh/cert.der";   // 默认输出到 ~/.ssh
     std::string key_file = "~/.ssh/key.bin";
+    std::string key_fmt = "pem";
 
     for (int i = 0; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--cn") || !std::strcmp(argv[i], "--common-name"))
@@ -231,6 +367,8 @@ static void cmd_gen(int argc, char** argv) {
             { if (++i < argc) out_file = argv[i]; }
         else if (!std::strcmp(argv[i], "--key-out"))
             { if (++i < argc) key_file = argv[i]; }
+        else if (!std::strcmp(argv[i], "--key-format"))
+            { if (++i < argc) key_fmt = argv[i]; }
     }
     check_days(days);
 
@@ -260,10 +398,22 @@ static void cmd_gen(int argc, char** argv) {
     std::string out_path = prepare_output_path(out_file.c_str());
     std::string key_path = prepare_output_path(key_file.c_str());
     write_file(out_path.c_str(), der);
-    write_file(key_path.c_str(), kp.priv);
+    auto key_der = encode_private_key_der(kp.kt, kp.priv.data(), kp.priv.size(),
+                                          kp.pub.data(), kp.pub.size(), &kp.rsa_prv);
+    std::vector<uint8_t> key_out;
+    std::string key_desc = "PKCS#8 PEM";
+    if (key_fmt == "der") {
+        key_out = key_der;
+        key_desc = "PKCS#8 DER";
+    } else {
+        std::string pem = pem_encode_key(key_der, "PRIVATE KEY");
+        key_out.assign(pem.begin(), pem.end());
+    }
+    write_file(key_path.c_str(), key_out);
     set_private_key_mode(key_path.c_str());
-    std::printf("证书: %s (%zu bytes)\n私钥: %s (%zu bytes)\nCN: %s\n有效期: %d 天\n",
-                out_path.c_str(), der.size(), key_path.c_str(), kp.priv.size(), cn.c_str(), days);
+    std::printf("证书: %s (%zu bytes)\n私钥(%s): %s (%zu bytes)\nCN: %s\n有效期: %d 天\n",
+                out_path.c_str(), der.size(), key_desc.c_str(), key_path.c_str(),
+                key_out.size(), cn.c_str(), days);
 }
 
 static void cmd_info(int argc, char** argv) {
@@ -383,6 +533,7 @@ static void cmd_tlsgen(int argc, char** argv) {
     int days = 365;
     std::string out_file = "~/.ssh/cert.der";   // 默认输出到 ~/.ssh
     std::string key_file = "~/.ssh/key.bin";
+    std::string key_fmt = "pem";
 
     for (int i = 0; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--cn") || !std::strcmp(argv[i], "--common-name"))
@@ -395,6 +546,8 @@ static void cmd_tlsgen(int argc, char** argv) {
             { if (++i < argc) out_file = argv[i]; }
         else if (!std::strcmp(argv[i], "--key-out"))
             { if (++i < argc) key_file = argv[i]; }
+        else if (!std::strcmp(argv[i], "--key-format"))
+            { if (++i < argc) key_fmt = argv[i]; }
     }
     check_days(days);
 
@@ -424,26 +577,50 @@ static void cmd_tlsgen(int argc, char** argv) {
     std::string out_path = prepare_output_path(out_file.c_str());
     write_file(out_path.c_str(), der);
 
-    // Write private key
-    std::vector<uint8_t> priv_data;
-    if (key_type == "ed25519")
-        priv_data.assign(tls_cert->priv.ed25519, tls_cert->priv.ed25519 + 64);
-    else if (key_type == "ecdsa")
-        priv_data.assign(tls_cert->priv.ecdsa_p256, tls_cert->priv.ecdsa_p256 + 32);
-    else if (key_type == "sm2")
-        priv_data.assign(tls_cert->priv.sm2, tls_cert->priv.sm2 + 32);
-    else if (key_type == "ed448")
-        priv_data.assign(tls_cert->priv.ed448, tls_cert->priv.ed448 + 57);
-    else if (key_type == "rsa2048") {
-        priv_data.resize(256);
-        tls_cert->priv.rsa.d.to_bytes(priv_data.data());
+    // Write private key (PKCS#8 DER)
+    KeyType kt;
+    const uint8_t* priv = nullptr; size_t priv_len = 0;
+    const uint8_t* pub = nullptr; size_t pub_len = 0;
+    if (key_type == "ed25519") {
+        kt = KeyType::Ed25519;
+        priv = tls_cert->priv.ed25519; priv_len = 64;
+        pub = tls_cert->pub.ed25519; pub_len = 32;
+    } else if (key_type == "ecdsa") {
+        kt = KeyType::ECDSA_P256;
+        priv = tls_cert->priv.ecdsa_p256; priv_len = 32;
+        pub = tls_cert->pub.ecdsa_p256; pub_len = 64;
+    } else if (key_type == "sm2") {
+        kt = KeyType::SM2;
+        priv = tls_cert->priv.sm2; priv_len = 32;
+        pub = tls_cert->pub.sm2; pub_len = 64;
+    } else if (key_type == "ed448") {
+        kt = KeyType::Ed448;
+        priv = tls_cert->priv.ed448; priv_len = 57;
+        pub = tls_cert->pub.ed448; pub_len = 57;
+    } else if (key_type == "rsa2048") {
+        kt = KeyType::RSA_2048;
+    } else {
+        die("未知密钥类型");
+        return;
+    }
+    auto key_der = encode_private_key_der(kt, priv, priv_len, pub, pub_len,
+                                          &tls_cert->priv.rsa);
+    std::vector<uint8_t> key_out;
+    std::string key_desc = "PKCS#8 PEM";
+    if (key_fmt == "der") {
+        key_out = key_der;
+        key_desc = "PKCS#8 DER";
+    } else {
+        std::string pem = pem_encode_key(key_der, "PRIVATE KEY");
+        key_out.assign(pem.begin(), pem.end());
     }
     std::string key_path = prepare_output_path(key_file.c_str());
-    write_file(key_path.c_str(), priv_data);
+    write_file(key_path.c_str(), key_out);
     set_private_key_mode(key_path.c_str());
 
-    std::printf("TLS 证书 (X.509 v3): %s (%zu bytes)\n私钥: %s (%zu bytes)\nCN: %s\n有效期: %d 天\n",
-                out_path.c_str(), der.size(), key_path.c_str(), priv_data.size(), cn.c_str(), days);
+    std::printf("TLS 证书 (X.509 v3): %s (%zu bytes)\n私钥(%s): %s (%zu bytes)\nCN: %s\n有效期: %d 天\n",
+                out_path.c_str(), der.size(), key_desc.c_str(), key_path.c_str(),
+                key_out.size(), cn.c_str(), days);
 }
 
 // ── main ───────────────────────────────────────────────────────────────────

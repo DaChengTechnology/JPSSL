@@ -387,6 +387,9 @@ jpssl-cert gen --cn example.com --key-type ed25519
 # 用 --days 指定有效期 (gen / tlsgen 均支持, 默认 365 天)
 # 用 --out / --key-out 指定其他位置 (支持 ~ 展开)
 jpssl-cert gen --cn example.com --key-type ed25519 --days 90 --out ~/certs/cert.der --key-out ~/certs/key.bin
+# 私钥默认输出为 PKCS#8 PEM（-----BEGIN PRIVATE KEY-----，与 openssl genpkey 一致；
+# Ed25519/Ed448 为 RFC 8410，ECDSA/SM2 内嵌 SEC1 ECPrivateKey，RSA 内嵌完整 PKCS#1 参数）
+# 需要 DER 时加 --key-format der
 # 查看证书信息 (支持 DER 或 PEM)
 jpssl-cert info --cert cert.der
 jpssl-cert info --cert cert.pem
