@@ -252,12 +252,16 @@ static void CAT(compute_2exp_mod_,K)(BN&r,const BN&base,uint64_t exp,const BN&m)
   r=base;
   BN half_m;bn_rshift(half_m,m,1);
   for(uint64_t i=0;i<exp;++i){
-    if(half_m<r){
-      BN diff;bn_sub(diff,m,r);
-      bn_sub(r,r,diff);
-    } else {
+    // 不变量：r < m。三分支：r < m/2 直接左移（不溢出，因 r < 2^(K*64-1)）；
+    // r == m/2 时 2r = m → 0；r > m/2 时 2r mod m = 2r - m = r - (m - r)（避免溢出）
+    if(r<half_m){
       BN tmp;bn_lshift(tmp,r,1);
       r=tmp;
+    } else if(r==half_m){
+      r.zero();
+    } else {
+      BN diff;bn_sub(diff,m,r);
+      bn_sub(r,r,diff);
     }
   }
 }
@@ -290,7 +294,19 @@ static void CAT(bn_mulmod_,K)(BN&r,const BN&a,const BN&b,const BN&m){
   r=rem;
 }
 
-void bn_modpow(BN&r,const BN&base,const BN&exp,const BN&mod){if(mod.is_zero()){r.zero();return;}MONT_CTX mc=CAT(mont_init_,K)(mod);BN bm;CAT(to_mont_,K)(bm,base,mod,mc.R2_mod_m,mc.m_prime);BN rm=mc.R_mod_m;int bits=exp.bit_length();for(int i=bits-1;i>=0;--i){CAT(mont_mul_,K)(rm,rm,rm,mod,mc.m_prime);if(exp.bit(i))CAT(mont_mul_,K)(rm,rm,bm,mod,mc.m_prime);}CAT(from_mont_,K)(r,rm,mod,mc.m_prime);}
+void bn_modpow(BN&r,const BN&base,const BN&exp,const BN&mod){
+  if(mod.is_zero()){r.zero();return;}
+  if(exp.is_zero()){r=BN::from_uint64(1);return;}
+  // 朴素平方-乘（每步无截断乘法取模，避免 Montgomery 初始化边界问题）
+  BN result=BN::from_uint64(1), b;
+  if(!(base<mod)) bn_mod(b,base,mod); else b=base;
+  int bits=exp.bit_length();
+  for(int i=bits-1;i>=0;--i){
+    CAT(bn_mulmod_,K)(result,result,result,mod);
+    if(exp.bit(i)) CAT(bn_mulmod_,K)(result,result,b,mod);
+  }
+  r=result;
+}
 
 
 // 4-bit 鍥哄畾绐楀彛 Montgomery 妯″箓 (鎸囨暟绐楀彛鍖? 鍑忓皯 mont_mul 娆℃暟)
