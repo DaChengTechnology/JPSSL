@@ -1,6 +1,28 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.8] - 2026-08-14
+
+### Added
+- **jpssl-cert 私钥默认输出 PKCS#8 PEM**：`gen` / `tlsgen` 的 `--key-out`
+  默认输出 `-----BEGIN PRIVATE KEY-----`（与 openssl genpkey 一致），
+  `--key-format der` 可切换为 PKCS#8 DER。Ed25519/Ed448 为 RFC 8410，
+  ECDSA/SM2 内嵌 SEC1 ECPrivateKey（含 `[1]` 公钥），RSA 内嵌完整
+  PKCS#1 参数（n/e/d/p/q/dP/dQ/qInv）。
+
+### Fixed
+- **TLS 证书链验证（ECDSA/Ed25519 证书握手失败）**：服务端链验证改为标准
+  信任锚逻辑，支持交叉签名链尾（如 Cloudflare 的 GTS Root R4 由 GlobalSign
+  Root CA 签发）与 SHA-1 自签旧根，不再强制链尾证书自签且自签验证必须通过
+  （RFC 5280 §6.1，信任锚按配置信任）。
+- **TLS 1.2 加密 alert 处理**：应用阶段收到加密的 close_notify（记录头
+  type=21、载荷为密文）时正确解密并视为优雅关闭，返回已收数据，修复
+  “握手成功后数据交换报 TLS alert received”问题。
+- **TLS 1.2 Ed25519/Ed448 证书**：纳入 ECDHE-ECDSA 套件族，修复
+  “wrong certificate type”导致的握手失败。
+- **X.509 from_pem 保留原始 DER**：避免证书链验证失败（同步自
+  feature/co-threadpool）。
+- **ECDSA P-256 g_comb 定点表**：签名前确保已构建，修复直接签名死循环
+  （同步自 feature/co-threadpool）。
 
 ### Perf
 - **SM4-CCM GFNI 加速**：新增运行时自动派发（GFNI > 标量），CTR 阶段复用
