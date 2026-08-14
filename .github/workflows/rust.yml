@@ -1,0 +1,40 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rustls-interop:
+    name: Rust interop (rustls + QUIC parser)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 显式安装 Rust 工具链，不依赖 runner 镜像预装的 cargo
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tools/rustls_interop -> build/rustls-interop-tool
+            tools/quic_parser_compliance -> build/quic-parser-tool
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libssl-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Run Rust interop tests
+        run: ctest --test-dir build --output-on-failure --timeout 240 -R "test_tls_rustls_interop|test_quic_parser_compliance"
