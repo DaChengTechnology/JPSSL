@@ -1277,6 +1277,12 @@ static void ensure256() {
         c256_ready = true;
     }
     build_g_odd7();
+    // ecdsa_p256_sign / comb_fixed_window 依赖 g_comb 固定点表，而该表仅由
+    // build_comb_table() 构建（此前只在 keygen 中调用）。若先签名后 keygen
+    // （或只签名不 keygen，如 from_pem 加载证书后直接做 TLS CertificateVerify），
+    // g_comb 为未初始化内存，导致 r 恒为 0 而 do-while 无限重试（CPU 忙等、
+    // 握手卡死）。ensure256 为所有 P-256 操作共用的初始化入口，在此构建。
+    build_comb_table();
 #if defined(_MSC_VER) && defined(_M_X64)
     build_nistz_pre();
     g_p256_avx2_ok = cpu_has_avx2();
