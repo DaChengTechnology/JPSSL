@@ -125,6 +125,8 @@ static bool tls12_cert_is_ecdsa(const tls_certificate* cert){
     return cert && (cert->sig_alg == SignatureAlgorithm::ECDSA_SECP256R1_SHA256 ||
                     cert->sig_alg == SignatureAlgorithm::ECDSA_SECP384R1_SHA384 ||
                     cert->sig_alg == SignatureAlgorithm::ECDSA_SECP521R1_SHA512 ||
+                    cert->sig_alg == SignatureAlgorithm::ED25519 ||
+                    cert->sig_alg == SignatureAlgorithm::ED448 ||
                     cert->sig_alg == SignatureAlgorithm::SM2_SM3);
 }
 
