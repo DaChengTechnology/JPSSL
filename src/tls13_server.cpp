@@ -137,6 +137,8 @@ static std::vector<uint8_t> tls13_make_encrypted_extensions(
 bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
                                std::vector<uint8_t>& server_flight,
                                const tls_certificate_manager& cert_manager){
+    // 防御：ClientHello 至少需要 handshake 头(4) + legacy_version(2) + random(32) + sid_len(1)
+    if (!client_hello || ch_len < 4 + 2 + 32 + 1) return false;
     s.ver=TLSVersion::V13;s.is_server=true;
     s.transcript_ready=false;
     rand32(s.server_random);
