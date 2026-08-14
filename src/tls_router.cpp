@@ -1325,21 +1325,65 @@ bool tls13_hostname_matches(const x509::x509_cert& leaf, const std::string& host
 //   1) 服务端链自身可通过（链已含自签根）�?
 //   2) 否则逐个尝试把信任库中的 CA 根追加到链尾后验证�?
 // 通过后还需叶子主机名匹�?server_name�?
+namespace {
+
+bool dn_equal(const std::vector<x509::NameAttribute>& a,
+              const std::vector<x509::NameAttribute>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].oid != b[i].oid || a[i].value != b[i].value) return false;
+    return true;
+}
+
+// Verify validity and link signatures leaf -> ... -> last presented cert.
+// Hostname matching on the leaf is left to the caller.
+bool chain_links_ok(const std::vector<x509::x509_cert>& chain) {
+    if (chain.empty()) return false;
+    for (size_t i = 0; i < chain.size(); ++i) {
+        if (!chain[i].is_valid_now()) return false;
+        if (i + 1 < chain.size() && !chain[i].verify_signature(chain[i + 1]))
+            return false;
+    }
+    return true;
+}
+
+} // anonymous namespace
+
+// Server certificate chain + trust store validation.
+//   1) verify every link signature and validity inside the presented chain;
+//   2) establish the trust anchor: the last presented cert is self-issued and
+//      verifies, or a trust-store root issued the last presented cert (this
+//      also covers cross-signed chain tails such as the GTS Root R4 cert
+//      signed by GlobalSign Root CA that Cloudflare sends);
+//   3) the trust anchor's own self-signature is NOT required to verify
+//      (RFC 5280 6.1: trust anchors are trusted by configuration; legacy
+//      roots may even carry SHA-1 self-signatures).
 bool tls13_verify_server_chain(const std::vector<x509::x509_cert>& server_chain,
                                const tls_trust_store& trust,
                                const std::string& hostname) {
     if (server_chain.empty()) return false;
-    auto r = x509::x509_verify_chain(server_chain);
-    if (!r.success) {
+    if (!chain_links_ok(server_chain)) return false;
+    const x509::x509_cert& leaf = server_chain.front();
+    const x509::x509_cert& last = server_chain.back();
+
+    bool trust_ok = false;
+    if (dn_equal(last.subject, last.issuer)) {
+        // Self-issued tail: usable as a trust anchor; self-signature optional.
+        if (last.is_ca() && last.verify_signature(last)) trust_ok = true;
+    }
+    if (!trust_ok) {
+        // Cross-signed tail (or server omitted the root): anchor on a
+        // trust-store root that issued the last presented cert.
         for (const auto& root : trust.ca_roots) {
-            std::vector<x509::x509_cert> full = server_chain;
-            full.push_back(root);
-            r = x509::x509_verify_chain(full);
-            if (r.success) break;
+            if (!dn_equal(root.subject, last.issuer)) continue;
+            if (!root.is_ca() || !root.is_valid_now()) continue;
+            if (!last.verify_signature(root)) continue;
+            trust_ok = true;
+            break;
         }
     }
-    if (!r.success) return false;
-    return tls13_hostname_matches(server_chain.front(), hostname);
+    if (!trust_ok) return false;
+    return tls13_hostname_matches(leaf, hostname);
 }
 
 // 用解析出�?x509 叶子证书构�?tls_certificate（只填公钥，用于 CertificateVerify 验证�?

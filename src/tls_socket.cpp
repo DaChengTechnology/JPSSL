@@ -1232,6 +1232,28 @@ bool tls_connection::send(const std::string& data, std::string* error) {
     return send((const uint8_t*)data.data(), data.size(), error);
 }
 
+// TLS 1.2: after ChangeCipherSpec the alert record header still carries
+// ContentType=21, but the payload is encrypted with the connection keys.
+// Decrypt it; return true only for a graceful close_notify.
+static bool tls12_decrypt_alert(tls_session& s, const std::vector<uint8_t>& payload,
+                                std::string* error) {
+    auto rec = make_record((uint8_t)ContentType::ALERT, payload.data(), payload.size());
+    ContentType ct = ContentType::ALERT;
+    std::vector<uint8_t> plain;
+    if (!tls_decrypt(s, rec.data(), rec.size(), ct, plain) || plain.size() < 2) {
+        set_err(error, "tls_decrypt alert failed");
+        return false;
+    }
+    if (plain[0] != 1 || plain[1] != 0) {  // anything but close_notify
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "TLS alert received (level=%u desc=%u)",
+                      plain[0], plain[1]);
+        set_err(error, buf);
+        return false;
+    }
+    return true;
+}
+
 bool tls_connection::recv(std::vector<uint8_t>& out, std::string* error) {
     if (!open_) {
         set_err(error, "connection not open");
@@ -1245,6 +1267,14 @@ bool tls_connection::recv(std::vector<uint8_t>& out, std::string* error) {
         std::vector<uint8_t> payload;
         if (!read_record(rtype, payload, error)) return false;
         if (rtype == (uint8_t)ContentType::ALERT) {
+            if (session_.ver == TLSVersion::V12 && session_.tls12_secure) {
+                // Encrypted TLS 1.2 alert: decrypt; close_notify is a graceful
+                // shutdown and any already-received application data is returned.
+                bool close_notify = tls12_decrypt_alert(session_, payload, error);
+                close();
+                if (!close_notify) return false;
+                break;
+            }
             set_err(error, "TLS alert received");
             close();
             return false;
@@ -1442,6 +1472,12 @@ tls_co_task<bool> tls_connection::co_recv(std::vector<uint8_t>& out,
         std::vector<uint8_t> payload;
         if (!co_await co_read_record(rtype, payload, error)) co_return false;
         if (rtype == (uint8_t)ContentType::ALERT) {
+            if (session_.ver == TLSVersion::V12 && session_.tls12_secure) {
+                bool close_notify = tls12_decrypt_alert(session_, payload, error);
+                close();
+                if (!close_notify) co_return false;
+                break;
+            }
             set_err(error, "TLS alert received");
             close();
             co_return false;
