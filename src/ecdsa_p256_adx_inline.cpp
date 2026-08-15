@@ -12,6 +12,15 @@
 #define JPSSL_ASM_SYM(s) s
 #endif
 
+/* 内部符号声明为 hidden：避免 .so 中 PLT 懒绑定（_dl_runtime_resolve 会破坏
+ * caller-saved 寄存器，如 point_double 内部调用时使用的 r8/r9），且符号不进
+ * .dynsym，链接器对内/外部 call 直接相对绑定。macOS 用 .private_extern。 */
+#if defined(__APPLE__)
+#define JPSSL_ASM_HIDDEN(s) ".private_extern " s "\n"
+#else
+#define JPSSL_ASM_HIDDEN(s) ".hidden " s "\n"
+#endif
+
 
 asm(
     ".text\n"
@@ -3395,6 +3404,7 @@ asm(
 asm(
     ".text\n"
     ".globl " JPSSL_ASM_SYM("__ecp_nistz256_mul_montx") "\n"
+    JPSSL_ASM_HIDDEN(JPSSL_ASM_SYM("__ecp_nistz256_mul_montx"))
     ".type " JPSSL_ASM_SYM("__ecp_nistz256_mul_montx") ", @function\n"
     JPSSL_ASM_SYM("__ecp_nistz256_mul_montx") ":\n"
     ".intel_syntax noprefix\n"
@@ -3530,6 +3540,7 @@ asm(
 asm(
     ".text\n"
     ".globl " JPSSL_ASM_SYM("__ecp_nistz256_sqr_montx") "\n"
+    JPSSL_ASM_HIDDEN(JPSSL_ASM_SYM("__ecp_nistz256_sqr_montx"))
     ".type " JPSSL_ASM_SYM("__ecp_nistz256_sqr_montx") ", @function\n"
     JPSSL_ASM_SYM("__ecp_nistz256_sqr_montx") ":\n"
     ".intel_syntax noprefix\n"
@@ -3648,6 +3659,7 @@ asm(
 asm(
     ".text\n"
     ".globl " JPSSL_ASM_SYM("__ecp_nistz256_add_tox") "\n"
+    JPSSL_ASM_HIDDEN(JPSSL_ASM_SYM("__ecp_nistz256_add_tox"))
     ".type " JPSSL_ASM_SYM("__ecp_nistz256_add_tox") ", @function\n"
     JPSSL_ASM_SYM("__ecp_nistz256_add_tox") ":\n"
     ".intel_syntax noprefix\n"
@@ -3682,6 +3694,7 @@ asm(
 asm(
     ".text\n"
     ".globl " JPSSL_ASM_SYM("__ecp_nistz256_sub_fromx") "\n"
+    JPSSL_ASM_HIDDEN(JPSSL_ASM_SYM("__ecp_nistz256_sub_fromx"))
     ".type " JPSSL_ASM_SYM("__ecp_nistz256_sub_fromx") ", @function\n"
     JPSSL_ASM_SYM("__ecp_nistz256_sub_fromx") ":\n"
     ".intel_syntax noprefix\n"
@@ -3716,6 +3729,7 @@ asm(
 asm(
     ".text\n"
     ".globl " JPSSL_ASM_SYM("__ecp_nistz256_subx") "\n"
+    JPSSL_ASM_HIDDEN(JPSSL_ASM_SYM("__ecp_nistz256_subx"))
     ".type " JPSSL_ASM_SYM("__ecp_nistz256_subx") ", @function\n"
     JPSSL_ASM_SYM("__ecp_nistz256_subx") ":\n"
     ".intel_syntax noprefix\n"
@@ -3746,6 +3760,7 @@ asm(
 asm(
     ".text\n"
     ".globl " JPSSL_ASM_SYM("__ecp_nistz256_mul_by_2x") "\n"
+    JPSSL_ASM_HIDDEN(JPSSL_ASM_SYM("__ecp_nistz256_mul_by_2x"))
     ".type " JPSSL_ASM_SYM("__ecp_nistz256_mul_by_2x") ", @function\n"
     JPSSL_ASM_SYM("__ecp_nistz256_mul_by_2x") ":\n"
     ".intel_syntax noprefix\n"
