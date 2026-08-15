@@ -42,9 +42,9 @@ void tls13_derive_early_traffic_keys(tls_session& s, const uint8_t* psk);
 void tls13_compute_binder(tls_session& s, const uint8_t* psk, const uint8_t* ch_truncated, size_t ch_trunc_len, uint8_t* binder);
 
 
-// ══════════════════════════════════════════════════════════════════════�?
+// ════════════════════════════════════════════════════════════════════════════
 //  构建 Certificate + CertificateVerify 消息
-// ══════════════════════════════════════════════════════════════════════�?
+// ════════════════════════════════════════════════════════════════════════════
 static std::vector<uint8_t> tls13_make_certificate(const tls_certificate& cert){
     // Auto-generate X.509 DER if cert_data is empty
     std::vector<uint8_t> der_data = cert.cert_data;
@@ -69,8 +69,8 @@ static std::vector<uint8_t> tls13_make_certificate(const tls_certificate& cert){
 }
 
 static std::vector<uint8_t> tls13_make_cert_verify(const tls_certificate& cert, tls_session& s){
-    // RSA-2048 PKCS#1 签名�?256 字节；缓冲区按最大签�?(512B) 预留�?
-    // 避免 RSA 证书�?TLS 1.3 CertificateVerify 中发生栈溢出�?
+// RSA-2048 PKCS#1 签名长 256 字节；缓冲区按最大签名(512B) 预留，
+// 避免 RSA 证书在 TLS 1.3 CertificateVerify 中发生栈溢出。
     uint8_t sig[512];size_t sig_len=0;
     std::vector<uint8_t> content = tls13_cert_verify_content(s, true);
     // RFC 8998 3.2.1: handshake signature uses SM2 id "TLSv1.3+GM+Cipher+Suite"
@@ -96,10 +96,10 @@ static std::vector<uint8_t> tls13_make_cert_verify(const tls_certificate& cert, 
 }
 
 
-// ══════════════════════════════════════════════════════════════════════�?
+// ════════════════════════════════════════════════════════════════════════════
 //  构建 EncryptedExtensions
-// ══════════════════════════════════════════════════════════════════════�?
-// alpn_selected 非空时携�?ALPN 扩展（RFC 7301：服务端只选择一个协议）�?
+// ════════════════════════════════════════════════════════════════════════════
+// alpn_selected 非空时携带 ALPN 扩展（RFC 7301：服务端只选择一个协议）。
 static std::vector<uint8_t> tls13_make_encrypted_extensions(
     const std::string& alpn_selected,
     const std::vector<uint8_t>* quic_transport_params = nullptr) {
@@ -131,9 +131,9 @@ static std::vector<uint8_t> tls13_make_encrypted_extensions(
     return msg;
 }
 
-// ══════════════════════════════════════════════════════════════════════�?
-//  TLS 1.3 完整握手 �?服务�?
-// ══════════════════════════════════════════════════════════════════════�?
+// ════════════════════════════════════════════════════════════════════════════
+//  TLS 1.3 完整握手：服务端
+// ════════════════════════════════════════════════════════════════════════════
 bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
                                std::vector<uint8_t>& server_flight,
                                const tls_certificate_manager& cert_manager){
@@ -144,8 +144,8 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     rand32(s.server_random);
     memcpy(s.client_random,client_hello+6,32);
 
-    // RFC 8446 4.1.3：ServerHello 必须回显 ClientHello �?legacy_session_id
-    // （OpenSSL 等客户端会严格校验，不一致报 "invalid session id"�?
+// RFC 8446 4.1.3：ServerHello 必须回显 ClientHello 的 legacy_session_id
+// （OpenSSL 等客户端会严格校验，不一致报 "invalid session id"）
     size_t ch_sid_len = 0;
     const uint8_t* ch_sid = nullptr;
     if (ch_len >= 4 + 2 + 32 + 1) {
@@ -194,7 +194,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
       else return false;   // 无共同套件（不再兜底选择客户端未通告的套件）
     }
 
-    // 记录 ClientHello (须在 cipher_suite 确定�? 保证 transcript 哈希算法与客户端一�?
+// 记录 ClientHello (须在 cipher_suite 确定后，保证 transcript 哈希算法与客户端一致)
     tls_transcript_update(s,client_hello,ch_len);
 
     // ALPN (RFC 7301)：解析客户端协议列表并与本地支持列表匹配选择
@@ -210,13 +210,13 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         }
     }
 
-    // 提取 client_pub（支�?X25519、X448 �?curveSM2）和 supported_groups
+// 提取 client_pub（支持 X25519、X448、curveSM2）和 supported_groups
     uint8_t client_pub_x25519[32]; bool found_x25519=false;
     uint8_t client_pub_x448[56]; bool found_x448=false;
     uint8_t client_pub_sm2[65]; size_t client_pub_sm2_len=0; bool found_sm2=false;
     uint8_t client_pub_p256[64]; bool found_p256=false;
     uint8_t client_pub_p384[96]; bool found_p384=false;
-    bool client_supports_x448=false;    // 客户�?supported_groups 列表中是否包�?X448
+    bool client_supports_x448=false;    // 客户端 supported_groups 列表中是否包含 X448
     bool client_supports_curveSM2=false;
     bool client_supports_x25519=false;
     bool client_supports_p256=false;
@@ -254,7 +254,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
                 } else if(group==(uint16_t)NamedGroup::X448 && key_len==56 && kq+4+56<=ks_end){
                     memcpy(client_pub_x448,client_hello+kq+4,56);found_x448=true;
                 } else if(group==(uint16_t)NamedGroup::curveSM2 && kq+4+64<=ks_end){
-                    // curveSM2 采用 SEC1 非压�?65 字节；兼容裸 64 字节 x||y
+// curveSM2 采用 SEC1 非压缩 65 字节；兼容裸 64 字节 x||y
                     if(key_len==65 && client_hello[kq+4]==0x04){
                         memcpy(client_pub_sm2,client_hello+kq+4,65);
                         client_pub_sm2_len=65;found_sm2=true;
@@ -296,12 +296,12 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         memcpy(client_pub_x25519,client_hello+50,32);found_x25519=true;
     }
 
-    // signature_algorithms 协商（RFC 8446 §4.2.3�?
+// signature_algorithms 协商（RFC 8446 §4.2.3）
     if (client_sig_algs.empty()) return false;   // 客户端必须携带该扩展
-    // signature_algorithms_cert 必须�?signature_algorithms 的子�?
+// signature_algorithms_cert 必须是 signature_algorithms 的子集
     for (uint16_t a : client_sig_algs_cert)
         if (!scheme_in_list(client_sig_algs, a)) return false;
-    // 选择双方共同支持且与证书密钥类型匹配的方案（TLS 1.3 不允�?rsa_pkcs1_*�?
+// 选择双方共同支持且与证书密钥类型匹配的方案（TLS 1.3 不允许 rsa_pkcs1_*）
     s.selected_sig_alg = select_signature_scheme(client_sig_algs, *cert, s.sig_algs, true);
     if (s.selected_sig_alg == 0) return false;
     // signature_algorithms_cert：证书链签名方案必须被客户端接受
@@ -310,10 +310,10 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         if (chain_scheme == 0 || !scheme_in_list(client_sig_algs_cert, chain_scheme)) return false;
     }
 
-    // RFC 8998 3.3.1.1：SM 套件要求 supported_groups �?curveSM2 且必须提供其 key_share
+// RFC 8998 3.3.1.1：SM 套件要求 supported_groups 包含 curveSM2 且必须提供其 key_share
     if (tls_use_sm3(s.cipher_suite) && (!found_sm2 || !client_supports_curveSM2)) return false;
 
-    // 选择密钥交换组：SM 套件优先 curveSM2，其�?X448（如果客户端提供�?key_share�?
+// 选择密钥交换组：SM 套件优先 curveSM2，其次 X448（如果客户端提供了 key_share）
     bool use_sm2  = tls_use_sm3(s.cipher_suite) && found_sm2 && client_supports_curveSM2;
     bool use_p256 = !use_sm2 && found_p256 && client_supports_p256;
     bool use_p384 = !use_sm2 && !use_p256 && found_p384 && client_supports_p384;
@@ -326,7 +326,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     server_flight.push_back(0);server_flight.push_back(0);server_flight.push_back(0);
     server_flight.push_back(0x03);server_flight.push_back(0x03);
     server_flight.insert(server_flight.end(),s.server_random,s.server_random+32);
-    // 回显 ClientHello �?legacy_session_id（RFC 8446 4.1.3�?
+// 回显 ClientHello 的 legacy_session_id（RFC 8446 4.1.3）
     server_flight.push_back((uint8_t)ch_sid_len);
     if (ch_sid_len > 0 && ch_sid)
         server_flight.insert(server_flight.end(), ch_sid, ch_sid + ch_sid_len);
@@ -335,7 +335,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     server_flight.push_back(0x00);
 
     if (use_sm2) {
-        // curveSM2 密钥交换（RFC 8998 3.4：标�?ECDHE，共享密�?= X 坐标 32 字节�?
+// curveSM2 密钥交换（RFC 8998 3.4：标准 ECDHE，共享密钥 = X 坐标 32 字节）
         uint8_t server_priv[SM2_KEY_SIZE], server_pub[SM2_PUB_SIZE];
         sm2_keygen(server_pub, server_priv);
         if (!sm2_ecdh(shared_secret, server_priv, client_pub_sm2, client_pub_sm2_len))
@@ -348,7 +348,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         server_flight.push_back((uint8_t)(ext_total>>8));server_flight.push_back((uint8_t)ext_total);
         // supported_versions
         server_flight.push_back(0x00);server_flight.push_back(0x2b);server_flight.push_back(0x00);server_flight.push_back(0x02);server_flight.push_back(0x03);server_flight.push_back(0x04);
-        // key_share curveSM2（SEC1 非压�?65 字节�?
+// key_share curveSM2（SEC1 非压缩 65 字节）
         server_flight.push_back(0x00);server_flight.push_back(0x33);
         server_flight.push_back(0x00);server_flight.push_back(0x45); // 69 = 2 + 2 + 65
         server_flight.push_back(0x00);server_flight.push_back(0x29); // curveSM2
@@ -356,7 +356,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         server_flight.push_back(0x04);
         server_flight.insert(server_flight.end(), server_pub, server_pub + SM2_PUB_SIZE);
     } else if (use_p256) {
-        // secp256r1 (P-256) ECDHE：key_exchange = x||y �?64 字节
+// secp256r1 (P-256) ECDHE：key_exchange = x||y 共 64 字节
         uint8_t server_priv[32], server_pub[64];
         ecdsa_p256_keygen(server_pub, server_priv);
         if (!ecdsa_p256_ecdh(shared_secret, server_priv, client_pub_p256))
@@ -375,7 +375,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         server_flight.push_back(0x04);
         server_flight.insert(server_flight.end(), server_pub, server_pub + 64);
     } else if (use_p384) {
-        // secp384r1 (P-384) ECDHE：key_exchange = x||y �?96 字节
+// secp384r1 (P-384) ECDHE：key_exchange = x||y 共 96 字节
         uint8_t server_priv[48], server_pub[96];
         ecdsa_p384_keygen(server_pub, server_priv);
         if (!ecdsa_p384_ecdh(shared_secret, server_priv, client_pub_p384))
@@ -479,7 +479,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         server_flight.insert(server_flight.end(),cv.begin(),cv.end());
         server_flight.insert(server_flight.end(),sf.begin(),sf.end());
     } else {
-        // 加密所有握手消�?
+// 加密所有握手消息
         std::vector<uint8_t> hs_buf;
         hs_buf.insert(hs_buf.end(),ee.begin(),ee.end());
         hs_buf.insert(hs_buf.end(),cert_msg.begin(),cert_msg.end());
@@ -490,7 +490,7 @@ bool tls13_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         server_flight.insert(server_flight.end(),encrypted.begin(),encrypted.end());
     }
 
-    // 注意：应用密钥延迟到 tls13_process_client_finished 成功后派�?
+// 注意：应用密钥延迟到 tls13_process_client_finished 成功后派生
     return true;
 }
 
@@ -504,7 +504,7 @@ bool tls13_process_client_finished(tls_session& s, const uint8_t* data, size_t l
     }
     if(!tls13_verify_finished(s,hs.data(),hs.size(),false))return false;
 
-    // 握手完成，派生应用密钥（�?transcript 更新前）
+// 握手完成，派生应用密钥（在 transcript 更新前）
     tls13_derive_application_keys(s);
     tls_transcript_update(s,hs.data(),hs.size());
     init_cipher_ctx(s, s.server_write_key);
@@ -517,9 +517,9 @@ bool tls13_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
     return tls13_make_server_flight(s, client_hello, ch_len, server_response, cert_manager);
 }
 
-// ══════════════════════════════════════════════════════════════════════�?
+// ════════════════════════════════════════════════════════════════════════════
 //  NewSessionTicket
-// ══════════════════════════════════════════════════════════════════════�?
+// ════════════════════════════════════════════════════════════════════════════
 
 bool tls13_make_new_session_ticket(tls_session& s, std::vector<uint8_t>& ticket_msg,
                                    uint32_t ticket_lifetime){
@@ -582,9 +582,9 @@ bool tls13_make_new_session_ticket(tls_session& s, std::vector<uint8_t>& ticket_
     return true;
 }
 
-// ══════════════════════════════════════════════════════════════════════�?
+// ════════════════════════════════════════════════════════════════════════════
 //  Server: process PSK ClientHello
-// ══════════════════════════════════════════════════════════════════════�?
+// ════════════════════════════════════════════════════════════════════════════
 
 bool tls13_process_psk_client_hello(tls_session& s, const uint8_t* ch, size_t ch_len,
                                     bool& accept_early_data){
@@ -713,9 +713,9 @@ bool tls13_decrypt_early_data(tls_session& s, const uint8_t* record, size_t reco
     return true;
 }
 
-// ══════════════════════════════════════════════════════════════════════�?
+// ════════════════════════════════════════════════════════════════════════════
 //  EndOfEarlyData
-// ══════════════════════════════════════════════════════════════════════�?
+// ════════════════════════════════════════════════════════════════════════════
 
 std::vector<uint8_t> tls13_make_end_of_early_data(){
     std::vector<uint8_t> msg;

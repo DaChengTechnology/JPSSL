@@ -131,8 +131,8 @@ struct dtls_session {
 
     // 分片重组
     std::vector<uint8_t> reassembly_buf;
-    std::vector<uint8_t> reassembly_received;   ///< 姣忓瓧鑺傛槸鍚﹀凡鏀跺埌锛堥槻姝㈡暟鎹腑鍚?0 瀛楄妭鏃惰鍒?/p>
-    size_t reassembly_remaining = 0;            ///< 灏氭湭鏀跺埌鐨勫瓧鑺傛暟
+    std::vector<uint8_t> reassembly_received;   ///< 每字节是否已收到（防止数据中间含 0 字节时误判）
+    size_t reassembly_remaining = 0;            ///< 尚未收到的字节数
     uint16_t reassembly_msg_seq = 0;
     uint32_t reassembly_total_len = 0;
 

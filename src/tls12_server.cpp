@@ -38,12 +38,12 @@ void tls12_prf_sha384(const uint8_t* secret, size_t secret_len, const char* labe
 std::vector<uint8_t> tls12_psk_premaster(const uint8_t* psk, size_t psk_len, const uint8_t* other, size_t other_len);
 
 
-// ══════════════════════════════════════════════════════════════════════�?
+// ═════════════════════════════════════════════════════════════════════════
 
 // ── TLS 1.2 密码套件协商 ───────────────────────────────────────────────
 
 // 服务端支持的 TLS 1.2 密码套件列表（按优先级排序）
-// 优先�? ECDHE-ECDSA > ECDHE-RSA > DHE-RSA > RSA > DHE-PSK > PSK
+// 优先级 ECDHE-ECDSA > ECDHE-RSA > DHE-RSA > RSA > DHE-PSK > PSK
 static const uint16_t TLS12_SERVER_CIPHERS[] = {
     0xC02C, // 1st ECDHE-ECDSA+AES256+SHA384
     0xCCA9, // 2nd ECDHE-ECDSA+ChaCha20
@@ -72,8 +72,8 @@ static const uint16_t TLS12_SERVER_CIPHERS[] = {
     0x00AE, // 25th PSK+AES128-CBC+SHA256
 };
 
-// �?ClientHello 中解析密码套件列�?
-// 返回解析出的套件数组和数�?
+// 从 ClientHello 中解析密码套件列表
+// 返回解析出的套件数组和数量
 static std::vector<uint16_t> tls12_parse_client_cipher_suites(const uint8_t* ch, size_t ch_len){
     std::vector<uint16_t> suites;
     if(ch_len < 44) return suites; // min CH size: 1+3+2+32+1+2+2+1 = 44
@@ -87,7 +87,7 @@ static std::vector<uint16_t> tls12_parse_client_cipher_suites(const uint8_t* ch,
     return suites;
 }
 
-// 从客户端套件列表中选择服务端支持的最佳套�?
+// 从客户端套件列表中选择服务端支持的最佳套件
 static uint16_t tls12_select_best_cipher_suite(const std::vector<uint16_t>& client_suites){
     for(size_t si=0; si < sizeof(TLS12_SERVER_CIPHERS)/sizeof(TLS12_SERVER_CIPHERS[0]); ++si){
         uint16_t srv_cs = TLS12_SERVER_CIPHERS[si];
@@ -97,8 +97,8 @@ static uint16_t tls12_select_best_cipher_suite(const std::vector<uint16_t>& clie
     return 0; // no common suite
 }
 
-// ══════════════════════════════════════════════════════════════════════�?
-//  TLS 1.2 完整握手 �?服务�?
+// ═════════════════════════════════════════════════════════════════════════
+// TLS 1.2 完整握手 — 服务端
 // 客户端 supported_groups 扩展中的 FFDHE 通告（RFC 7919 §3/§4）
 struct tls12_client_ffdhe {
     bool any_ffdhe = false;    // 客户端通告了任意 FFDHE 群（256..511）
@@ -258,9 +258,9 @@ static bool tls12_client_offers_ems(const uint8_t* client_hello, size_t ch_len) 
     return client_hello_find_extension(client_hello, ch_len, 0x0017, ext_data, ext_dlen);
 }
 
-// ══════════════════════════════════════════════════════════════════════�?
-// TLS 1.2 服务端：生成明文 hello flight（ServerHello + Certificate + SKX + ServerHelloDone�?
-// 保存服务�?ECDHE 私钥�?s.ks_priv（供 ClientKeyExchange 阶段计算共享密钥�?
+// ═════════════════════════════════════════════════════════════════════════
+// TLS 1.2 服务端：生成明文 hello flight（ServerHello + Certificate + SKX + ServerHelloDone）
+// 保存服务端 ECDHE 私钥到 s.ks_priv（供 ClientKeyExchange 阶段计算共享密钥）
 bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello, size_t ch_len,
                                      std::vector<uint8_t>& server_response,
                                      const tls_certificate_manager& cert_manager,
@@ -519,7 +519,7 @@ bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
         x25519_generate_keypair(ecdhe_pub, ecdhe_priv);
     }
 
-    // 解析客户�?signature_algorithms / signature_algorithms_cert（RFC 8446，TLS 1.2 亦适用�?
+    // 解析客户端 signature_algorithms / signature_algorithms_cert（RFC 8446，TLS 1.2 亦适用）
     std::vector<uint16_t> client_sig_algs, client_sig_algs_cert;
     const uint8_t* ext_data = nullptr; size_t ext_dlen = 0;
     if (client_hello_find_extension(client_hello, ch_len, 0x000d, ext_data, ext_dlen))
@@ -527,13 +527,13 @@ bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     if (client_hello_find_extension(client_hello, ch_len, 0x0032, ext_data, ext_dlen))
         parse_sig_alg_list(ext_data, ext_dlen, client_sig_algs_cert);
     for (uint16_t a : client_sig_algs_cert)
-        if (!scheme_in_list(client_sig_algs, a)) return false;  // 必须�?signature_algorithms 的子�?
+        if (!scheme_in_list(client_sig_algs, a)) return false;  // 必须为 signature_algorithms 的子集
     uint16_t skx_sig_alg = 0;
     if (use_ecdhe && cert) {
         if (!client_sig_algs.empty())
             skx_sig_alg = select_signature_scheme(client_sig_algs, *cert, s.sig_algs, false);
         else
-            skx_sig_alg = (uint16_t)cert->sig_alg;   // TLS 1.2 未携带扩展时的缺省行�?
+            skx_sig_alg = (uint16_t)cert->sig_alg;   // TLS 1.2 未携带扩展时的缺省行为
         if (skx_sig_alg == 0) return false;
         if (!client_sig_algs_cert.empty()) {
             uint16_t chain_scheme = cert_chain_signature_scheme(*cert);
@@ -609,7 +609,7 @@ bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     }
     tls12_derive_keys(s,pre_master_secret);
 
-    // Server Finished（PRF/transcript 哈希随套件：SHA-256 �?SHA-384�?
+    // Server Finished（PRF/transcript 哈希随套件：SHA-256 或 SHA-384）
     tls_transcript_finalize(s);
     uint8_t verify_data[12];
     size_t hl = tls_hash_len(s.cipher_suite);
@@ -666,7 +666,7 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
     }
     const tls_certificate* cert=cert_manager.get_certificate(s.server_name);
 
-    // 解析客户�?signature_algorithms / signature_algorithms_cert
+    // 解析客户端 signature_algorithms / signature_algorithms_cert
     std::vector<uint16_t> client_sig_algs, client_sig_algs_cert;
     const uint8_t* ext_data = nullptr; size_t ext_dlen = 0;
     if (client_hello_find_extension(client_hello, ch_len, 0x000d, ext_data, ext_dlen))
@@ -765,7 +765,7 @@ std::vector<uint8_t> tls12_make_certificate(const tls_certificate& cert) {
     m.insert(m.end(),der.begin(),der.end());return m;
 }
 
-// ServerHelloDone 消息（type=14, �?body�?
+// ServerHelloDone 消息（type=14，无 body）
 std::vector<uint8_t> tls12_make_server_hello_done() {
     std::vector<uint8_t> m;
     m.push_back((uint8_t)HandshakeType::SERVER_HELLO_DONE);
@@ -773,10 +773,10 @@ std::vector<uint8_t> tls12_make_server_hello_done() {
     return m;
 }
 
-// 服务端处�?ClientKeyExchange�?
-// - ECDHE: 解析客户端临时公�?�?x25519(server_priv, client_pub) �?32 字节共享密钥作为 premaster
-// - RSA:   rsa_decrypt(server_priv, encrypted_pms) �?48 字节 premaster
-// 随后 derive keys，生�?CCS 记录 + 加密�?Finished 记录（追加到 server_ccs_finished�?
+// 服务端处理 ClientKeyExchange：
+// - ECDHE: 解析客户端临时公钥，x25519(server_priv, client_pub) = 32 字节共享密钥作为 premaster
+// - RSA:   rsa_decrypt(server_priv, encrypted_pms) = 48 字节 premaster
+// 随后 derive keys，生成 CCS 记录 + 加密的 Finished 记录（追加到 server_ccs_finished）
 // ── TLS 1.2 会话恢复（RFC 5246 §7.3）──
 bool tls12_session_can_resume(const uint8_t* client_hello, size_t ch_len,
                               const tls12_session_entry& entry) {

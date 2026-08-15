@@ -699,7 +699,7 @@ inline void fe51_mul_portable(fe51 r, const fe51 a, const fe51 b) {
 
 #if defined(_MSC_VER) && !defined(__clang__)
 
-/// 128-bit 绱Н: (lo,hi) += a*b
+/// 128-bit 累积: (lo,hi) += a*b
 static inline void fe51_acc_mul(uint64_t& lo, uint64_t& hi, uint64_t a, uint64_t b) {
     uint64_t h;
     uint64_t l = _umul128(a, b, &h);
@@ -719,7 +719,7 @@ static inline void fe51_acc128(uint64_t& lo, uint64_t& hi, uint64_t alo, uint64_
     hi += ahi + c;
 }
 
-/// 2^255 鈮?19 鎶樺彔 + 51-bit 杩涗綅閾撅紙mul/sq 鍏变韩锛?
+/// 2^255 ≡ -19 折叠 + 51-bit 进位链（mul/sq 共享）
 static inline void fe51_fold_carry_msvc(fe51 r, uint64_t* lo, uint64_t* hi) {
     uint64_t fl, fh;
     fl = _umul128(lo[5], 19, &fh); fh += hi[5] * 19;
@@ -749,7 +749,7 @@ static inline void fe51_fold_carry_msvc(fe51 r, uint64_t* lo, uint64_t* hi) {
     r[0] = lo[0]; r[1] = lo[1]; r[2] = lo[2]; r[3] = lo[3]; r[4] = lo[4];
 }
 
-/// r = a * b (mod p) (MSVC: 鎵嬪啓 _umul128 蹇€熻矾寰勶紝鏀寔杈撳叆 limb 鈮?2^53)
+/// r = a * b (mod p) (MSVC: 手写 _umul128 快速路径，支持输入 limb ≈ 2^53)
 inline void fe51_mul(fe51 r, const fe51 a, const fe51 b) {
 #if defined(JP_HAVE_ADX_ASM)
     static const int adx_ok = [] {
@@ -795,7 +795,7 @@ inline void fe51_mul(fe51 r, const fe51 a, const fe51 b) {
     fe51_fold_carry_msvc(r, lo, hi);
 }
 
-/// r = a^2 (mod p)锛堝绉版€у噺灏?25 涓?5 涓箻绉級
+/// r = a^2 (mod p)（乘性约减：25 次 5 次乘积）
 inline void fe51_sq(fe51 r, const fe51 a) {
 #if defined(JP_HAVE_ADX_ASM)
     static const int adx_ok = [] {
