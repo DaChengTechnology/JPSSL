@@ -299,6 +299,9 @@ endif()
 
 add_library(jpssl_cpu STATIC ${CPU_SOURCES})
 add_library(jpssl_cpu_shared SHARED ${CPU_SOURCES})
+# 静态库可能被链接进宿主项目的 SHARED 库（如 http_server 的 httpserver_lib），
+# 必须 PIC 编译，否则全局数据（ECDSA C256/g_comb 等）重定位错误导致签名/验签失败
+set_target_properties(jpssl_cpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(WIN32)
     # Windows: 共享库的导入库 (jpssl_cpu.lib) 与静态库同名冲突，静态库改名
     set_target_properties(jpssl_cpu PROPERTIES OUTPUT_NAME jpssl_cpu_static)
