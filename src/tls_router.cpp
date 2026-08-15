@@ -446,7 +446,7 @@ static const uint8_t* digest_info_for_scheme(uint16_t scheme, size_t& di_len) {
     }
 }
 
-// RSASSA-PKCS1-v1_5 签名（RSA-2048�?
+// RSASSA-PKCS1-v1_5 签名（RSA-2048）
 static bool rsa_pkcs1_sign(const rsa_private_key& key, uint16_t scheme,
                            const uint8_t* data, size_t len, uint8_t* sig, size_t& sig_len) {
     size_t hl = scheme_hash_len(scheme);
@@ -465,7 +465,15 @@ static bool rsa_pkcs1_sign(const rsa_private_key& key, uint16_t scheme,
     memcpy(padded + 2 + pad_len + 1 + di_len, hash, hl);
     rsa_bignum m = rsa_bignum::from_bytes(padded, 256);
     rsa_bignum s;
-    bn_modpow(s, m, key.d, key.n);
+    if (!key.p.is_zero() && !key.q.is_zero()) {
+        // 优先 CRT（RSADP）：两路 1024 位半宽 Montgomery 模幂 + 合并，
+        // 远快于 2048 位指数全模幂（bn_modpow 朴素平方-乘约 2.5s）
+        rsa_crt_key crt{key.n, key.e, key.d, key.p, key.q, key.dP, key.dQ, key.qInv};
+        RSASP1(crt, m, s);
+    } else {
+        // CRT 参数缺失（私钥仅含 n/d/e）：回退全模幂 s = m^d mod n
+        bn_modpow(s, m, key.d, key.n);
+    }
     s.to_bytes(sig);
     sig_len = 256;
     return true;
@@ -761,15 +769,25 @@ bool fill_pub(tls_certificate& out, x509::KeyType kt, const std::vector<uint8_t>
     }
 }
 
-// �?x509 私钥 raw bytes 填充 tls_certificate.priv（RSA 需要私钥的 n||e 公钥�?
-bool fill_priv(tls_certificate& out, x509::KeyType kt,
-               const std::vector<uint8_t>& priv, const std::vector<uint8_t>& pub) {
-    switch (kt) {
+// x509 私钥填充 tls_certificate.priv（RSA 需要私钥的 n||e 公钥与 CRT 参数）
+bool fill_priv(tls_certificate& out, const x509::private_key& k) {
+    const auto& priv = k.priv;
+    const auto& pub = k.pub;
+    switch (k.key_type) {
         case x509::KeyType::RSA_2048: {
             if (priv.size() < 256 || pub.size() < 256 + 3) return false;
             out.priv.rsa.d = rsa_bignum::from_bytes(priv.data(), 256);
             out.priv.rsa.n = rsa_bignum::from_bytes(pub.data(), 256);
             out.priv.rsa.e = rsa_bignum::from_bytes(pub.data() + 256, 3);
+            // CRT 参数（PKCS#1 完整私钥解析得到；缺失则留空 → 签名回退全模幂）
+            auto copy_crt = [](rsa_bignum& dst, const std::vector<uint8_t>& src, size_t sz) {
+                if (src.size() == sz) dst = rsa_bignum::from_bytes(src.data(), sz);
+            };
+            copy_crt(out.priv.rsa.p, k.rsa_p, 128);
+            copy_crt(out.priv.rsa.q, k.rsa_q, 128);
+            copy_crt(out.priv.rsa.dP, k.rsa_dP, 128);
+            copy_crt(out.priv.rsa.dQ, k.rsa_dQ, 128);
+            copy_crt(out.priv.rsa.qInv, k.rsa_qInv, 128);
             return true;
         }
         case x509::KeyType::Ed25519:
@@ -892,7 +910,7 @@ std::unique_ptr<tls_certificate> tls_certificate::from_pem(const std::string& ce
         set_err(err, "failed to import certificate public key");
         return nullptr;
     }
-    if (!fill_priv(*out, k->key_type, k->priv, k->pub)) {
+    if (!fill_priv(*out, *k)) {
         set_err(err, "failed to import private key");
         return nullptr;
     }
@@ -932,7 +950,7 @@ std::unique_ptr<tls_certificate> tls_certificate::from_csr_pem(const std::string
         set_err(err, "failed to import CSR public key");
         return nullptr;
     }
-    if (!fill_priv(*out, k->key_type, k->priv, k->pub)) {
+    if (!fill_priv(*out, *k)) {
         set_err(err, "failed to import private key");
         return nullptr;
     }
