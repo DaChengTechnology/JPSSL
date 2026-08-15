@@ -83,6 +83,7 @@ void sha1_init(sha1_ctx* ctx) {
 }
 
 void sha1_update(sha1_ctx* ctx, const uint8_t* data, size_t len) {
+    if (len == 0) return;
     ctx->len += len;
     if (ctx->buf_len + len < 64) {
         std::memcpy(ctx->buf + ctx->buf_len, data, len);
