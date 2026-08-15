@@ -142,6 +142,7 @@ void sm3_init(sm3_ctx* ctx) {
 }
 
 void sm3_update(sm3_ctx* ctx, const uint8_t* data, size_t len) {
+    if (len == 0) return;
     ctx->len += len;
 
     // 缓冲区内已有数据：先补齐一个块

@@ -66,6 +66,7 @@ void sha3_512_init(sha3_ctx*ctx){
 }
 
 void sha3_update(sha3_ctx*ctx,const uint8_t*data,size_t len){
+    if (len == 0) return;
     size_t rate=ctx->rate_bytes;
     if(ctx->buf_len>0){
         size_t space=rate-ctx->buf_len;
