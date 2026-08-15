@@ -1269,23 +1269,31 @@ std::string x509_cert::to_pem() const {
 // ═══════════════════════════════════════════════════════════════════════
 namespace {
 
-/// 解析 PKCS#1 RSAPrivateKey: 提取 d (第 4 个 INTEGER) 与 n||e 公钥
+/// 解析 PKCS#1 RSAPrivateKey: 提取 d (第 4 个 INTEGER)、公钥 n||e，以及
+/// CRT 参数 p/q/dP/dQ/qInv（第 5-9 个 INTEGER），缺失时留空（签名回退全模幂）
 std::optional<private_key> parse_pkcs1_rsa(const std::vector<uint8_t>& der) {
     using namespace der;
     size_t off = 0;
     auto seq = decode_tlv2(der.data(), der.size(), off);
     if (!seq || seq->tag != ASN1Tag::SEQUENCE) return std::nullopt;
     size_t ioff = 0;
-    std::vector<uint8_t> n, e, d;
+    std::vector<uint8_t> n, e, d, p, q, dP, dQ, qInv;
     int idx = 0;
-    while (ioff < seq->value.size() && idx < 4) {
+    while (ioff < seq->value.size() && idx < 9) {
         auto it = decode_tlv2(seq->value.data(), seq->value.size(), ioff);
         if (!it || it->tag != ASN1Tag::INTEGER) return std::nullopt;
         auto bytes = it->value;
         if (!bytes.empty() && bytes[0] == 0x00) bytes.erase(bytes.begin());
-        if (idx == 1) n = std::move(bytes);
-        else if (idx == 2) e = std::move(bytes);
-        else if (idx == 3) d = std::move(bytes);
+        switch (idx) {
+            case 1: n = std::move(bytes); break;
+            case 2: e = std::move(bytes); break;
+            case 3: d = std::move(bytes); break;
+            case 4: p = std::move(bytes); break;
+            case 5: q = std::move(bytes); break;
+            case 6: dP = std::move(bytes); break;
+            case 7: dQ = std::move(bytes); break;
+            case 8: qInv = std::move(bytes); break;
+        }
         ++idx;
     }
     if (idx < 4 || n.empty() || e.empty() || d.empty()) return std::nullopt;
@@ -1306,6 +1314,19 @@ std::optional<private_key> parse_pkcs1_rsa(const std::vector<uint8_t>& der) {
     while (e3.size() < 3) e3.insert(e3.begin(), 0x00);
     if (e3.size() > 3) return std::nullopt;
     key.pub.insert(key.pub.end(), e3.begin(), e3.end());
+
+    // CRT 参数（完整 9 字段的 PKCS#1 私钥才填充；右对齐到 dsz/2）
+    if (idx >= 9) {
+        size_t hsz = dsz / 2;
+        auto store = [hsz](std::vector<uint8_t>& dst, const std::vector<uint8_t>& src) {
+            if (src.empty()) return;
+            if (src.size() > hsz) { dst.clear(); return; }  // 异常长度：留空触发回退
+            dst.assign(hsz, 0);
+            memcpy(dst.data() + hsz - src.size(), src.data(), src.size());
+        };
+        store(key.rsa_p, p); store(key.rsa_q, q);
+        store(key.rsa_dP, dP); store(key.rsa_dQ, dQ); store(key.rsa_qInv, qInv);
+    }
     return key;
 }
 

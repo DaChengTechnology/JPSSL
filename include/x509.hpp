@@ -239,6 +239,11 @@ struct private_key {
     std::vector<uint8_t> priv;   // raw private key bytes（库内原始格式）
     std::vector<uint8_t> pub;    // 公钥 raw bytes（解析时从密钥中恢复，可为空）
 
+    // RSA CRT 参数（PKCS#1 RSAPrivateKey 第 5-9 个 INTEGER：p, q, dP, dQ, qInv），
+    // 右对齐到 dsz/2 字节（RSA-2048 → 128 字节）。为空表示私钥未携带 CRT 参数
+    // （如纯 n/d/e），此时签名/解密回退全模幂。
+    std::vector<uint8_t> rsa_p, rsa_q, rsa_dP, rsa_dQ, rsa_qInv;
+
     /// 从 DER 编码的私钥解析 (PKCS#8 / PKCS#1 RSA / SEC1 EC / RFC 8410)
     static std::optional<private_key> from_der(const uint8_t* data, size_t len);
     static std::optional<private_key> from_der(const std::vector<uint8_t>& der);
