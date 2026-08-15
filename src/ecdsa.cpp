@@ -740,7 +740,7 @@ static void batch_affine(jac_point<N>* pts, aff_point<N>* out, int n,
 
 // ── 标量乘 ──
 
-// 閫氱敤瀹藉害 wNAF 閲嶇爜锛氭暟瀛楀€?{-2^(w-1)+1, ..., -1, 1, ..., 2^(w-1)-1}锛堝鏁帮級
+// 通用宽度 wNAF 重编码：数值取 {-2^(w-1)+1, ..., -1, 1, ..., 2^(w-1)-1}（奇数）
 template <int N>
 static int wnaf_recode(const bn<N>* k, int8_t* digits, int cap, int width) {
     bn<N> t = *k;
@@ -864,8 +864,8 @@ static void wnaf_dual(jac_point<N>* R, const bn<N>* k1, const aff_point<N>* t1,
     }
 }
 
-// 娣峰悎瀹藉害鍙屾爣閲忎箻锛歨1 鐢ㄥ搴?2^(w1-1) 鏉￠〉锛宬2 鐢ㄥ搴?2^(w2-1) 鏉￠〉
-// 锛圥-256 楠岀鍥炵敤锛歨1=u1路G 璧颁笂 7 浣嶅搴﹀苟缂撳瓨鐨?32 椤硅〃锛宬2=u2路Q 璧?5 浣嶅搴︼級
+// 混合宽度双标量乘：u1 用宽度 2^(w1-1) 范围，u2 用宽度 2^(w2-1) 范围
+// （P-256 测试回用：u1=u1·G 走至上 7 位宽度并缓存的 32 项表，u2=u2·Q 走 5 位宽度）
 template <int N>
 static void wnaf_dual_mixed(jac_point<N>* R, const bn<N>* k1,
                             const aff_point<N>* t1, int w1,
@@ -1221,7 +1221,7 @@ static bool c256_ready = false;
 // P-256 固定基点 comb 表：g_comb[k][d-1] = d·2^(4k)·G，k=0..63，d=1..15
 static aff_point<4> g_comb[64][15];
 static bool g_comb_ready = false;
-// P-256 wNAF-7 鐢熸垚鍏冨鏁拌〃锛?G,3G,...,63G锛堜豢灏勶紝Montgomery锛夛紝楠岀 u1路G 渚ф縺娲荤敤
+// P-256 wNAF-7 生成元数表：G,3G,...,63G（仿真，Montgomery），测试 u1·G 侧激活用
 static aff_point<4> g_odd7[32];
 static bool g_odd7_ready = false;
 
