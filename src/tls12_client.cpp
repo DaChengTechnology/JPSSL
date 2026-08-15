@@ -42,7 +42,7 @@ static const uint16_t TLS12_CLIENT_CIPHERS[] = {
     0x009D, 0x009C, 0x003D, 0x003C,
 };
 
-// 客户�?PSK 套件（仅当会话配置了 TLS 1.2 PSK 时加�?ClientHello�?
+// 客户端 PSK 套件（仅当会话配置了 TLS 1.2 PSK 时加入 ClientHello）
 static const uint16_t TLS12_CLIENT_PSK_CIPHERS[] = {
     0x00AB, 0x00AA, 0xCCAD, 0x00B3, 0x00B2,
     0x00A9, 0x00A8, 0xCCAB, 0x00AF, 0x00AE,
@@ -108,9 +108,9 @@ static bool tls12_check_ffdhe2048_params(const uint8_t* p, size_t p_len,
     return (one < y) && (y < p_minus_1);
 }
 
-// ══════════════════════════════════════════════════════════════════════�?
-//  TLS 1.2 完整握手 �?客户�?
-// ══════════════════════════════════════════════════════════════════════�?
+// ═════════════════════════════════════════════════════════════════════════
+//  TLS 1.2 完整握手 — 客户端
+// ═════════════════════════════════════════════════════════════════════════
 bool tls12_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello){
     s.ver=TLSVersion::V12;s.is_server=false;
     s.transcript_ready=false;
@@ -164,9 +164,9 @@ bool tls12_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
     client_hello.insert(client_hello.end(),ext.begin(),ext.end());
     size_t len=client_hello.size()-4;
     client_hello[1]=(uint8_t)(len>>16);client_hello[2]=(uint8_t)(len>>8);client_hello[3]=(uint8_t)len;
-    // ClientHello 暂不加入 transcript：此�?cipher_suite 尚未协商（服务端才会
-    // 选定），transcript 哈希算法（SHA-256/SHA-384）依�?cipher_suite�?
-    // 缓存原始字节，待 tls12_process_server_flight 解析出套件后再初始化�?
+    // ClientHello 暂不加入 transcript：此时 cipher_suite 尚未协商（服务端才会
+    // 选定），transcript 哈希算法（SHA-256/SHA-384）依 cipher_suite
+    // 缓存原始字节，待 tls12_process_server_flight 解析出套件后再初始化。
     s.tls12_client_hello_cache = client_hello;
     return true;
 }
@@ -531,9 +531,9 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
     return true;
 }
 
-// ══════════════════════════════════════════════════════════════════════�?
-//  TLS 1.2 简化版 API（兼容旧接口�?
-// ══════════════════════════════════════════════════════════════════════�?
+// ═════════════════════════════════════════════════════════════════════════
+//  TLS 1.2 简化版 API（兼容旧接口）
+// ═════════════════════════════════════════════════════════════════════════
 bool tls12_handshake_client(tls_session& s, std::vector<uint8_t>& client_hello,
                              const uint8_t* server_response, size_t resp_len,
                              const uint8_t* pre_master_secret, size_t pms_len){

@@ -95,7 +95,7 @@ static inline __m128i ccm_mac_data(__m128i state, const uint8_t* data, size_t le
     return state;
 }
 
-// RFC 3610 搂2.2锛氶檮鍔犺閫佽瘉鏁版嵁 a 缂栫爜涓?[len(a)] || a锛屼笌闀垮害鍓嶇紑鍚屽潡鎷煎悗鎸?16 瀛楄妭琛ラ綈銆?
+// RFC 3610 §2.2：附加认证数据 a 编码为 [len(a)] || a，与长度前缀同块拼接后按 16 字节补齐。
 static inline __m128i ccm_mac_aad(__m128i state, const uint8_t* aad, size_t a_len,
                                   const __m128i* rk, int rounds) {
     uint8_t prefix[6];
