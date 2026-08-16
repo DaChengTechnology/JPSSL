@@ -3,9 +3,12 @@
 ## [1.1.9] - 2026-08-16
 
 ### Fixed
-- **RSA 模幂 Montgomery 边界问题**：`bn_modpow` 改用朴素平方-乘（每步无截断取模），
-  避免 Montgomery 初始化边界路径；`compute_2exp_mod_` 三分支处理 `r==m/2` 置零、
-  `r>m/2` 减 `m-r` 避免溢出。
+- **RSA 模幂 Montgomery 边界问题**：`compute_2exp_mod_` 三分支处理 `r==m/2` 置零、
+  `r>m/2` 减 `m-r` 避免溢出，修复 Montgomery 初始化边界路径。
+- **RSA 全模幂性能回归修复**：`bn_modpow` 改回 Montgomery 模幂（保留上述边界修复），
+  替换临时引入的朴素平方-乘慢路径；RSA-2048 全模幂 456ms → 3.7ms，x509 RSA 自签名
+  与 `rsa_pkcs1_sign` 回退路径恢复快速，Windows 上 TLS 1.2 RSA 证书套件 OpenSSL
+  互通恢复全通过。
 - **TLS 1.3 服务端 ClientHello 最小长度校验**：握手前校验 `client_hello` 长度下限
   （handshake 头 + legacy_version + random + session_id_len），防空指针/越界。
 - **哈希 update 零长度输入防护**：SHA-1 / SHA-256 / SHA-384/512 / SHA3 / SM3 在
