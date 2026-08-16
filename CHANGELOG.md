@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.1.9] - 2026-08-16
+
+### Fixed
+- **RSA 模幂 Montgomery 边界问题**：`bn_modpow` 改用朴素平方-乘（每步无截断取模），
+  避免 Montgomery 初始化边界路径；`compute_2exp_mod_` 三分支处理 `r==m/2` 置零、
+  `r>m/2` 减 `m-r` 避免溢出。
+- **TLS 1.3 服务端 ClientHello 最小长度校验**：握手前校验 `client_hello` 长度下限
+  （handshake 头 + legacy_version + random + session_id_len），防空指针/越界。
+- **哈希 update 零长度输入防护**：SHA-1 / SHA-256 / SHA-384/512 / SHA3 / SM3 在
+  `len == 0` 时直接返回，避免空指针等边界问题。
+- **共享库中 P-256 ADX 汇编 PLT 懒绑定破坏寄存器**：`__ecp_nistz256_*` 内部符号加
+  `.hidden`（macOS `.private_extern`），内部 call 不再经 PLT；`jpssl_cpu` 静态库加
+  `POSITION_INDEPENDENT_CODE ON`。修复 .so 中 ECDSA P-256 验签/签名失败（表现为
+  TLS 1.3 ECDSA 握手失败）。
+
+### Perf
+- **RSA-2048 私钥签名提速（2186ms → 3ms）**：PKCS#1 RSAPrivateKey 解析此前只取前
+  4 个 INTEGER，丢弃 CRT 参数（p/q/dP/dQ/qInv）；现补全解析，`rsa_pkcs1_sign`
+  优先 CRT（RSASP1），缺失时安全回退全模幂。实测 PKCS#1 签名 2186ms → 3ms、
+  PSS 2436ms → 1ms；http_server ctest 总时长 35.8s → 17.7s。
+
 ## [1.1.8] - 2026-08-14
 
 ### Added
