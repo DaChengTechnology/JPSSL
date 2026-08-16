@@ -296,16 +296,20 @@ static void CAT(bn_mulmod_,K)(BN&r,const BN&a,const BN&b,const BN&m){
 
 void bn_modpow(BN&r,const BN&base,const BN&exp,const BN&mod){
   if(mod.is_zero()){r.zero();return;}
-  if(exp.is_zero()){r=BN::from_uint64(1);return;}
-  // 朴素平方-乘（每步无截断乘法取模，避免 Montgomery 初始化边界问题）
-  BN result=BN::from_uint64(1), b;
-  if(!(base<mod)) bn_mod(b,base,mod); else b=base;
+  // Montgomery 模幂：mont_init 依赖的 compute_2exp_mod_ 已修复 r==m/2 边界
+  // （2079663 三分支），故可安全回到 Montgomery 路径，避免朴素平方-乘的
+  // 慢速全模幂（RSA-2048 实测 456ms → ~1ms）。exp=0 时循环不执行，
+  // from_mont(R_mod_m) 恰好返回 1。
+  MONT_CTX mc=CAT(mont_init_,K)(mod);
+  BN b0=base;if(!(b0<mod))bn_mod(b0,base,mod);
+  BN bm;CAT(to_mont_,K)(bm,b0,mod,mc.R2_mod_m,mc.m_prime);
+  BN rm=mc.R_mod_m;
   int bits=exp.bit_length();
   for(int i=bits-1;i>=0;--i){
-    CAT(bn_mulmod_,K)(result,result,result,mod);
-    if(exp.bit(i)) CAT(bn_mulmod_,K)(result,result,b,mod);
+    CAT(mont_mul_,K)(rm,rm,rm,mod,mc.m_prime);
+    if(exp.bit(i))CAT(mont_mul_,K)(rm,rm,bm,mod,mc.m_prime);
   }
-  r=result;
+  CAT(from_mont_,K)(r,rm,mod,mc.m_prime);
 }
 
 
