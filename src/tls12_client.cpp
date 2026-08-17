@@ -296,7 +296,7 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
                     p += clen;
                 }
                 if (chain.empty()) return false;
-                if (trust_store) {
+                if (!s.skip_verify && trust_store) {
                     if (!tls13_verify_server_chain(chain, *trust_store, s.server_name)) return false;
                     if (chain.empty() ||
                         !(parsed_server_cert = tls_cert_from_x509_leaf(chain[0])))
@@ -395,11 +395,11 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
 
     // Server certificate source: trust_store parsed above; else cert_manager
     // (internal self-signed tests); else the leaf cert from the wire.
-    if (!server_cert && cert_manager) {
+    if (!s.skip_verify && !server_cert && cert_manager) {
         server_cert = cert_manager->get_certificate(s.server_name);
         if (!server_cert) server_cert = cert_manager->get_default_certificate();
     }
-    if (!server_cert && !cert_chain.empty()) {
+    if (!s.skip_verify && !server_cert && !cert_chain.empty()) {
         if (!(parsed_server_cert = tls_cert_from_x509_leaf(cert_chain[0])))
             return false;
         server_cert = parsed_server_cert.get();
@@ -409,11 +409,13 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
     uint8_t client_ec_pub[32], client_ec_priv[32];
     uint8_t client_dh_pub[256], client_dh_priv[32];
     if (tls12_is_ecdhe(s.cipher_suite)) {
-        if (skx_params.empty() || !skx_sig || !server_cert) return false;
-        if (!scheme_in_list(effective_sig_algs(s), skx_sig_alg)) return false;
-        if (!tls12_verify_skx_signature(*server_cert, skx_sig_alg, skx_sig, skx_sig_len,
-                                        skx_params.data(), skx_params.size(), s))
-            return false;
+        if (!s.skip_verify) {
+            if (skx_params.empty() || !skx_sig || !server_cert) return false;
+            if (!scheme_in_list(effective_sig_algs(s), skx_sig_alg)) return false;
+            if (!tls12_verify_skx_signature(*server_cert, skx_sig_alg, skx_sig, skx_sig_len,
+                                            skx_params.data(), skx_params.size(), s))
+                return false;
+        }
         if (server_ec_type == 1) {
             x25519_generate_keypair(client_ec_pub, client_ec_priv);
             uint8_t shared[32];
@@ -449,11 +451,13 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
             return false;
         }
     } else if (tls12_is_dhe_rsa(s.cipher_suite)) {
-        if (!server_dh_ok || !skx_sig || !server_cert) return false;
-        if (!scheme_in_list(effective_sig_algs(s), skx_sig_alg)) return false;
-        if (!tls12_verify_skx_signature(*server_cert, skx_sig_alg, skx_sig, skx_sig_len,
-                                        skx_params.data(), skx_params.size(), s))
-            return false;
+        if (!s.skip_verify) {
+            if (!server_dh_ok || !skx_sig || !server_cert) return false;
+            if (!scheme_in_list(effective_sig_algs(s), skx_sig_alg)) return false;
+            if (!tls12_verify_skx_signature(*server_cert, skx_sig_alg, skx_sig, skx_sig_len,
+                                            skx_params.data(), skx_params.size(), s))
+                return false;
+        }
         jpssl::dh::ffdhe2048_keypair(client_dh_pub, client_dh_priv);
         uint8_t shared256[256];
         if (!jpssl::dh::ffdhe2048_shared(shared256, client_dh_priv, server_dh_ys))

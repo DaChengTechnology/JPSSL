@@ -235,6 +235,7 @@ struct tls_session {
     uint8_t transcript_hash[48];         // 已计算的 transcript 哈希
     uint8_t session_id[32];              // 会话 ID (TLS 1.2 会话恢复)
     uint8_t session_id_len = 0;
+    bool skip_verify = false;            // 客户端：跳过对端证书认证（链验证/主机名/CertificateVerify）
     uint8_t ks_priv[56];       // curveSM2(32) / X448(56) / X25519(32) / secp256r1(32) / secp384r1(48)
     uint8_t ks_pub[96];        // secp384r1(96) / curveSM2(64) / X448(56) / X25519(32) / secp256r1(64)
     // SM 套件客户端额外生成的 X25519 兜底临时对（RFC 8998 要求 curveSM2

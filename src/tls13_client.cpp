@@ -520,7 +520,8 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
                         else break;
                     }
                     // 客户端 x509 验证：trust_store 提供 CA 根时，验证整条链 + 主机名
-                    if (trust_store) {
+                    // （set_skip_verify(true) 时跳过全部对端证书认证）
+                    if (!s.skip_verify && trust_store) {
                         if (!tls13_verify_server_chain(chain, *trust_store, s.server_name)) return false;
                         // 链验证通过后必须能用叶子证书构造 server_cert 验证 CertificateVerify
                         // 否则（如 RSA-4096 对端证书）不能静默跳过 CV 校验，直接判失败
@@ -531,14 +532,14 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
                     }
                 }
                 // 旧行为：cert_manager 按 SNI 查找预期服务器证书（trust_store 未提供时使用）
-                if (!server_cert && cert_manager) {
+                if (!s.skip_verify && !server_cert && cert_manager) {
                     server_cert = cert_manager->get_certificate(s.server_name);
                     if (!server_cert) server_cert = cert_manager->get_default_certificate();
                 }
                 break;
             }
             case (uint8_t)HandshakeType::CERT_VERIFY:
-                if(server_cert){
+                if(!s.skip_verify && server_cert){
                     if(!tls13_verify_cert_verify(*server_cert,s,hmsg,4+hlen))return false;
                 }
                 tls_transcript_update(s,hmsg,4+hlen);

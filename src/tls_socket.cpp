@@ -720,6 +720,7 @@ bool tls_connection::do_client_handshake(const tls_certificate_manager* trust_st
         return do_client_handshake_tls12(trust_store, trust, error);
 
     handshake_guard hg(handshake_pending_);
+    session_.skip_verify = skip_verify_;  // 传播跳过认证开关到握手状态
     // 1. ClientHello（裸握手消息）→ 封装为明文 record 发送
     std::vector<uint8_t> ch;
     if (!tls13_make_client_hello(session_, ch)) {
@@ -819,6 +820,7 @@ bool tls_connection::do_client_handshake_tls12(const tls_certificate_manager* tr
                                                const tls_trust_store* trust,
                                                std::string* error) {
     handshake_guard hg(handshake_pending_);
+    session_.skip_verify = skip_verify_;  // 传播跳过认证开关到握手状态
 
     // 1. ClientHello（裸握手消息）→ 明文 record
     std::vector<uint8_t> ch;
