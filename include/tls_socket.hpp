@@ -296,6 +296,14 @@ public:
     void set_tls_version(TLSVersion v) { tls_version_ = v; }
     TLSVersion tls_version() const { return tls_version_; }
 
+    /// 设置是否跳过对端证书认证（自签证书 / 内网测试环境）。
+    /// 仅关闭证书链验证、主机名匹配与服务端 CertificateVerify 校验，
+    /// TLS 握手与密钥交换照常进行，连接仍可加密收发数据。
+    /// 默认 false（不跳过）；trust_store / cert_manager 为 nullptr 时的
+    /// 默认行为不变。
+    void set_skip_verify(bool skip = true) { skip_verify_ = skip; }
+    bool skip_verify() const { return skip_verify_; }
+
     /// 数据报模式（UDP 链接）开关。attach() 对 SOCK_DGRAM 句柄自动启用；
     /// 对 TCP 句柄默认关闭。可手动覆盖：enable=true 要求底层为 UDP socket。
     ///
@@ -415,6 +423,7 @@ private:
     void set_tcp_nodelay();
 
     socket_handle_t sock_ = INVALID_SOCKET_HANDLE;
+    bool skip_verify_ = false;       // 跳过对端证书认证（见 set_skip_verify）
     bool open_ = false;
     bool owns_socket_ = true;        // 是否持有 sock_ 所有权（close() 时是否关闭）
     bool datagram_ = false;          // 数据报模式（UDP：每条 TLS record 一个数据报）
