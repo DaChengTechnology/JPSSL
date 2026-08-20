@@ -199,7 +199,8 @@ struct tls_session {
     std::shared_ptr<jpssl::rsa_private_key> rsa_key;      // TLS 1.2 服务端 RSA 私钥（按需堆分配）
     std::shared_ptr<tls12_dhe_keys> dhe_keys;             // TLS 1.2 DHE 临时密钥对（按需）
     std::shared_ptr<quic_secrets_block> quic_secrets;     // QUIC 数据包保护 secret（按需）
-    std::vector<uint8_t> tls12_client_hello_cache;        // 客户端 ClientHello 缓存
+    std::vector<uint8_t> tls12_client_hello_cache;        // 客户端 ClientHello 缓存（TLS 1.2）
+    std::vector<uint8_t> tls13_client_hello_cache;        // TLS 1.3 ClientHello（协商哈希后重建 transcript 用）
     std::vector<uint16_t> sig_algs;                       // signature_algorithms
     std::vector<uint16_t> sig_algs_cert;                  // signature_algorithms_cert
     std::vector<std::string> alpn_protos;                 // ALPN 本地协议列表
