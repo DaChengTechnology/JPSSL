@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.1.10] - 2026-08-21
+
+### Added
+- **kTLS（Kernel TLS）支持**：Linux 内核 TLS 记录层卸载。握手仍在用户态
+  完成，握手成功后通过 `setsockopt(SOL_TCP, TCP_ULP, "tls")` +
+  `setsockopt(SOL_TLS, TLS_TX/TLS_RX, &crypto_info)` 将会话密钥
+  （key/iv/salt/rec_seq）交给内核，此后应用数据以明文直接 `send/recv`，
+  由内核负责 TLS record 封装与加解密，降低系统调用与加解密开销。
+  - 新增 `ktls.hpp` / `ktls.cpp`：`ktls_is_supported()`、
+    `ktls_export_params()`、`ktls_enable()`，覆盖 TLS 1.2/1.3 的
+    AES-GCM-128/256、ChaCha20-Poly1305、AES-CCM、SM4-GCM/CCM 套件映射；
+  - `tls_connection` 新增 `enable_ktls()` / `ktls_active()`，握手后一键
+    启用明文直通模式（`send()`/`recv()` 在激活后不再经用户态加解密）；
+  - 新增 `tests/test_ktls.cpp` 单元测试（16 项）并接入 ctest；
+  - 平台/内核不支持 `CONFIG_TLS` 时优雅降级，不影响既有 TLS/DTLS 功能。
+
+### Notes
+- 版本号 1.1.8 → 1.1.10（同步 CMake `project(jpssl VERSION ...)`）。
+
 ## [1.1.8] - 2026-08-14
 
 ### Added

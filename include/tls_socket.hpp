@@ -32,6 +32,7 @@
  */
 
 #include "tls.hpp"
+#include "ktls.hpp"
 
 #include <coroutine>
 #include <cstdint>
@@ -387,6 +388,15 @@ public:
 
     socket_handle_t native() const { return sock_; }
 
+    // ---- kTLS（内核 TLS 记录层卸载，Linux）----
+    /// 握手完成后调用：把会话密钥导出并交给 Linux 内核（TCP_ULP "tls"），
+    /// 成功后本连接进入“明文直通”模式——内核对记录做封装/加解密，
+    /// 应用侧 send()/recv() 直接读写明文（不再经用户态 tls_encrypt/tls_decrypt）。
+    /// 返回 false 时 error 说明原因（平台不支持 / 内核未开启 / 握手中）。
+    bool enable_ktls(std::string* error = nullptr);
+    /// 是否已成功启用 kTLS（明文直通模式激活）。
+    bool ktls_active() const { return ktls_active_; }
+
 private:
     friend class tls_listener;
 
@@ -435,6 +445,7 @@ private:
     tls_session session_;
     std::vector<uint8_t> rbuf_;   // 接收缓冲（处理半包）
     tls_co_executor* executor_ = nullptr; // 协程执行器（co_send/co_recv 用）
+    bool ktls_active_ = false;        // kTLS 明文直通模式已激活
 };
 
 // ============================================================================
