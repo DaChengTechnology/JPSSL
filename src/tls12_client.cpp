@@ -65,7 +65,8 @@ static std::vector<uint16_t> tls12_client_suite_list(const tls_session& s){
 // OpenSSL 要求 ECDSA 证书的曲线必须出现在客户端通告的组里（否则 ECDHE-ECDSA
 // 报 no shared cipher），因此除临时密钥组外还要通告证书曲线组。
 static void tls12_append_supported_groups(std::vector<uint8_t>& ext){
-    static const uint16_t groups[] = { 0x001d, 0x0017, 0x0019, 0x0100 }; // X25519, P-256, P-384, ffdhe2048
+    static const uint16_t groups[] = { 0x001d, 0x0017, 0x0018, 0x0019,
+                                       0x0100 };  // X25519, P-256, P-384, P-521, ffdhe2048
     // RFC 7919 §3 / RFC 4492 §5.1：supported_groups 扩展数据 =
     //   NamedGroupList（uint16 长度 + 各组 2 字节）
     size_t list_len = sizeof(groups);   // 2*count
@@ -262,8 +263,8 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
     const tls_certificate* server_cert = nullptr;
     const uint8_t* skx_sig = nullptr; size_t skx_sig_len = 0; uint16_t skx_sig_alg = 0;
     std::vector<uint8_t> skx_params;   // ServerDHParams (for signature and group checks)
-    uint8_t server_ec_pub[96] = {0};   // ECDHE server ephemeral pubkey（X25519 32 / P-256 64 / P-384 96）
-    int server_ec_type = 0;            // 1=X25519, 2=secp256r1, 3=secp384r1
+    uint8_t server_ec_pub[132] = {0};  // ECDHE server ephemeral pubkey（X25519 32 / P-256 64 / P-384 96 / P-521 132）
+    int server_ec_type = 0;            // 1=X25519, 2=secp256r1, 3=secp384r1, 4=secp521r1
     uint8_t server_dh_ys[256] = {0};   // DHE server ephemeral pubkey
     bool server_dh_ok = false;
 
@@ -325,10 +326,14 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
                         if (pub_len != 65 || body[p] != 0x04) return false;
                         raw_len = 64;
                         server_ec_type = 2;
-                    } else if (named_curve == 0x0019) { // secp384r1
+                    } else if (named_curve == 0x0018) { // secp384r1
                         if (pub_len != 97 || body[p] != 0x04) return false;
                         raw_len = 96;
                         server_ec_type = 3;
+                    } else if (named_curve == 0x0019) { // secp521r1
+                        if (pub_len != 133 || body[p] != 0x04) return false;
+                        raw_len = 132;
+                        server_ec_type = 4;
                     } else {
                         return false; // 不支持的命名曲线
                     }
@@ -447,6 +452,16 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
             cke.push_back(97);
             cke.push_back(0x04);
             cke.insert(cke.end(), pub, pub + 96);
+        } else if (server_ec_type == 4) {
+            uint8_t pub[132], priv[66], shared[66];
+            ecdsa_p521_keygen(pub, priv);
+            if (!ecdsa_p521_ecdh(shared, priv, server_ec_pub)) return false;
+            premaster.assign(shared, shared + 66);
+            cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
+            cke.push_back(0); cke.push_back(0); cke.push_back(134);
+            cke.push_back(133);
+            cke.push_back(0x04);
+            cke.insert(cke.end(), pub, pub + 132);
         } else {
             return false;
         }

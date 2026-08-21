@@ -1463,6 +1463,12 @@ bool ecdsa_p384_ecdh(uint8_t shared[48], const uint8_t priv[48], const uint8_t p
     return ecdh_impl<6, 48>(shared, priv, pub, C384, 96);
 }
 
+bool ecdsa_p521_ecdh(uint8_t shared[66], const uint8_t priv[66],
+                     const uint8_t pub[132]) {
+    ensure521();
+    return ecdh_impl<9, 66>(shared, priv, pub, C521, 132);
+}
+
 // 批量仿射化：n 个 Jacobian 点 → n 个仿射点，整批仅一次 Fermat 求逆
 // （Montgomery 批量求逆：1 次求逆 + 3(n-1) 次乘法）。Z=0 的点逐个求逆回退。
 template <int N>

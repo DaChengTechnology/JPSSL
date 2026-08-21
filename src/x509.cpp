@@ -698,7 +698,13 @@ jpssl::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) 
         if (sa_oid_tlv) {
             auto sa_oid = tlv_to_oid(*sa_oid_tlv);
             if (oid_equal(sa_oid, OID_SHA256_WITH_RSA, sizeof(OID_SHA256_WITH_RSA))) cert.sign_key_type = KeyType::RSA_2048;
-            else if (oid_equal(sa_oid, OID_SHA384_WITH_RSA, sizeof(OID_SHA384_WITH_RSA))) cert.sign_key_type = KeyType::RSA_4096;
+            else if (oid_equal(sa_oid, OID_SHA384_WITH_RSA, sizeof(OID_SHA384_WITH_RSA))) {
+                cert.sign_key_type = KeyType::RSA_4096;
+                cert.sig_hash_len = 48;
+            } else if (oid_equal(sa_oid, OID_SHA512_WITH_RSA, sizeof(OID_SHA512_WITH_RSA))) {
+                cert.sign_key_type = KeyType::RSA_4096;
+                cert.sig_hash_len = 64;
+            }
             else if (oid_equal(sa_oid, OID_RSASSA_PSS, sizeof(OID_RSASSA_PSS))) {
                 cert.sign_key_type = KeyType::RSA_2048;
                 cert.sig_is_pss = true;
@@ -847,10 +853,40 @@ bool x509_cert::verify_signature(const x509_cert& issuer) const {
 
     switch (sign_key_type) {
         case KeyType::RSA_2048: case KeyType::RSA_4096: {
-            uint8_t hash[32];
-            sha256_ctx ctx; sha256_init(&ctx); sha256_update(&ctx, tbs_data, tbs_len); sha256_final(&ctx, hash);
-            static const uint8_t SHA256_DI[] = {0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20};
-            size_t di_len = sizeof(SHA256_DI);
+            // 按证书签名算法选择哈希（RFC 8017 PKCS#1 v1.5）：
+            // 默认 SHA-256；from_der 对 sha384/sha512WithRSAEncryption 设置
+            // sig_hash_len=48/64（与 PSS 分支共用该字段）。
+            uint8_t hash[64];
+            size_t hash_len = 32;
+            const uint8_t* di = nullptr;
+            size_t di_len = 0;
+            if (sig_hash_len == 48) {
+                sha384(tbs_data, tbs_len, hash);
+                static const uint8_t SHA384_DI[] = {
+                    0x30,0x41,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,
+                    0x65,0x03,0x04,0x02,0x02,0x05,0x00,0x04,0x30};
+                di = SHA384_DI;
+                di_len = sizeof(SHA384_DI);
+                hash_len = 48;
+            } else if (sig_hash_len == 64) {
+                sha512(tbs_data, tbs_len, hash);
+                static const uint8_t SHA512_DI[] = {
+                    0x30,0x51,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,
+                    0x65,0x03,0x04,0x02,0x03,0x05,0x00,0x04,0x40};
+                di = SHA512_DI;
+                di_len = sizeof(SHA512_DI);
+                hash_len = 64;
+            } else {
+                sha256_ctx ctx;
+                sha256_init(&ctx);
+                sha256_update(&ctx, tbs_data, tbs_len);
+                sha256_final(&ctx, hash);
+                static const uint8_t SHA256_DI[] = {
+                    0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,
+                    0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20};
+                di = SHA256_DI;
+                di_len = sizeof(SHA256_DI);
+            }
             const size_t k = issuer.public_key.size() > 3
                                  ? issuer.public_key.size() - 3
                                  : 0;
@@ -880,9 +916,9 @@ bool x509_cert::verify_signature(const x509_cert& issuer) const {
                 while (pos < kk && dec[pos] == 0xFF) ++pos;
                 if (pos >= kk || dec[pos] != 0x00) return false;
                 ++pos;
-                if (pos + di_len + 32 > kk) return false;
-                if (memcmp(dec + pos, SHA256_DI, di_len) != 0) return false;
-                return memcmp(dec + pos + di_len, hash, 32) == 0;
+                if (pos + di_len + hash_len > kk) return false;
+                if (memcmp(dec + pos, di, di_len) != 0) return false;
+                return memcmp(dec + pos + di_len, hash, hash_len) == 0;
             };
             if (k == 256) {
                 rsa_bignum n = rsa_bignum::from_bytes(issuer.public_key.data(), 256);
