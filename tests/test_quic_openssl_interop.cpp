@@ -1325,6 +1325,9 @@ static bool jpssl_server_from_ossl_client(uint16_t port, std::string& got,
     quic_packet_keys client_app, server_app;
     bool handshake_done = false;
     std::string client_msg;
+    // 握手完成前可能先收到客户端的 1-RTT 短头包（此时 client_app 密钥尚未
+    // 派生，无法解密）：先缓存原始字节，握手完成后回放解析，兼容乱序/合并。
+    std::vector<std::vector<uint8_t>> early_1rtt;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
     while (std::chrono::steady_clock::now() < deadline &&
            (!handshake_done || client_msg.empty())) {
@@ -1369,7 +1372,12 @@ static bool jpssl_server_from_ossl_client(uint16_t port, std::string& got,
                 p_off += c2;
                 continue;
             }
-            if (!handshake_done) break;
+            if (!handshake_done) {
+                // 早到的 1-RTT 短头包：尚无 client_app 密钥，无法解密，缓存整个
+                // 剩余数据报（1-RTT 是数据报内最后一个包），握手后回放。
+                early_1rtt.emplace_back(dat2 + p_off, dat2 + rn);
+                break;
+            }
             // 客户端 1-RTT 短头：DCID = 服务器 SCID
             quic_packet p;
             size_t c2 = 0;
@@ -1381,6 +1389,22 @@ static bool jpssl_server_from_ossl_client(uint16_t port, std::string& got,
             if (!fr.stream.empty())
                 client_msg.assign(fr.stream.begin(), fr.stream.end());
             p_off += c2;
+        }
+        // 握手完成且派生出应用密钥后，回放缓存中先到的 1-RTT 包（只回放一次）
+        if (handshake_done && !early_1rtt.empty()) {
+            for (const auto& raw : early_1rtt) {
+                quic_packet p;
+                size_t c2 = 0;
+                if (!quic_parse_packet(raw.data(), raw.size(), c2, server_scid,
+                                       s.cipher_suite, client_app, p))
+                    continue;
+                quic_frames_result fr;
+                if (!quic_parse_frames(p.payload.data(), p.payload.size(), fr))
+                    continue;
+                if (!fr.stream.empty())
+                    client_msg.assign(fr.stream.begin(), fr.stream.end());
+            }
+            early_1rtt.clear();
         }
     }
     if (!handshake_done) { why = "no client finished"; sock_close(sfd); return false; }
