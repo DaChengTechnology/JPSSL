@@ -792,7 +792,32 @@ bool tls_connection::do_client_handshake(const tls_certificate_manager* trust_st
             auto rec = make_record(rtype, payload.data(), payload.size());
             flight.insert(flight.end(), rec.begin(), rec.end());
         } else if (rtype == (uint8_t)ContentType::ALERT) {
-            set_err(error, "TLS alert during handshake");
+            // 解析 alert 详情（RFC 8446 §6：level + description），便于定位拒绝原因
+            std::string alert_desc = "TLS alert during handshake";
+            if (payload.size() >= 2) {
+                static const char* kAlertNames[] = {
+                    "close_notify", "unexpected_message", "bad_record_mac",
+                    "decryption_failed", "record_overflow", "decompression_failure",
+                    "handshake_failure", "bad_certificate", "unsupported_certificate",
+                    "certificate_revoked", "certificate_expired",
+                    "certificate_unknown", "illegal_parameter", "unknown_ca",
+                    "access_denied", "decode_error", "decrypt_error",
+                    "export_restriction", "protocol_version", "insufficient_security",
+                    "internal_error", "inappropriate_fallback", "user_canceled",
+                    "no_renegotiation", "missing_extension", "unsupported_extension",
+                    "certificate_unobtainable", "unrecognized_name",
+                    "bad_certificate_status_response", "bad_certificate_hash_value",
+                    "unknown_psk_identity", "certificate_required", "no_application_protocol"};
+                const uint8_t lvl = payload[0];
+                const uint8_t dsc = payload[1];
+                const char* name =
+                    dsc < sizeof(kAlertNames) / sizeof(kAlertNames[0])
+                        ? kAlertNames[dsc]
+                        : "unknown";
+                alert_desc += " (level=" + std::to_string(lvl) +
+                              " desc=" + std::to_string(dsc) + " " + name + ")";
+            }
+            set_err(error, alert_desc);
             return false;
         }
         // CCS（type 20）等兼容性记录直接忽略
