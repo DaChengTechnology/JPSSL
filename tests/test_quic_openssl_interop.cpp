@@ -1077,8 +1077,11 @@ static bool jpssl_client_to_ossl_server(uint16_t server_port,
                     s.cipher_suite = neg_cs;
                     uint8_t shared[32];
                     x25519_scalar_mult(shared, s.ks_priv, server_pub);
-                    // 用一次性会话副本派生握手密钥（SH 计入 transcript），不污染主会话
+                    // 用一次性会话副本派生握手密钥（CH + SH 计入 transcript），不污染主会话。
+                    // 注意：tls13_make_client_hello 现在只缓存 ClientHello 不入哈希
+                    // （RFC 8446 §4.4.1，协商套件决定哈希算法），这里需自行把 CH 计入。
                     tls_session tmp_s = s;
+                    tls_transcript_update(tmp_s, ch.data(), ch.size());
                     tls_transcript_update(tmp_s, sh_bytes.data(), sh_bytes.size());
                     tls13_derive_handshake_keys(tmp_s, shared, 32);
                     if (!tls_quic_get_handshake_keys(tmp_s, QuicVersion::V1,
