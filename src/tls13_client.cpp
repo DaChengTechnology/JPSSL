@@ -271,7 +271,9 @@ bool tls13_make_client_hello(tls_session& s, std::vector<uint8_t>& client_hello)
     size_t len=client_hello.size()-4;
     client_hello[1]=(uint8_t)(len>>16);client_hello[2]=(uint8_t)(len>>8);client_hello[3]=(uint8_t)len;
 
-    tls_transcript_update(s,client_hello.data(),client_hello.size());
+    // transcript 哈希算法由协商套件决定（RFC 8446 §4.4.1）：暂不入哈希，
+    // 等 ServerHello 协商出套件后用对应哈希重建（含重新哈希 ClientHello）。
+    s.tls13_client_hello_cache = client_hello;
     // 私钥已暂存到 s.ks_priv（支持 X25519 或 X448）
     // 兼容旧 API：将 X25519 私钥复制到 client_write_key 的 32 字节
     if (s.ks_group == NamedGroup::X25519) {
@@ -306,6 +308,14 @@ bool tls13_process_server_flight(tls_session& s, const uint8_t* data, size_t len
       s.cipher_suite = cs;
     }
 
+    // RFC 8446：transcript 哈希由协商套件决定；ClientHello 可能已用默认哈希
+    // 缓存（未入哈希），此处用协商哈希重建：先哈希 ClientHello 再哈希 ServerHello。
+    if (!s.tls13_client_hello_cache.empty()) {
+        s.transcript_ready = false;
+        tls_transcript_update(s, s.tls13_client_hello_cache.data(),
+                              s.tls13_client_hello_cache.size());
+        s.tls13_client_hello_cache.clear();
+    }
     tls_transcript_update(s,data+sh_start,4+sh_len);
 
     // 提取 server_pub 从 key_share（支持 X25519、X448 或 curveSM2）
