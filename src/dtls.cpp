@@ -30,6 +30,10 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <netdb.h>
+#if defined(__APPLE__)
+#include <sys/event.h>
+#include <sys/time.h>
+#endif
 #endif
 
 namespace jpssl {
@@ -1958,6 +1962,23 @@ static bool sock_wait_readable(sock_t fd, int timeout_ms) {
     fd_set fds; FD_ZERO(&fds); FD_SET(fd, &fds);
     timeval tv; tv.tv_sec = timeout_ms / 1000; tv.tv_usec = (timeout_ms % 1000) * 1000;
     int rc = select(0, &fds, nullptr, nullptr, &tv);
+    return rc > 0;
+#elif defined(__APPLE__)
+    int kq = ::kqueue();
+    if (kq < 0) return false;
+    struct kevent ev;
+    EV_SET(&ev, static_cast<uintptr_t>(fd), EVFILT_READ, EV_ADD | EV_ENABLE, 0,
+           0, nullptr);
+    struct timespec ts{};
+    struct timespec* tsp = nullptr;
+    if (timeout_ms >= 0) {
+        ts.tv_sec = timeout_ms / 1000;
+        ts.tv_nsec = static_cast<long>(timeout_ms % 1000) * 1000000L;
+        tsp = &ts;
+    }
+    struct kevent out;
+    const int rc = ::kevent(kq, &ev, 1, &out, 1, tsp);
+    ::close(kq);
     return rc > 0;
 #else
     pollfd pfd; pfd.fd = fd; pfd.events = POLLIN; pfd.revents = 0;
