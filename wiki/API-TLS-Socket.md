@@ -81,7 +81,7 @@ if (conn.connect("example.com", 443)) { /* 不验证证书链，直接建立加�
 | `tls_connection::ktls_active()` | 是否已成功启用 kTLS（明文直通模式激活） |
 | `tls_connection::native()` | 原生 socket 句柄 |
 | `tls_connection::attach(fd, take_ownership, error)` | 托管外部 socket 句柄（TCP 已连接 / accept 出的连接 / UDP 已 connect 或已 bind）；`take_ownership=false` 借用模式：`close()` 不关闭、不 shutdown 外部句柄 |
-| `tls_connection::client_handshake(host, trust, error)` | 在已托管 socket（`attach` 之后）上执行客户端握手，不建立传输连接；信任语义与 `connect` 一致 |
+| `tls_connection::client_handshake(host, trust, error)` | 在已托管 socket（`attach` 之后）上执行客户端握手，不建立传输连接；信任语义与 `connect` 一致；握手失败时 `error` 附带 TLS alert 的 level/description 详情 |
 | `tls_connection::owns_socket()` | 是否持有外部句柄所有权（`close()` 时是否关闭底层 fd） |
 | `tls_connection::set_datagram_mode(enable, error)` | 数据报模式（UDP 链接）开关；`attach` 对 `SOCK_DGRAM` 自动启用，`enable=true` 要求底层为 UDP socket |
 | `tls_connection::is_datagram()` | 是否数据报模式 |

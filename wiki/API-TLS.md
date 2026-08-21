@@ -2,7 +2,7 @@
 
 头文件：`include/tls.hpp`，命名空间 `jpssl::tls`。
 
-TLS 模块提供完整的 TLS 1.2 和 TLS 1.3 握手流程、记录层加解密、SNI 多域名证书管理、0-RTT 早数据。支持 AES-128/256-GCM、ChaCha20-Poly1305、AES-128-CCM 等密码套件，以及 Ed25519、ECDSA P-256、RSA-2048/4096、SM2 等多种证书签名算法，并支持 **[RFC 8998 国密套件](https://www.rfc-editor.org/rfc/rfc8998)**（TLS_SM4_GCM_SM3 + SM2）。
+TLS 模块提供完整的 TLS 1.2 和 TLS 1.3 握手流程、记录层加解密、SNI 多域名证书管理、0-RTT 早数据。支持 AES-128/256-GCM、ChaCha20-Poly1305、AES-128-CCM 等密码套件，以及 Ed25519、ECDSA P-256/P-384/P-521、RSA-2048/4096（PKCS#1 v1.5 与 PSS，SHA-256/384/512）、SM2 等多种证书签名算法，并支持 **[RFC 8998 国密套件](https://www.rfc-editor.org/rfc/rfc8998)**（TLS_SM4_GCM_SM3 + SM2）。
 
 ```cpp
 #include "tls.hpp"
@@ -210,7 +210,7 @@ tls13_process_end_of_early_data(client2, eoed.data(), eoed.size());
 
 ## 6. TLS 1.2 握手（[RFC 5246](https://www.rfc-editor.org/rfc/rfc5246)）
 
-支持 **RSA** 和 **ECDHE**（X25519）两种密钥交换方式，完整的密码套件协商、ServerKeyExchange、Certificate、ServerHelloDone 消息流程。
+支持 **RSA** 和 **ECDHE**（X25519 / P-256 / P-384 / P-521）两种密钥交换方式，完整的密码套件协商、ServerKeyExchange、Certificate、ServerHelloDone 消息流程。
 
 ```cpp
 // ── 服务端：准备 RSA 证书 ──

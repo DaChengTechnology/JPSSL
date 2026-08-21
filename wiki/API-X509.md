@@ -128,6 +128,7 @@ if (result.success) {
 - **签名格式**：同时接受定长 raw `r‖s` 与本库自产格式，以及 DER 编码的 `ECDSA-Sig-Value`（`SEQUENCE { INTEGER r, INTEGER s }`，OpenSSL 默认输出，支持长短格式长度）。
 - **SM2**：验证时按国密标准计算 `e = SM3(ZA ‖ TBS)`（单层哈希），ZA 依次尝试空用户 ID（OpenSSL 3.0 `x509` 生成行为）与国密标准默认 ID `"1234567812345678"`（[GB/T 32918.5 / GM/T 0003](https://www.oscca.gov.cn/)），兼容主流实现；本库签发的 SM2 证书与 OpenSSL 互验通过。
 - **ECDSA P-256/P-384/P-521**：`ecdsa_pXXX_sign/verify` 内部自带哈希，签名 / 验证直接对 TBS 字节进行，避免双重哈希；P-384/P-521 曲线 OID 使用标准值 `1.3.132.0.34/35`。
+- **RSA**：证书链验签支持 PKCS#1 v1.5 的 SHA-256/384/512 与 RSA-PSS（SHA-256/384/512）。
 
 双向互操作已实测：OpenSSL 签发的 SM2 / P-256 / P-384 / P-521 证书本库可验证，本库签发的证书 `openssl verify` 通过。
 

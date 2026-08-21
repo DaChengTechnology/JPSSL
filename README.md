@@ -668,7 +668,7 @@ x25519_scalar_mult(shared, alice_priv, bob_pub);
 
 TLS 模块提供完整的 TLS 1.2 和 TLS 1.3 握手流程、记录层加解密、SNI 多域名证书管理、0-RTT 早数据。
 
-支持 AES-128/256-GCM、ChaCha20-Poly1305、AES-128-CCM 等密码套件，以及 Ed25519、ECDSA P-256/P-384/P-521、RSA-2048/4096（含 RSA-PSS SHA-256/384/512）等多种证书签名算法。
+支持 AES-128/256-GCM、ChaCha20-Poly1305、AES-128-CCM 等密码套件，以及 Ed25519、ECDSA P-256/P-384/P-521、RSA-2048/4096（含 PKCS#1 v1.5 与 RSA-PSS 的 SHA-256/384/512）等多种证书签名算法。
 
 ```cpp
 #include "tls.hpp"
