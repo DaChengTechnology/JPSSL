@@ -19,6 +19,17 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cerrno>
+// 旧内核 UAPI（如 OpenHarmony SDK 的 linux/tls.h）缺少较新的 cipher_type 常量，
+// 这些值在内核 UAPI 中从未变化，这里兜底定义以兼容编译。
+#ifndef TLS_CIPHER_CHACHA20_POLY1305
+#define TLS_CIPHER_CHACHA20_POLY1305 2
+#endif
+#ifndef TLS_CIPHER_SM4_GCM
+#define TLS_CIPHER_SM4_GCM 4
+#endif
+#ifndef TLS_CIPHER_SM4_CCM
+#define TLS_CIPHER_SM4_CCM 5
+#endif
 #endif
 
 namespace jpssl::tls {
