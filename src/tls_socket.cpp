@@ -32,6 +32,10 @@ struct pollfd {
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#if defined(__APPLE__)
+#include <sys/event.h>
+#include <sys/time.h>
+#endif
 #endif
 
 namespace jpssl::tls {
@@ -69,7 +73,8 @@ bool set_socket_nonblocking(socket_handle_t fd, bool enable) {
 #endif
 }
 
-// 用 poll/select 等待 socket 可读(for_write=false)或可写(for_write=true)。
+// 等待 socket 可读(for_write=false)或可写(for_write=true)。
+// 实现：Windows select / macOS kqueue / Linux poll。
 // timeout_ms < 0 表示无限等待；返回 true 表示已就绪，false 表示超时或错误。
 bool wait_fd(int fd, bool for_write, int timeout_ms) {
 #ifdef _WIN32
@@ -81,6 +86,24 @@ bool wait_fd(int fd, bool for_write, int timeout_ms) {
     tv.tv_usec = (timeout_ms % 1000) * 1000;
     int rc = ::select(0, for_write ? nullptr : &fds, for_write ? &fds : nullptr,
                       nullptr, timeout_ms >= 0 ? &tv : nullptr);
+    return rc > 0;
+#elif defined(__APPLE__)
+    int kq = ::kqueue();
+    if (kq < 0) return false;
+    struct kevent ev;
+    EV_SET(&ev, static_cast<uintptr_t>(fd),
+           for_write ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0,
+           nullptr);
+    struct timespec ts{};
+    struct timespec* tsp = nullptr;
+    if (timeout_ms >= 0) {
+        ts.tv_sec = timeout_ms / 1000;
+        ts.tv_nsec = static_cast<long>(timeout_ms % 1000) * 1000000L;
+        tsp = &ts;
+    }
+    struct kevent out;
+    const int rc = ::kevent(kq, &ev, 1, &out, 1, tsp);
+    ::close(kq);
     return rc > 0;
 #else
     pollfd pfd;
@@ -128,7 +151,8 @@ void reset_session_preserving_config(tls_session& s) {
     memcpy(s.tls12_psk_value, psk12_val, sizeof(s.tls12_psk_value));
 }
 
-// poll 多个 fd（POSIX poll / Windows select）。就绪 fd 的 revents 被设置。
+// 等待多个 fd（Windows select / macOS kqueue / Linux poll）。
+// 就绪 fd 的 revents 被设置。
 // 返回就绪数量；0 超时；<0 错误。
 static int poll_multi(std::vector<pollfd>& pfds, int timeout_ms) {
 #ifdef _WIN32
@@ -158,6 +182,67 @@ static int poll_multi(std::vector<pollfd>& pfds, int timeout_ms) {
         if (p.revents) n++;
     }
     return n;
+#elif defined(__APPLE__)
+    int kq = ::kqueue();
+    if (kq < 0) {
+        for (auto& p : pfds) p.revents = 0;
+        return -1;
+    }
+    std::vector<struct kevent> chg;
+    chg.reserve(pfds.size());
+    for (const auto& p : pfds) {
+        struct kevent ev;
+        if (p.events & POLLIN) {
+            EV_SET(&ev, static_cast<uintptr_t>(p.fd), EVFILT_READ,
+                   EV_ADD | EV_ENABLE, 0, 0,
+                   reinterpret_cast<void*>(static_cast<uintptr_t>(p.fd)));
+            chg.push_back(ev);
+        }
+        if (p.events & POLLOUT) {
+            EV_SET(&ev, static_cast<uintptr_t>(p.fd), EVFILT_WRITE,
+                   EV_ADD | EV_ENABLE, 0, 0,
+                   reinterpret_cast<void*>(static_cast<uintptr_t>(p.fd)));
+            chg.push_back(ev);
+        }
+    }
+    struct timespec ts{};
+    struct timespec* tsp = nullptr;
+    if (timeout_ms >= 0) {
+        ts.tv_sec = timeout_ms / 1000;
+        ts.tv_nsec = static_cast<long>(timeout_ms % 1000) * 1000000L;
+        tsp = &ts;
+    }
+    std::vector<struct kevent> evs(chg.empty() ? 1 : chg.size());
+    const int n = ::kevent(kq, chg.data(), static_cast<int>(chg.size()),
+                           evs.data(), static_cast<int>(evs.size()), tsp);
+    ::close(kq);
+    for (auto& p : pfds) p.revents = 0;
+    if (n <= 0) return n;
+    for (int i = 0; i < n; ++i) {
+        const uintptr_t fd = evs[static_cast<size_t>(i)].udata
+                                 ? reinterpret_cast<uintptr_t>(
+                                       evs[static_cast<size_t>(i)].udata)
+                                 : evs[static_cast<size_t>(i)].ident;
+        for (auto& p : pfds) {
+            if (static_cast<uintptr_t>(p.fd) != fd) continue;
+            if (evs[static_cast<size_t>(i)].filter == EVFILT_READ) {
+                p.revents |= POLLIN;
+            } else {
+                p.revents |= POLLOUT;
+            }
+            if (evs[static_cast<size_t>(i)].flags & EV_EOF) {
+                p.revents |= POLLHUP;
+            }
+            if (evs[static_cast<size_t>(i)].flags & EV_ERROR) {
+                p.revents |= POLLERR;
+            }
+        }
+    }
+    int cnt = 0;
+    for (const auto& p : pfds) {
+        if (p.revents) ++cnt;
+    }
+    return cnt;
 #else
     int rc = ::poll(pfds.data(), (nfds_t)pfds.size(), timeout_ms);
     if (rc <= 0)
