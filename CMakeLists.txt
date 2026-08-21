@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(jpssl VERSION 1.1.9 LANGUAGES CXX)
+project(jpssl VERSION 1.1.10 LANGUAGES CXX)
 
 # 汇编源需要 GNU/Apple 汇编器支持：
 #   ARMv8：src/ecp_nistz256_arm.S
@@ -173,6 +173,7 @@ set(CPU_SOURCES
     src/base64.cpp
     src/ct.cpp
     src/tls_socket.cpp
+    src/ktls.cpp
     src/sm4_gcm.cpp
     src/sm4_ccm.cpp
     src/sm4_gcm_dispatch.cpp

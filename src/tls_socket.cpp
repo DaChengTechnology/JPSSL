@@ -317,7 +317,52 @@ void tls_connection::close() {
     datagram_ = false;
     would_block_ = false;
     handshake_pending_ = false;
+    ktls_active_ = false;
     rbuf_.clear();
+}
+
+// kTLS：握手完成后将会话密钥交给 Linux 内核，启动记录层卸载。
+// 成功后 ktls_active_=true，本连接进入明文直通模式。
+bool tls_connection::enable_ktls(std::string* error) {
+    set_err(error, "");
+    if (!open_ || sock_ == INVALID_SOCKET_HANDLE) {
+        set_err(error, "enable_ktls: connection not open");
+        return false;
+    }
+    if (datagram_) {
+        set_err(error, "enable_ktls: kTLS requires a stream (TCP) socket");
+        return false;
+    }
+#ifdef _WIN32
+    set_err(error, "enable_ktls: kTLS not supported on this platform");
+    return false;
+#else
+    ktls_params p;
+    ktls_result r = ktls_export_params(session_, p);
+    if (r == ktls_result::handshake_pending) {
+        set_err(error, "enable_ktls: handshake not complete");
+        return false;
+    }
+    if (r == ktls_result::cipher_unsupported) {
+        set_err(error, "enable_ktls: negotiated cipher not supported by kTLS");
+        return false;
+    }
+    if (r != ktls_result::ok) {
+        set_err(error, "enable_ktls: failed to export key material");
+        return false;
+    }
+    std::string err;
+    r = ktls_enable(p, (int)sock_, &err);
+    if (r != ktls_result::ok) {
+        std::string msg = "enable_ktls: " + (err.empty() ? std::string("ktls enable failed") : err);
+        set_err(error, msg);
+        return false;
+    }
+    // 清空已缓存的握手残余字节（kTLS 接管后不能再用用户态 record 解析）
+    rbuf_.clear();
+    ktls_active_ = true;
+    return true;
+#endif
 }
 
 // 托管外部 socket 句柄（TCP 已连接 / accept 出的连接 / UDP 已 connect 或已 bind）
@@ -715,6 +760,7 @@ bool tls_connection::do_client_handshake(const tls_certificate_manager* trust_st
         return do_client_handshake_tls12(trust_store, trust, error);
 
     handshake_guard hg(handshake_pending_);
+    session_.skip_verify = skip_verify_;  // 传播跳过认证开关到握手状态
     // 1. ClientHello（裸握手消息）→ 封装为明文 record 发送
     std::vector<uint8_t> ch;
     if (!tls13_make_client_hello(session_, ch)) {
@@ -814,6 +860,7 @@ bool tls_connection::do_client_handshake_tls12(const tls_certificate_manager* tr
                                                const tls_trust_store* trust,
                                                std::string* error) {
     handshake_guard hg(handshake_pending_);
+    session_.skip_verify = skip_verify_;  // 传播跳过认证开关到握手状态
 
     // 1. ClientHello（裸握手消息）→ 明文 record
     std::vector<uint8_t> ch;
@@ -1219,6 +1266,10 @@ bool tls_connection::send(const uint8_t* data, size_t len, std::string* error) {
         return false;
     }
     would_block_ = false; // 新一次 I/O 清空上次 would-block 状态
+    if (ktls_active_) {
+        // kTLS：内核已接管记录层加密，应用数据明文直通
+        return write_all(data, len, error);
+    }
     // tls_encrypt 内部按 <=16KiB 自动分片为多条 record，这里一次性写出
     auto rec = tls_encrypt(session_, ContentType::APPLICATION_DATA, data, len);
     if (rec.empty()) {
@@ -1261,6 +1312,17 @@ bool tls_connection::recv(std::vector<uint8_t>& out, std::string* error) {
     }
     would_block_ = false; // 新一次 I/O 清空上次 would-block 状态
     out.clear();
+    if (ktls_active_) {
+        // kTLS：内核已接管记录层解密，直接读 socket 明文
+        uint8_t buf[16384];
+        int r = (int)::recv(sock_, (char*)buf, (int)sizeof(buf), 0);
+        if (r > 0) { out.assign(buf, buf + r); return true; }
+        if (r == 0) { set_err(error, "connection closed by peer"); close(); return false; }
+        if (!is_would_block()) { set_err(error, "recv failed: " + last_socket_error()); close(); return false; }
+        would_block_ = true;
+        set_err(error, "would block");
+        return false;
+    }
     bool got_app = false;
     while (true) {
         uint8_t rtype = 0;
