@@ -81,6 +81,7 @@ bool suite_ktls_supported(CipherSuite cs) {
     }
 }
 
+#ifdef __linux__
 int suite_cipher_type(CipherSuite cs) {
     switch (cs) {
         case CipherSuite::TLS_AES_128_GCM_SHA256:
@@ -156,6 +157,8 @@ ktls_result ktls_set_dir(int fd, int dir, TLSVersion ver, CipherSuite cs,
     }
     return ktls_result::ok;
 }
+
+#endif // __linux__
 
 } // namespace
 
