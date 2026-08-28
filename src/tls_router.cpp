@@ -1415,11 +1415,26 @@ bool tls13_verify_server_chain(const std::vector<x509::x509_cert>& server_chain,
         // Cross-signed tail (or server omitted the root): anchor on a
         // trust-store root that issued the last presented cert.
         for (const auto& root : trust.ca_roots) {
-            if (!dn_equal(root.subject, last.issuer)) continue;
-            if (!root.is_ca() || !root.is_valid_now()) continue;
-            if (!last.verify_signature(root)) continue;
-            trust_ok = true;
-            break;
+            // Case A: the trust-store root issued the last presented cert
+            // (its subject == the tail cert's issuer).
+            if (dn_equal(root.subject, last.issuer) && root.is_ca() &&
+                root.is_valid_now() && last.verify_signature(root)) {
+                trust_ok = true;
+                break;
+            }
+            // Case B: the trust-store root and the last presented cert are the
+            // SAME key (same subject + same public key), differing only in the
+            // cross-signing issuer. RFC 5280 identifies a trust anchor by
+            // (subject name, public key) — the presented cert carries the root's
+            // own key cross-signed by a superior CA (e.g. DigiCert Global Root G2
+            // cross-signed by DigiCert Global Root CA), so it anchors to the
+            // trust-store root whose key matches regardless of the issuer.
+            if (dn_equal(root.subject, last.subject) &&
+                root.public_key == last.public_key && root.is_ca() &&
+                root.is_valid_now()) {
+                trust_ok = true;
+                break;
+            }
         }
     }
     if (!trust_ok) return false;
