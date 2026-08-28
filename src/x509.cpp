@@ -81,11 +81,16 @@ std::vector<uint8_t> encode_null() {
 }
 std::vector<uint8_t> encode_utc_time(uint64_t unix_time) {
     time_t t = (time_t)unix_time; struct tm* gmt = gmtime(&t);
-    char buf[14];
-    snprintf(buf, sizeof(buf), "%02d%02d%02d%02d%02d%02dZ",
-             gmt->tm_year % 100, gmt->tm_mon + 1, gmt->tm_mday,
-             gmt->tm_hour, gmt->tm_min, gmt->tm_sec);
-    return encode_tlv(ASN1Tag::UTCTime, (const uint8_t*)buf, 13);
+    // 6 个 %02d 字段（各至少 2 字节，含负数越界防护）+ 'Z' + '\0'；
+    // 缓冲区留足余量，避免 -Wformat-truncation 对 tm 字段可能为负/超长的告警。
+    char buf[24];
+    const int n = snprintf(buf, sizeof(buf), "%02d%02d%02d%02d%02d%02dZ",
+                           (gmt->tm_year + 1900) % 100, gmt->tm_mon + 1,
+                           gmt->tm_mday, gmt->tm_hour, gmt->tm_min, gmt->tm_sec);
+    if (n < 0) return {};
+    // RFC 5280: UTCTime = YYMMDDHHMMSSZ（13 字节）
+    return encode_tlv(ASN1Tag::UTCTime, (const uint8_t*)buf,
+                      (size_t)(n < 13 ? n : 13));
 }
 std::vector<uint8_t> encode_printable_string(const std::string& s) {
     return encode_tlv(ASN1Tag::PRINTABLE_STRING, (const uint8_t*)s.data(), s.size());
