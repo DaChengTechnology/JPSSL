@@ -542,7 +542,7 @@ bool aes_gcm_decrypt_aesni(const aes_context& ctx,
 //  GCM 模式 - AVX2 / AVX512 硬件加速（PCLMULQDQ + VAES）
 // ═══════════════════════════════════════════════════════════════════════
 
-#if defined(JP_AVX2)
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
 /// AVX2 GCM 加密（4 路并行，需要 PCLMULQDQ + AES-NI）
 /// 自动分派：如果 CPU 不支持 AVX2，回退到软件实现
 void aes_gcm_encrypt_avx2(const aes_context& ctx,
@@ -561,7 +561,7 @@ bool aes_gcm_decrypt_avx2(const aes_context& ctx,
                           std::vector<uint8_t>& plaintext);
 #endif // JP_AVX2
 
-#if defined(JP_AVX512)
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
 /// AVX512 GCM 加密（8 路并行，需要 VAES + VPCLMULQDQ + AVX512F + AVX512VL）
 /// 自动分派：如果 CPU 不支持 AVX512，回退到 AVX2 / 软件
 void aes_gcm_encrypt_avx512(const aes_context& ctx,

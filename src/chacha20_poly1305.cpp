@@ -129,13 +129,13 @@ void chacha20_crypt(const uint8_t key[32], uint32_t counter,
                     std::span<const uint8_t> input,
                     std::span<uint8_t> output) {
     // 运行时扩展检测：x86 优先 AVX512 → AVX2；ARM 走 NEON；回退标量
-#if defined(JP_AVX512)
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
     if (cpu_has_avx512()) {
         chacha20_crypt_avx512(key, counter, nonce, input, output);
         return;
     }
 #endif
-#if defined(JP_AVX2)
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
     if (cpu_has_avx2()) {
         chacha20_crypt_avx2(key, counter, nonce, input, output);
         return;
@@ -359,7 +359,9 @@ struct Poly1305State64 {
     uint64_t r20, r21, r22;
     uint64_t r30, r31, r32;
     uint64_t r40, r41, r42;
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
     poly_avx2::State avx;      // AVX2 路径状态（26-bit 肢体）
+#endif
     uint8_t key[32] = {};      // 一次性密钥（finish 需要）
     bool use_avx = false;      // 本消息是否已走 AVX2 路径
 };
@@ -391,7 +393,7 @@ static void poly1305_init64(Poly1305State64& st, const uint8_t key[32]) {
 // Feed n bytes. For the AEAD layout (AAD || pad(AAD) || ct || pad(ct) ...)
 // the trailing partial block is zero-padded to 16 and gets the 2^128 pad bit.
 static void poly1305_feed64(Poly1305State64& st, const uint8_t* p, size_t n) {
-#if defined(JP_AVX2)
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
     static const bool has_avx2 = cpu_has_avx2();
     // AVX2 路径只处理完整的 64 字节块；剩余不足 64B 的交给标量路径，
     // 避免 16B 尾部块在 AVX2 中把零填充块也纳入多项式。
@@ -424,6 +426,7 @@ static void poly1305_feed64(Poly1305State64& st, const uint8_t* p, size_t n) {
         st.use_avx = false;
     }
 #endif // JP_AVX2
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
     if (st.use_avx) {
         // 已走 AVX2 路径但遇到非 16 倍数输入：把 AVX2 哈希转回标量
         uint64_t h0 = st.avx.h0, h1 = st.avx.h1, h2 = st.avx.h2,
@@ -436,6 +439,7 @@ static void poly1305_feed64(Poly1305State64& st, const uint8_t* p, size_t n) {
         st.h2 &= 0x3ffffffffffULL;
         st.use_avx = false;
     }
+#endif
     while (n >= 64) {
         poly_blocks4(st.h0, st.h1, st.h2, p,
                      st.r0, st.r1, st.r2,
@@ -470,12 +474,12 @@ static void chacha20_crypt_feed_poly(
     const size_t n = in.size();
     size_t pos = 0;
 
-#if defined(JP_AVX512)
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
     bool use512 = cpu_has_avx512();
 #else
     bool use512 = false;
 #endif
-#if defined(JP_AVX2)
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
     bool use256 = cpu_has_avx2();
 #else
     bool use256 = false;
@@ -487,12 +491,12 @@ static void chacha20_crypt_feed_poly(
 #endif
     auto gen = [&](size_t p, size_t len) {
         uint32_t ctr = 1 + (uint32_t)(p / 64);
-#if defined(JP_AVX512)
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
         if (use512)
             chacha20_crypt_avx512(key, ctr, nonce, in.subspan(p, len), out.subspan(p, len));
         else
 #endif
-#if defined(JP_AVX2)
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
         if (use256)
             chacha20_crypt_avx2(key, ctr, nonce, in.subspan(p, len), out.subspan(p, len));
         else
@@ -521,6 +525,10 @@ static void chacha20_crypt_feed_poly(
 
 // 若当前状态走的是 AVX2 路径，把 26-bit 哈希转回 44-bit 标量 limb
 static void poly1305_sync_scalar(Poly1305State64& st) {
+#if !(defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64)))
+    (void)st;
+    return;
+#else
     if (!st.use_avx) return;
     uint64_t h0 = st.avx.h0, h1 = st.avx.h1, h2 = st.avx.h2,
              h3 = st.avx.h3, h4 = st.avx.h4;
@@ -531,6 +539,7 @@ static void poly1305_sync_scalar(Poly1305State64& st) {
     st.h1 &= 0xfffffffffffULL;
     st.h2 &= 0x3ffffffffffULL;
     st.use_avx = false;
+#endif
 }
 
 // finish: full reduction mod 2^130-5, select h < p, then tag = (h + s) mod 2^128
@@ -582,6 +591,7 @@ static void poly1305_mac_parts64(const uint8_t key[32],
     poly_store64(lenblock, (uint64_t)aad.size());
     poly_store64(lenblock + 8, (uint64_t)ct.size());
     poly1305_feed64(st, lenblock, 16);
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
     if (st.use_avx) {
         uint64_t h0 = st.avx.h0, h1 = st.avx.h1, h2 = st.avx.h2,
                  h3 = st.avx.h3, h4 = st.avx.h4;
@@ -592,6 +602,7 @@ static void poly1305_mac_parts64(const uint8_t key[32],
         st.h1 &= 0xfffffffffffULL;
         st.h2 &= 0x3ffffffffffULL;
     }
+#endif
     poly1305_finish3(st.h0, st.h1, st.h2, key, tag);
 }
 

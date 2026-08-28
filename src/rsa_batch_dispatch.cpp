@@ -436,12 +436,12 @@ void rsa_batch_decrypt_dispatch(const uint64_t* mod, const uint64_t* exp,
             if (cur_batch == 1) {
                 batch_modpow_scalar(results, bases, exp, mod, R2, R_mod_m,
                                     mp, K, exp_bits, 1);
-#ifdef JP_AVX2
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
             } else if (cur_batch == 4) {
                 batch_modpow_avx2(results, bases, exp, mod, R2, R_mod_m,
                                   mp, K, exp_bits);
 #endif
-#ifdef JP_AVX512
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
             } else if (cur_batch == 8) {
                 batch_modpow_avx512(results, bases, exp, mod, R2, R_mod_m,
                                     mp, K, exp_bits);
