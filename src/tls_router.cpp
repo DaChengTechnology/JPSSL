@@ -1508,6 +1508,10 @@ switch(s.cipher_suite){
             sm4_ccm_encrypt_auto(&s.sm4, nonce, 12, inner, aad_span, ciphertext, tag, 16);
             break;
         }
+        // TLS 1.3 握手加密只处理 1.3 AEAD 套件；TLS 1.2 套件（如
+        // TLS_RSA_WITH_AES_256_GCM_SHA384）不会到达该路径，default 仅抑制 -Wswitch。
+        default:
+            break;
     }
     record.insert(record.end(),ciphertext.begin(),ciphertext.end());
     record.insert(record.end(),tag,tag+tag_len);
@@ -1570,6 +1574,10 @@ bool tls13_decrypt_handshake(tls_session& s, const uint8_t* record, size_t recor
                                       aad_span, tag, 16, inner);
             break;
         }
+        // 其余为 TLS 1.2 套件，不会到达 TLS 1.3 握手解密路径。
+        default:
+            ok = false;
+            break;
     }
     if(!ok) return false;
 
@@ -2065,6 +2073,9 @@ static void tls_encrypt_record(tls_session& s, ContentType ct, const uint8_t* da
                                                  aad_span, tag, 16);
                     break;
                 }
+                // 其余为 TLS 1.2 套件，不会到达 TLS 1.3 记录加密路径。
+                default:
+                    break;
             }
             return;
         }
@@ -2212,6 +2223,10 @@ static bool tls_decrypt_one(tls_session& s, const uint8_t* record, size_t record
                                       aad_span, tag, 16, inner);
             break;
         }
+        // 其余为 TLS 1.2 套件，不会到达 TLS 1.3 记录解密路径。
+        default:
+            ok = false;
+            break;
     }
     if(!ok) return false;
     // RFC 8446 5.2：TLSInnerPlaintext = content || type || zeros(padding)
