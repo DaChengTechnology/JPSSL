@@ -508,6 +508,90 @@ static bool rsa_pss_verify(const rsa_public_key& pub, uint16_t scheme,
     return rsassa_pss_verify(pub, data, len, sig, 0, hash);
 }
 
+// RSASSA-PKCS1-v1_5 签名（RSA-4096，512 字节模数）
+static bool rsa4096_pkcs1_sign(const rsa4096_private_key& key, uint16_t scheme,
+                               const uint8_t* data, size_t len, uint8_t* sig, size_t& sig_len) {
+    size_t hl = scheme_hash_len(scheme);
+    size_t di_len = 0;
+    const uint8_t* di = digest_info_for_scheme(scheme, di_len);
+    if (hl == 0 || !di) return false;
+    uint8_t hash[64];
+    if (!hash_scheme(scheme, data, len, hash)) return false;
+    size_t pad_len = 512 - 3 - di_len - hl;
+    if (pad_len == 0) return false;
+    uint8_t padded[512];
+    padded[0] = 0x00; padded[1] = 0x01;
+    memset(padded + 2, 0xFF, pad_len);
+    padded[2 + pad_len] = 0x00;
+    memcpy(padded + 2 + pad_len + 1, di, di_len);
+    memcpy(padded + 2 + pad_len + 1 + di_len, hash, hl);
+    rsa4096_bignum m = rsa4096_bignum::from_bytes(padded, 512);
+    rsa4096_bignum s;
+    if (!key.p.is_zero() && !key.q.is_zero()) {
+        rsa4096_crt_key crt{key.n, key.e, key.d, key.p, key.q, key.dP, key.dQ, key.qInv};
+        RSASP14096(crt, m, s);
+    } else {
+        bn_modpow(s, m, key.d, key.n);
+    }
+    s.to_bytes(sig);
+    sig_len = 512;
+    return true;
+}
+
+// RSASSA-PSS 签名（RSA-4096）
+static bool rsa4096_pss_sign(const rsa4096_private_key& key, uint16_t scheme,
+                             const uint8_t* data, size_t len, uint8_t* sig, size_t& sig_len) {
+    PssHash hash;
+    switch (scheme) {
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256: hash = PssHash::SHA256; break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384: hash = PssHash::SHA384; break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: hash = PssHash::SHA512; break;
+        default: return false;
+    }
+    rsa4096_crt_key crt{key.n, key.e, key.d, key.p, key.q, key.dP, key.dQ, key.qInv};
+    if (!rsassa_pss_sign4096(crt, data, len, sig, 0, hash)) return false;
+    sig_len = 512;
+    return true;
+}
+
+// RSASSA-PKCS1-v1_5 验签（RSA-4096）
+static bool rsa4096_pkcs1_verify(const rsa4096_public_key& pub, uint16_t scheme,
+                                 const uint8_t* data, size_t len, const uint8_t* sig, size_t sig_len) {
+    if (sig_len != 512) return false;
+    size_t hl = scheme_hash_len(scheme);
+    size_t di_len = 0;
+    const uint8_t* di = digest_info_for_scheme(scheme, di_len);
+    uint8_t hash[64];
+    if (hl == 0 || !di || !hash_scheme(scheme, data, len, hash)) return false;
+    rsa4096_bignum s = rsa4096_bignum::from_bytes(sig, 512);
+    rsa4096_bignum m;
+    bn_modpow(m, s, pub.e, pub.n);
+    uint8_t padded[512];
+    m.to_bytes(padded);
+    if (padded[0] != 0x00 || padded[1] != 0x01) return false;
+    size_t pos = 2;
+    while (pos < 512 && padded[pos] == 0xFF) ++pos;
+    if (pos >= 512 || padded[pos] != 0x00) return false;
+    ++pos;
+    if (pos + di_len + hl > 512) return false;
+    if (memcmp(padded + pos, di, di_len) != 0) return false;
+    return memcmp(padded + pos + di_len, hash, hl) == 0;
+}
+
+// RSASSA-PSS 验签（RSA-4096）
+static bool rsa4096_pss_verify(const rsa4096_public_key& pub, uint16_t scheme,
+                               const uint8_t* data, size_t len, const uint8_t* sig, size_t sig_len) {
+    if (sig_len != 512) return false;
+    PssHash hash;
+    switch (scheme) {
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256: hash = PssHash::SHA256; break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384: hash = PssHash::SHA384; break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: hash = PssHash::SHA512; break;
+        default: return false;
+    }
+    return rsassa_pss_verify4096(pub, data, len, sig, 0, hash);
+}
+
 // ══════════════════════════════════════════════════════════════════════�?
 //  证书签名/验证
 // ══════════════════════════════════════════════════════════════════════�?
@@ -609,10 +693,14 @@ bool tls_certificate::sign_scheme(uint16_t scheme, const uint8_t* data, size_t d
         case SignatureAlgorithm::RSA_PKCS1_SHA256:
         case SignatureAlgorithm::RSA_PKCS1_SHA384:
         case SignatureAlgorithm::RSA_PKCS1_SHA512:
+            if (rsa_bits == 4096)
+                return rsa4096_pkcs1_sign(priv.rsa4096, scheme, data, data_len, sig, sig_len);
             return rsa_pkcs1_sign(priv.rsa, scheme, data, data_len, sig, sig_len);
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
+            if (rsa_bits == 4096)
+                return rsa4096_pss_sign(priv.rsa4096, scheme, data, data_len, sig, sig_len);
             return rsa_pss_sign(priv.rsa, scheme, data, data_len, sig, sig_len);
         default:
             return false;
@@ -661,6 +749,8 @@ bool tls_certificate::verify_scheme(uint16_t scheme, const uint8_t* data, size_t
         case SignatureAlgorithm::RSA_PKCS1_SHA256:
         case SignatureAlgorithm::RSA_PKCS1_SHA384:
         case SignatureAlgorithm::RSA_PKCS1_SHA512: {
+            if (rsa_bits == 4096)
+                return rsa4096_pkcs1_verify(pub.rsa4096, scheme, data, data_len, sig, sig_len);
             if (sig_len != 256) return false;
             size_t hl = scheme_hash_len(scheme);
             size_t di_len = 0;
@@ -684,6 +774,8 @@ bool tls_certificate::verify_scheme(uint16_t scheme, const uint8_t* data, size_t
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
+            if (rsa_bits == 4096)
+                return rsa4096_pss_verify(pub.rsa4096, scheme, data, data_len, sig, sig_len);
             return rsa_pss_verify(pub.rsa, scheme, data, data_len, sig, sig_len);
         default:
             return false;
@@ -740,6 +832,12 @@ bool fill_pub(tls_certificate& out, x509::KeyType kt, const std::vector<uint8_t>
             out.pub.rsa.e = rsa_bignum::from_bytes(pub.data() + 256, 3);
             return true;
         }
+        case x509::KeyType::RSA_4096: {
+            if (pub.size() < 512 + 3) return false;
+            out.pub.rsa4096.n = rsa4096_bignum::from_bytes(pub.data(), 512);
+            out.pub.rsa4096.e = rsa4096_bignum::from_bytes(pub.data() + 512, 3);
+            return true;
+        }
         case x509::KeyType::Ed25519:
             if (pub.size() < 32) return false;
             std::memcpy(out.pub.ed25519, pub.data(), 32);
@@ -788,6 +886,21 @@ bool fill_priv(tls_certificate& out, const x509::private_key& k) {
             copy_crt(out.priv.rsa.dP, k.rsa_dP, 128);
             copy_crt(out.priv.rsa.dQ, k.rsa_dQ, 128);
             copy_crt(out.priv.rsa.qInv, k.rsa_qInv, 128);
+            return true;
+        }
+        case x509::KeyType::RSA_4096: {
+            if (priv.size() < 512 || pub.size() < 512 + 3) return false;
+            out.priv.rsa4096.d = rsa4096_bignum::from_bytes(priv.data(), 512);
+            out.priv.rsa4096.n = rsa4096_bignum::from_bytes(pub.data(), 512);
+            out.priv.rsa4096.e = rsa4096_bignum::from_bytes(pub.data() + 512, 3);
+            auto copy_crt4096 = [](rsa4096_bignum& dst, const std::vector<uint8_t>& src, size_t sz) {
+                if (src.size() == sz) dst = rsa4096_bignum::from_bytes(src.data(), sz);
+            };
+            copy_crt4096(out.priv.rsa4096.p, k.rsa_p, 256);
+            copy_crt4096(out.priv.rsa4096.q, k.rsa_q, 256);
+            copy_crt4096(out.priv.rsa4096.dP, k.rsa_dP, 256);
+            copy_crt4096(out.priv.rsa4096.dQ, k.rsa_dQ, 256);
+            copy_crt4096(out.priv.rsa4096.qInv, k.rsa_qInv, 256);
             return true;
         }
         case x509::KeyType::Ed25519:
@@ -894,10 +1007,6 @@ std::unique_ptr<tls_certificate> tls_certificate::from_pem(const std::string& ce
     if (!c) { set_err(err, "certificate DER parse failed"); return nullptr; }
     auto k = x509::private_key::from_pem(key_pem);
     if (!k) { set_err(err, "private key PEM parse failed"); return nullptr; }
-    if (c->key_type == x509::KeyType::RSA_4096) {
-        set_err(err, "RSA-4096 private key is not supported in tls_certificate (use RSA-2048)");
-        return nullptr;
-    }
     if (k->key_type != c->key_type) {
         set_err(err, "certificate/private key key-type mismatch");
         return nullptr;
@@ -906,6 +1015,8 @@ std::unique_ptr<tls_certificate> tls_certificate::from_pem(const std::string& ce
     out->subject_name = c->common_name();
     out->cert_data = std::move(*der);  // 原始 DER，原样发送（保证 TBS 与签名一致）
     out->sig_alg = tls_key_type_to_sig_alg(c->key_type);
+    if (c->key_type == x509::KeyType::RSA_2048) out->rsa_bits = 2048;
+    else if (c->key_type == x509::KeyType::RSA_4096) out->rsa_bits = 4096;
     if (!fill_pub(*out, c->key_type, c->public_key)) {
         set_err(err, "failed to import certificate public key");
         return nullptr;
@@ -2369,7 +2480,7 @@ std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint
     uint64_t now=(uint64_t)time(nullptr); b.set_validity(now, now+(uint64_t)days*86400);
     switch(k){
         case KeyType::RSA_2048:{uint8_t p[259];cert.pub.rsa.n.to_bytes(p);p[256]=1;p[257]=0;p[258]=1;b.set_key(k,p,259);break;}
-        case KeyType::RSA_4096:{uint8_t p[515];cert.pub.rsa.n.to_bytes(p);p[512]=1;p[513]=0;p[514]=1;b.set_key(k,p,515);break;}
+        case KeyType::RSA_4096:{uint8_t p[515];cert.pub.rsa4096.n.to_bytes(p);p[512]=1;p[513]=0;p[514]=1;b.set_key(k,p,515);break;}
         case KeyType::Ed25519:b.set_key(k,cert.pub.ed25519,32);break;
         case KeyType::Ed448:b.set_key(k,cert.pub.ed448,57);break;
         case KeyType::ECDSA_P256:b.set_key(k,cert.pub.ecdsa_p256,64);break;
@@ -2380,7 +2491,8 @@ std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint
     b.set_ca(false).set_key_usage(KU_DIGITAL_SIGNATURE).set_server_auth().add_san_dns(cert.subject_name);
     x509_cert x;
     switch(k){
-        case KeyType::RSA_2048:case KeyType::RSA_4096:{uint8_t d[512];cert.priv.rsa.d.to_bytes(d);x=b.build_and_sign(k,d,k==KeyType::RSA_4096?512:256);break;}
+        case KeyType::RSA_2048:{uint8_t d[256];cert.priv.rsa.d.to_bytes(d);x=b.build_and_sign(k,d,256);break;}
+        case KeyType::RSA_4096:{uint8_t d[512];cert.priv.rsa4096.d.to_bytes(d);x=b.build_and_sign(k,d,512);break;}
         case KeyType::Ed25519:x=b.build_and_sign(k,cert.priv.ed25519,64);break;
         case KeyType::Ed448:x=b.build_and_sign(k,cert.priv.ed448,57);break;
         case KeyType::ECDSA_P256:x=b.build_and_sign(k,cert.priv.ecdsa_p256,32);break;

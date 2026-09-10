@@ -600,6 +600,9 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
                     size_t ms = (!m.empty() && m[0] == 0x00) ? 1 : 0;
                     raw.insert(raw.end(), m.begin() + ms, m.end());
                     append(raw, exp_tlv->value);
+                    // 按模数长度判定 RSA 密钥位数（2048 / 4096）
+                    size_t mod_len = m.size() - ms;
+                    cert.key_type = (mod_len <= 256) ? KeyType::RSA_2048 : KeyType::RSA_4096;
                     cert.public_key = std::move(raw);
                 }
             }

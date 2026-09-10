@@ -371,7 +371,13 @@ bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello,
                  cert->sig_alg == SignatureAlgorithm::RSA_PSS_RSAE_SHA256 ||
                  cert->sig_alg == SignatureAlgorithm::RSA_PSS_RSAE_SHA384 ||
                  cert->sig_alg == SignatureAlgorithm::RSA_PSS_RSAE_SHA512)) {
-        s.rsa_key = std::make_shared<jpssl::rsa_private_key>(cert->priv.rsa);
+        if (cert->rsa_bits == 4096) {
+            s.rsa_key4096 = std::make_shared<jpssl::rsa4096_private_key>(cert->priv.rsa4096);
+            s.rsa_bits = 4096;
+        } else {
+            s.rsa_key = std::make_shared<jpssl::rsa_private_key>(cert->priv.rsa);
+            s.rsa_bits = 2048;
+        }
     }
 
     // ── ServerHello ──
@@ -574,7 +580,11 @@ bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     // RSA 解密 pre_master_secret
     if(encrypted_pms && epms_len > 0 && cert && cert->sig_alg == SignatureAlgorithm::RSA_PKCS1_SHA256){
         std::vector<uint8_t> pt;
-        if(!rsa_decrypt(cert->priv.rsa, encrypted_pms, pt)) return false;
+        if (cert->rsa_bits == 4096) {
+            if(!rsa4096_decrypt(cert->priv.rsa4096, encrypted_pms, pt)) return false;
+        } else {
+            if(!rsa_decrypt(cert->priv.rsa, encrypted_pms, pt)) return false;
+        }
         size_t pms_len = pt.size() < 48 ? pt.size() : 48;
         memcpy(pre_master_secret, pt.data(), pms_len);
     }
@@ -721,7 +731,11 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
     // RSA 解密 pre_master_secret
     if(encrypted_pms && epms_len > 0 && cert && cert->sig_alg == SignatureAlgorithm::RSA_PKCS1_SHA256){
         std::vector<uint8_t> pt;
-        if(!rsa_decrypt(cert->priv.rsa, encrypted_pms, pt)) return false;
+        if (cert->rsa_bits == 4096) {
+            if(!rsa4096_decrypt(cert->priv.rsa4096, encrypted_pms, pt)) return false;
+        } else {
+            if(!rsa_decrypt(cert->priv.rsa, encrypted_pms, pt)) return false;
+        }
         size_t pms_len = pt.size() < 48 ? pt.size() : 48;
         memcpy(pre_master_secret, pt.data(), pms_len);
     }
@@ -958,8 +972,11 @@ bool tls12_process_client_key_exchange(tls_session& s, const uint8_t* encrypted_
         size_t enc_len = (encrypted_pms[0] << 8) | encrypted_pms[1];
         if (2 + enc_len > epms_len) return false;
         std::vector<uint8_t> pt;
-        if (!s.rsa_key || !rsa_decrypt(*s.rsa_key, encrypted_pms + 2, pt))
-            return false;
+        if (s.rsa_bits == 4096) {
+            if (!s.rsa_key4096 || !rsa4096_decrypt(*s.rsa_key4096, encrypted_pms + 2, pt)) return false;
+        } else {
+            if (!s.rsa_key || !rsa_decrypt(*s.rsa_key, encrypted_pms + 2, pt)) return false;
+        }
         size_t n = pt.size() < 48 ? pt.size() : 48;
         pre_master.assign(pt.data(), pt.data() + n);
     }
