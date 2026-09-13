@@ -611,10 +611,29 @@ bool tls_connection::write_all(const uint8_t* data, size_t len, std::string* err
             return false;
         }
         if (nonblocking_ && !handshake_pending_) {
-            // 非阻塞模式 + 应用数据阶段：立即返回 would-block，不关闭连接
-            would_block_ = true;
-            set_err(error, "would block");
-            return false;
+            if (off == 0) {
+                // 尚未写出任何字节：报告 would-block，非阻塞模式不关闭连接。
+                // 上层可将整块数据保留在自身缓冲，待可写后重试——安全。
+                would_block_ = true;
+                set_err(error, "would block");
+                return false;
+            }
+            // 已部分写出（off > 0）：此时若返回 would-block，上层会误判
+            // “0 字节已发送”而重发整块，导致已发出的前缀重复、TLS 记录流
+            // 损坏（并发大文件发送在高负载下极易触发）。已有字节无法回退，
+            // 因此有界等待可写后继续把剩余字节发完；超时按对端长时间不消费
+            // 处理，关闭连接（避免数据损坏与连接悬挂）。
+            constexpr int kAppWriteTimeoutMs = 3000;
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - start)
+                               .count();
+            int remain = kAppWriteTimeoutMs - static_cast<int>(elapsed);
+            if (remain <= 0 || !wait_fd(sock_, true, remain)) {
+                set_err(error, "send timeout after partial write");
+                close();
+                return false;
+            }
+            continue;
         }
         // 握手阶段（或阻塞模式）：有界等待可写后重试
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
