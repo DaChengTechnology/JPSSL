@@ -520,12 +520,28 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
         if (!pre_master_secret || pms_len == 0) return false;
         premaster.assign(pre_master_secret, pre_master_secret + pms_len);
         if (client_key_exchange && server_cert) {
-            uint8_t encrypted[256];
-            rsa_encrypt(server_cert->pub.rsa, std::span<const uint8_t>(premaster), encrypted);
-            cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
-            cke.push_back(0); cke.push_back((uint8_t)(258 >> 8)); cke.push_back((uint8_t)258);
-            cke.push_back(0x01); cke.push_back(0x00);
-            cke.insert(cke.end(), encrypted, encrypted + 256);
+            // RFC 5246 7.4.7.1：EncryptedPreMasterSecret 长度为模数字节数，
+            // RSA-4096 证书（server_cert->rsa4096）→ 512 字节密文，
+            // ClientKeyExchange 体长 2(长度前缀) + 512 = 514；RSA-2048 保持 256/258。
+            if (server_cert->rsa4096) {
+                uint8_t encrypted4096[512];
+                rsa4096_encrypt(server_cert->pub.rsa4096,
+                                std::span<const uint8_t>(premaster), encrypted4096);
+                const size_t cke_body_len = 2 + 512;
+                cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
+                cke.push_back((uint8_t)(cke_body_len >> 16));
+                cke.push_back((uint8_t)(cke_body_len >> 8));
+                cke.push_back((uint8_t)cke_body_len);
+                cke.push_back(0x02); cke.push_back(0x00);   // 512
+                cke.insert(cke.end(), encrypted4096, encrypted4096 + 512);
+            } else {
+                uint8_t encrypted[256];
+                rsa_encrypt(server_cert->pub.rsa, std::span<const uint8_t>(premaster), encrypted);
+                cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
+                cke.push_back(0); cke.push_back((uint8_t)(258 >> 8)); cke.push_back((uint8_t)258);
+                cke.push_back(0x01); cke.push_back(0x00);
+                cke.insert(cke.end(), encrypted, encrypted + 256);
+            }
         }
     }
 

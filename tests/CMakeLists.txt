@@ -249,6 +249,11 @@ target_link_libraries(test_ktls PRIVATE jpssl_cpu ${MUSA_LIBS})
 target_include_directories(test_tls_socket PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_tls_socket PRIVATE jpssl_cpu ${MUSA_LIBS})
 
+# ---- TLS 1.2 静态 RSA（RSA 密钥交换）套件 RSA-4096 支持（含 RSA-2048 回归）----
+add_executable(test_tls12_rsa4096_kx test_tls12_rsa4096_kx.cpp)
+target_include_directories(test_tls12_rsa4096_kx PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_tls12_rsa4096_kx PRIVATE jpssl_cpu ${MUSA_LIBS})
+
 # ---- TLS stability / soak test (repeated handshakes + data transfer) ----
 add_executable(test_tls_stability test_tls_stability.cpp)
 target_include_directories(test_tls_stability PRIVATE ${INCLUDE_DIR})
@@ -501,6 +506,7 @@ add_test(NAME test_ktls        COMMAND test_ktls)
 add_test(NAME test_ct            COMMAND test_ct)
 add_test(NAME test_base64        COMMAND test_base64)
 add_test(NAME test_tls_socket    COMMAND test_tls_socket)
+add_test(NAME test_tls12_rsa4096_kx COMMAND test_tls12_rsa4096_kx)
 if(OpenSSL_FOUND)
 add_test(NAME test_tls_openssl_interop COMMAND test_tls_openssl_interop)
 endif()
