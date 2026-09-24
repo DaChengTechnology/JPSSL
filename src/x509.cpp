@@ -601,6 +601,10 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
                     raw.insert(raw.end(), m.begin() + ms, m.end());
                     append(raw, exp_tlv->value);
                     cert.public_key = std::move(raw);
+                    // RSA 模数位宽判定密钥类型：DER INTEGER 前导 0x00 已剥离，
+                    // 模数 > 256 字节（2048 bit）即 RSA-4096（RFC 8017 §3.1）
+                    cert.key_type = (m.size() - ms <= RSA_2048_BYTES)
+                                      ? KeyType::RSA_2048 : KeyType::RSA_4096;
                 }
             }
         }
@@ -999,7 +1003,9 @@ x509_cert x509_builder::build_and_sign(KeyType sign_key_type,
     const uint8_t* tbs_data = cert_tlv->value.data();
     size_t tbs_len = inner_off;
 
-    uint8_t sig_buf[256]; size_t sig_len = 0;
+    // 签名缓冲：RSA-4096 签名为 512 字节（ECDSA/SM2 DER 签名更短），
+    // 按最大签名长度预留，避免 RSA-4096 自签名证书发生栈溢出
+    uint8_t sig_buf[512]; size_t sig_len = 0;
 
     switch (sign_key_type) {
         case KeyType::RSA_2048: case KeyType::RSA_4096: {
@@ -1007,19 +1013,34 @@ x509_cert x509_builder::build_and_sign(KeyType sign_key_type,
             sha256_ctx ctx; sha256_init(&ctx); sha256_update(&ctx, tbs_data, tbs_len); sha256_final(&ctx, hash);
             static const uint8_t SHA256_DI[] = {0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20};
             size_t di_len = sizeof(SHA256_DI);
-            size_t pad_len = 256 - 3 - di_len - 32;
-            uint8_t padded[256];
+            // 模数长度由证书公钥决定（RSA-2048 → 256 字节，RSA-4096 → 512 字节）：
+            // PKCS#1 v1.5 填充与模幂均按 k 字节进行，避免 RSA-4096 写穿 256 字节缓冲
+            size_t k = cert.public_key.size() > 3 ? cert.public_key.size() - 3 : 0;
+            if (k != RSA_2048_BYTES && k != RSA_4096_BYTES) break;
+            if (sign_priv_len > k) break;
+            size_t pad_len = k - 3 - di_len - 32;
+            if (pad_len == 0) break;
+            uint8_t padded[RSA_4096_BYTES];
+            memset(padded, 0, k);
             padded[0] = 0x00; padded[1] = 0x01;
             memset(padded + 2, 0xFF, pad_len);
             padded[2 + pad_len] = 0x00;
             memcpy(padded + 2 + pad_len + 1, SHA256_DI, di_len);
             memcpy(padded + 2 + pad_len + 1 + di_len, hash, 32);
-            rsa_bignum m = rsa_bignum::from_bytes(padded, 256);
-            rsa_bignum d = rsa_bignum::from_bytes(sign_priv_data, sign_priv_len);
-            size_t n_len = cert.public_key.size() > 3 ? cert.public_key.size() - 3 : 256;
-            rsa_bignum n = rsa_bignum::from_bytes(cert.public_key.data(), n_len);
-            rsa_bignum s; bn_modpow(s, m, d, n);
-            sig_len = 256; s.to_bytes(sig_buf);
+            if (k == RSA_2048_BYTES) {
+                rsa_bignum m = rsa_bignum::from_bytes(padded, k);
+                rsa_bignum d = rsa_bignum::from_bytes(sign_priv_data, sign_priv_len);
+                rsa_bignum n = rsa_bignum::from_bytes(cert.public_key.data(), k);
+                rsa_bignum s; bn_modpow(s, m, d, n);
+                s.to_bytes(sig_buf);
+            } else {
+                rsa4096_bignum m = rsa4096_bignum::from_bytes(padded, k);
+                rsa4096_bignum d = rsa4096_bignum::from_bytes(sign_priv_data, sign_priv_len);
+                rsa4096_bignum n = rsa4096_bignum::from_bytes(cert.public_key.data(), k);
+                rsa4096_bignum s; bn_modpow(s, m, d, n);
+                s.to_bytes(sig_buf);
+            }
+            sig_len = k;
             break;
         }
         case KeyType::Ed25519:
@@ -1643,8 +1664,11 @@ std::optional<csr> csr::from_der(const uint8_t* data, size_t len) {
             size_t rsaoff = 0;
             auto rsa_seq = decode_tlv2(out.public_key.data(), out.public_key.size(), rsaoff);
             if (rsa_seq && rsa_seq->tag == ASN1Tag::SEQUENCE) {
-                auto mod_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), rsaoff);
-                auto exp_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), rsaoff);
+                // rsa_seq->value 是新 buffer，内部偏移必须从 0 重新开始
+                // （不能复用 rsaoff，此时它指向 public_key 中 SEQUENCE 之后）
+                size_t inner_off = 0;
+                auto mod_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), inner_off);
+                auto exp_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), inner_off);
                 if (mod_tlv && exp_tlv && mod_tlv->tag == ASN1Tag::INTEGER && exp_tlv->tag == ASN1Tag::INTEGER) {
                     std::vector<uint8_t> raw;
                     const auto& m = mod_tlv->value;
@@ -1652,6 +1676,10 @@ std::optional<csr> csr::from_der(const uint8_t* data, size_t len) {
                     raw.insert(raw.end(), m.begin() + ms, m.end());
                     append(raw, exp_tlv->value);
                     out.public_key = std::move(raw);
+                    // RSA 模数位宽判定密钥类型：DER INTEGER 前导 0x00 已剥离，
+                    // 模数 > 256 字节（2048 bit）即 RSA-4096（RFC 8017 §3.1）
+                    out.key_type = (m.size() - ms <= RSA_2048_BYTES)
+                                      ? KeyType::RSA_2048 : KeyType::RSA_4096;
                 }
             }
         }

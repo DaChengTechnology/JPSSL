@@ -196,6 +196,7 @@ struct tls_session {
     quic_transport_parameters quic_transport_params;      // 本端 QUIC 传输参数
     quic_transport_parameters quic_peer_transport_params; // 对端 QUIC 传输参数
     std::shared_ptr<jpssl::rsa_private_key> rsa_key;      // TLS 1.2 服务端 RSA 私钥（按需堆分配）
+    std::shared_ptr<jpssl::rsa4096_crt_key> rsa4096_key;      // TLS 1.2 服务端 RSA-4096 私钥（按需堆分配）
     std::shared_ptr<tls12_dhe_keys> dhe_keys;             // TLS 1.2 DHE 临时密钥对（按需）
     std::shared_ptr<quic_secrets_block> quic_secrets;     // QUIC 数据包保护 secret（按需）
     std::vector<uint8_t> tls12_client_hello_cache;        // 客户端 ClientHello 缓存（TLS 1.2）
@@ -381,6 +382,7 @@ struct tls_certificate {
     union PublicKey {
         PublicKey() : rsa{} {}
         rsa_public_key rsa;
+        rsa4096_public_key rsa4096;
         uint8_t ed25519[32];
         uint8_t ed448[57];
         uint8_t ecdsa_p256[64];
@@ -392,6 +394,7 @@ struct tls_certificate {
     union PrivateKey {
         PrivateKey() : rsa{} {}
         rsa_private_key rsa;
+        rsa4096_crt_key rsa4096;
         uint8_t ed25519[64];
         uint8_t ed448[57];
         uint8_t ecdsa_p256[32];
@@ -399,6 +402,9 @@ struct tls_certificate {
         uint8_t ecdsa_p521[66];
         uint8_t sm2[32];           // SM2 私钥
     } priv;
+    /// RSA-4096 装载标记：为 true 时上方 union 的 pub/priv 使用 rsa4096 成员
+    ///（由 tls_certificate::from_pem / from_csr_pem 装载时置位，RSA-2048 保持 false）
+    bool rsa4096 = false;
     SignatureAlgorithm sig_alg;
 
     // 按证书自身 sig_alg 签名/验签

@@ -1141,6 +1141,13 @@ static std::unique_ptr<tls_certificate> cert_from_x509(const x509::x509_cert& le
             out->pub.rsa.n = jpssl::rsa_bignum::from_bytes(leaf.public_key.data(), 256);
             out->pub.rsa.e = jpssl::rsa_bignum::from_bytes(leaf.public_key.data() + 256, 3);
             break;
+        case KeyType::RSA_4096:
+            // RSA-4096 叶子公钥布局与 2048 相同：n（512 字节）|| e（3 字节）
+            if (leaf.public_key.size() < 515) return nullptr;
+            out->rsa4096 = true;
+            out->pub.rsa4096.n = jpssl::rsa4096_bignum::from_bytes(leaf.public_key.data(), 512);
+            out->pub.rsa4096.e = jpssl::rsa4096_bignum::from_bytes(leaf.public_key.data() + 512, 3);
+            break;
         case KeyType::Ed25519:
             if (leaf.public_key.size() < 32) return nullptr;
             memcpy(out->pub.ed25519, leaf.public_key.data(), 32);
