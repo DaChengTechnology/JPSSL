@@ -161,6 +161,16 @@ static std::unique_ptr<tls_certificate> make_jpssl_rsa_cert() {
     return cert;
 }
 
+// jpssl 服务端证书（RSA-4096，自持密钥；512 字节模数）
+static std::unique_ptr<tls_certificate> make_jpssl_rsa4096_cert() {
+    auto cert = std::make_unique<tls_certificate>();
+    cert->subject_name = "localhost";
+    cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
+    if (!rsa4096_keygen_crt(cert->pub.rsa4096, cert->priv.rsa4096)) return nullptr;
+    cert->rsa4096 = true;  // 令 sign_scheme/verify_scheme 走 512 字节 RSA-4096 路径
+    return cert;
+}
+
 // jpssl 服务端证书（SM2，RFC 8998 国密套件要求）
 static std::unique_ptr<tls_certificate> make_jpssl_sm2_cert() {
     auto cert = std::make_unique<tls_certificate>();
@@ -224,6 +234,36 @@ static EVP_PKEY* ossl_gen_rsa_2048(uint8_t n_buf[256], uint8_t e_buf[3]) {
     int e_len = BN_bn2binpad(e, e_buf, 3);
     BN_free(n); BN_free(e);
     if (n_len != 256 || e_len != 3) {
+        EVP_PKEY_free(pkey);
+        return nullptr;
+    }
+    return pkey;
+}
+
+// OpenSSL 生成 RSA-4096 密钥对；公钥 n/e 以 512/3 字节大端导出。
+// 返回 OpenSSL EVP_PKEY（含私钥）。
+static EVP_PKEY* ossl_gen_rsa_4096(uint8_t n_buf[512], uint8_t e_buf[3]) {
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
+    if (!ctx) return nullptr;
+    EVP_PKEY* pkey = nullptr;
+    if (EVP_PKEY_keygen_init(ctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 4096) <= 0 ||
+        EVP_PKEY_keygen(ctx, &pkey) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        return nullptr;
+    }
+    EVP_PKEY_CTX_free(ctx);
+
+    BIGNUM* n = nullptr, * e = nullptr;
+    if (EVP_PKEY_get_bn_param(pkey, "n", &n) != 1 ||
+        EVP_PKEY_get_bn_param(pkey, "e", &e) != 1) {
+        BN_free(n); BN_free(e); EVP_PKEY_free(pkey);
+        return nullptr;
+    }
+    int n_len = BN_bn2binpad(n, n_buf, 512);
+    int e_len = BN_bn2binpad(e, e_buf, 3);
+    BN_free(n); BN_free(e);
+    if (n_len != 512 || e_len != 3) {
         EVP_PKEY_free(pkey);
         return nullptr;
     }
@@ -350,6 +390,7 @@ struct tls12_suite_entry {
     const char* ossl_name;
     bool need_ecdsa_cert;
     bool use_psk;
+    bool use_rsa4096 = false;   // true = 服务端用 RSA-4096 证书（512 字节模数）
 };
 
 // OpenSSL TLS 1.2 DHE needs explicit DH params on the server: OpenSSL 3.x treats
@@ -440,6 +481,21 @@ static const tls12_suite_entry kTLS12Suites[] = {
       "DHE-PSK-AES256-CBC-SHA384", false, true },
 };
 
+// RSA-4096 证书矩阵：在既有 ECDSA / RSA-2048 矩阵之外复测代表性套件，
+// 覆盖 512 字节 PKCS#1 v1.5 签名（ECDHE-RSA / DHE-RSA）与 512 字节
+// EncryptedPreMasterSecret（静态 RSA 密钥交换，RFC 5246 7.4.7.1）。
+// 密钥运行时生成（rsa4096_keygen_crt 约 0.36s），无需新增证书文件。
+static const tls12_suite_entry kTLS12Rsa4096Suites[] = {
+    { CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+      "ECDHE-RSA-CHACHA20-POLY1305", false, false, true },
+    { CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+      "ECDHE-RSA-AES256-GCM-SHA384", false, false, true },
+    { CipherSuite::TLS_RSA_WITH_AES_256_GCM_SHA384,
+      "AES256-GCM-SHA384", false, false, true },
+    { CipherSuite::TLS_DHE_RSA_WITH_AES_128_GCM_SHA256,
+      "DHE-RSA-AES128-GCM-SHA256", false, false, true },
+};
+
 // PSK 测试常量：identity + 16 字节 PSK
 static const char kPskIdentity[] = "jpssl-client";
 static const unsigned char kPskValue[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
@@ -500,6 +556,27 @@ static bool ossl_ctx_set_tls12_only(SSL_CTX* ctx, const char* cipher_name) {
     return SSL_CTX_set_cipher_list(ctx, cipher_name) == 1;
 }
 
+// 密钥维度（如 RSA-4096）专用计数：与总计数并行累计，末尾单独汇总断言，
+// 保证该维度用例失败时 ctest 一定失败。
+struct interop_dim_tally { int pass = 0, skip = 0, fail = 0; };
+
+// 单次用例的结果输出与计数：why 以 "SKIP" 开头记为 skip（本机 OpenSSL 不支持），
+// 其余按成功/失败记 pass/fail；dim 非空时同时计入该维度专账。
+static void interop_report(bool ok, const std::string& why, const std::string& tag,
+                           int& pass, int& skip, int& fail,
+                           interop_dim_tally* dim = nullptr) {
+    if (ok && why.rfind("SKIP", 0) == 0) {
+        ++skip; if (dim) ++dim->skip;
+        std::cout << "  - " << tag << " : " << why << std::endl;
+    } else if (ok) {
+        ++pass; if (dim) ++dim->pass;
+        std::cout << "  \xE2\x9C\x93 " << tag << std::endl;
+    } else {
+        ++fail; if (dim) ++dim->fail;
+        std::cout << "  \xE2\x9C\x97 " << tag << " - " << why << std::endl;
+    }
+}
+
 // ============================================================
 //  方向 A：jpssl 服务端（TLS 1.2）↔ OpenSSL 客户端
 // ============================================================
@@ -533,7 +610,10 @@ static bool interop_tls12_jpssl_server_ossl_client(const tls12_suite_entry& e, s
     // jpssl 服务端证书（按套件选择 ECDSA 或 RSA）
     tls_certificate_manager cert_mgr;
     if (!e.use_psk) {
-        auto cert = e.need_ecdsa_cert ? make_jpssl_ecdsa_cert() : make_jpssl_rsa_cert();
+        // 密钥类型：ECDSA P-256 / RSA-2048（默认）/ RSA-4096（use_rsa4096）
+        auto cert = e.need_ecdsa_cert ? make_jpssl_ecdsa_cert()
+                                      : (e.use_rsa4096 ? make_jpssl_rsa4096_cert()
+                                                       : make_jpssl_rsa_cert());
         if (!cert) { why = "jpssl cert generation failed"; SSL_CTX_free(ctx); return false; }
         cert_mgr.add_certificate("localhost", std::move(cert));
     }
@@ -643,14 +723,18 @@ static bool interop_tls12_ossl_server_jpssl_client(const tls12_suite_entry& e,
     const bool need_cert = !e.use_psk;
 
     // OpenSSL 服务端密钥对 + 自签证书；公钥同时放入 jpssl 端预期证书。
-    // ECDHE-ECDSA 用 ECDSA P-256；其余证书套件用 RSA-2048；PSK 套件无证书。
+    // ECDHE-ECDSA 用 ECDSA P-256；RSA 套件用 RSA-2048（use_rsa4096 时 RSA-4096）；
+    // PSK 套件无证书。
     uint8_t xy[64] = {0};
     uint8_t n_buf[256] = {0}, e_buf[3] = {0};
+    uint8_t n4096_buf[512] = {0};  // RSA-4096 模数（512 字节）
     EVP_PKEY* pkey = nullptr;
     X509* x509 = nullptr;
     if (need_cert) {
         if (e.need_ecdsa_cert)
             pkey = ossl_gen_ecdsa_p256(xy);
+        else if (e.use_rsa4096)
+            pkey = ossl_gen_rsa_4096(n4096_buf, e_buf);
         else
             pkey = ossl_gen_rsa_2048(n_buf, e_buf);
         if (!pkey) { why = "ossl keygen failed"; return false; }
@@ -767,6 +851,11 @@ static bool interop_tls12_ossl_server_jpssl_client(const tls12_suite_entry& e,
         if (e.need_ecdsa_cert) {
             expect_cert->sig_alg = SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
             std::memcpy(expect_cert->pub.ecdsa_p256, xy, 64);
+        } else if (e.use_rsa4096) {
+            expect_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
+            expect_cert->rsa4096 = true;
+            expect_cert->pub.rsa4096.n = jpssl::rsa4096_bignum::from_bytes(n4096_buf, 512);
+            expect_cert->pub.rsa4096.e = jpssl::rsa4096_bignum::from_bytes(e_buf, 3);
         } else {
             expect_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
             expect_cert->pub.rsa.n = jpssl::rsa_bignum::from_bytes(n_buf, 256);
@@ -828,7 +917,8 @@ static bool interop_tls12_ossl_server_jpssl_client(const tls12_suite_entry& e,
 //  方向 A：jpssl 服务端（TLS 1.3）↔ OpenSSL 客户端
 // ============================================================
 
-static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why) {
+static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why,
+                                             bool rsa4096_cert = false) {
     const char* cs_name = ossl_cs_name(cs);
     if (!cs_name) { why = "no ossl suite name"; return false; }
 
@@ -849,10 +939,15 @@ static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why) {
         return true;
     }
     tls_certificate_manager cert_mgr;
-    if (tls_use_sm3(cs))
+    if (rsa4096_cert) {
+        auto cert4096 = make_jpssl_rsa4096_cert();
+        if (!cert4096) { why = "jpssl RSA-4096 cert generation failed"; SSL_CTX_free(ctx); return false; }
+        cert_mgr.add_certificate("localhost", std::move(cert4096));
+    } else if (tls_use_sm3(cs)) {
         cert_mgr.add_certificate("localhost", make_jpssl_sm2_cert());
-    else
+    } else {
         cert_mgr.add_certificate("localhost", make_jpssl_ecdsa_cert());
+    }
     tls_listener listener;
     std::string err;
     if (!listener.listen(0, "127.0.0.1", &err)) { why = "jpssl listen: " + err; SSL_CTX_free(ctx); return false; }
@@ -940,18 +1035,21 @@ static bool interop_jpssl_server_ossl_client(CipherSuite cs, std::string& why) {
 // ============================================================
 
 static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why,
-                                             bool sm2_cert = false) {
+                                             bool sm2_cert = false,
+                                             bool rsa4096_cert = false) {
     const char* cs_name = ossl_cs_name(cs);
     if (!cs_name) { why = "no ossl suite name"; return false; }
 
     // OpenSSL 服务端密钥对 + 自签证书；公钥同时放入 jpssl 端预期证书
     uint8_t xy[64];
+    uint8_t n4096_buf[512] = {0}, e_buf[3] = {0};
     EVP_PKEY* ec_for_signing = nullptr;
-    EVP_PKEY* pkey = sm2_cert ? ossl_gen_sm2_key(xy, &ec_for_signing)
-                              : ossl_gen_ecdsa_p256(xy);
+    EVP_PKEY* pkey = rsa4096_cert ? ossl_gen_rsa_4096(n4096_buf, e_buf)
+                                  : (sm2_cert ? ossl_gen_sm2_key(xy, &ec_for_signing)
+                                              : ossl_gen_ecdsa_p256(xy));
     if (!pkey) { why = "ossl keygen failed"; return false; }
-    X509* x509 = sm2_cert ? ossl_sm2_self_signed(ec_for_signing)
-                          : ossl_self_signed(pkey);
+    X509* x509 = (sm2_cert && !rsa4096_cert) ? ossl_sm2_self_signed(ec_for_signing)
+                                             : ossl_self_signed(pkey);
     if (sm2_cert) { EVP_PKEY_free(ec_for_signing); ec_for_signing = nullptr; }
     if (!x509) { EVP_PKEY_free(pkey); why = "ossl cert failed"; return false; }
 
@@ -1035,10 +1133,18 @@ static bool interop_ossl_server_jpssl_client(CipherSuite cs, std::string& why,
     tls_certificate_manager cli_mgr;
     auto expect_cert = std::make_unique<tls_certificate>();
     expect_cert->subject_name = "localhost";
-    expect_cert->sig_alg = sm2_cert ? SignatureAlgorithm::SM2_SM3
-                                    : SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
-    if (sm2_cert) std::memcpy(expect_cert->pub.sm2, xy, 64);
-    else          std::memcpy(expect_cert->pub.ecdsa_p256, xy, 64);
+    if (rsa4096_cert) {
+        // RSA-4096：客户端按 512 字节模数校验 RSA-PSS CertificateVerify（RFC 8446 4.4.3）
+        expect_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
+        expect_cert->rsa4096 = true;
+        expect_cert->pub.rsa4096.n = jpssl::rsa4096_bignum::from_bytes(n4096_buf, 512);
+        expect_cert->pub.rsa4096.e = jpssl::rsa4096_bignum::from_bytes(e_buf, 3);
+    } else {
+        expect_cert->sig_alg = sm2_cert ? SignatureAlgorithm::SM2_SM3
+                                        : SignatureAlgorithm::ECDSA_SECP256R1_SHA256;
+        if (sm2_cert) std::memcpy(expect_cert->pub.sm2, xy, 64);
+        else          std::memcpy(expect_cert->pub.ecdsa_p256, xy, 64);
+    }
     cli_mgr.add_certificate("localhost", std::move(expect_cert));
 
     bool ok = false;
@@ -1091,6 +1197,10 @@ void test_tls12_openssl_interop() {
     const int kTotal = (int)(sizeof(kTLS12Suites) / sizeof(kTLS12Suites[0]));
     int pass = 0, skip = 0, fail = 0;
 
+    // RSA-4096 维度专账（末尾独立汇总断言）
+    const int kRsa4096Total = (int)(sizeof(kTLS12Rsa4096Suites) / sizeof(kTLS12Rsa4096Suites[0]));
+    interop_dim_tally t12_rsa4096;
+
     for (const auto& e : kTLS12Suites) {
         // 方向 A：jpssl 服务端 ↔ OpenSSL 客户端
         {
@@ -1127,9 +1237,34 @@ void test_tls12_openssl_interop() {
         }
     }
 
+    // 维度 2：RSA-4096 证书矩阵（512 字节模数），逐方向复测
+    for (const auto& e : kTLS12Rsa4096Suites) {
+        // 方向 A：jpssl 服务端（RSA-4096 证书）↔ OpenSSL 客户端
+        {
+            std::string why;
+            bool r = interop_tls12_jpssl_server_ossl_client(e, why);
+            interop_report(r, why,
+                std::string("A jpssl-server(rsa4096) <-> ossl-client ") + e.ossl_name,
+                pass, skip, fail, &t12_rsa4096);
+        }
+
+        // 方向 B：OpenSSL 服务端（RSA-4096 自签证书）↔ jpssl 客户端
+        {
+            std::string why;
+            bool r = interop_tls12_ossl_server_jpssl_client(e, why);
+            interop_report(r, why,
+                std::string("B ossl-server(rsa4096) <-> jpssl-client ") + e.ossl_name,
+                pass, skip, fail, &t12_rsa4096);
+        }
+    }
+
     std::printf("  TLS 1.2 OpenSSL interop: %d pass, %d skip, %d fail (共 %d 套件 × 2 方向)\n",
                 pass, skip, fail, kTotal);
+    std::printf("    RSA-4096: %d pass, %d skip, %d fail (共 %d 套件 × 2 方向)\n",
+                t12_rsa4096.pass, t12_rsa4096.skip, t12_rsa4096.fail, kRsa4096Total);
     TEST("TLS 1.2 OpenSSL 互操作可用套件全部通过", fail == 0);
+    TEST("TLS 1.2 RSA-4096 互操作用例全部通过",
+         t12_rsa4096.fail == 0 && t12_rsa4096.pass > 0);
 }
 
 void test_tls13_openssl_interop() {
@@ -1147,6 +1282,9 @@ void test_tls13_openssl_interop() {
     };
     const int kTotal = (int)(sizeof(suites) / sizeof(suites[0]));
     int pass = 0, skip = 0, fail = 0;
+
+    // RSA-4096 维度专账（末尾独立汇总断言）
+    interop_dim_tally t13_rsa4096;
 
     for (CipherSuite cs : suites) {
         const char* short_name = cs_short_name(cs);
@@ -1215,11 +1353,35 @@ void test_tls13_openssl_interop() {
                 std::cout << "  \xE2\x9C\x97 " << tag2 << " - " << why2 << std::endl;
             }
         }
+
+        // RSA-4096 证书维度：仅对代表性套件复测（4096 位密钥生成较慢）。
+        // 方向 A 验证 OpenSSL 可校验 jpssl 服务端 512 字节 RSA-PSS
+        // CertificateVerify；方向 B 验证 jpssl 客户端可验 512 字节 RSA-PSS 签名。
+        if (cs == CipherSuite::TLS_AES_128_GCM_SHA256) {
+            {
+                std::string why;
+                bool r = interop_jpssl_server_ossl_client(cs, why, true);
+                interop_report(r, why,
+                    std::string("A jpssl-server(rsa4096) <-> ossl-client ") + short_name,
+                    pass, skip, fail, &t13_rsa4096);
+            }
+            {
+                std::string why;
+                bool r = interop_ossl_server_jpssl_client(cs, why, false, true);
+                interop_report(r, why,
+                    std::string("B ossl-server(rsa4096) <-> jpssl-client ") + short_name,
+                    pass, skip, fail, &t13_rsa4096);
+            }
+        }
     }
 
     std::printf("  OpenSSL interop: %d pass, %d skip, %d fail (共 %d 套件 × 2 方向 + 2 个 SM2 证书变体)\n",
                 pass, skip, fail, kTotal);
+    std::printf("    RSA-4096: %d pass, %d skip, %d fail (共 1 套件 × 2 方向)\n",
+                t13_rsa4096.pass, t13_rsa4096.skip, t13_rsa4096.fail);
     TEST("TLS 1.3 OpenSSL 互操作可用套件全部通过", fail == 0);
+    TEST("TLS 1.3 RSA-4096 互操作用例全部通过",
+         t13_rsa4096.fail == 0 && t13_rsa4096.pass > 0);
 }
 
 // 直接可执行入口（同时保持 test_utils 框架兼容）

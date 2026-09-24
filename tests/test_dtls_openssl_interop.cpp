@@ -12,6 +12,7 @@
  */
 #include "test_utils.hpp"
 #include "dtls.hpp"
+#include "rsa.hpp"
 #include "ecdsa.hpp"
 
 #include <openssl/ssl.h>
@@ -150,6 +151,43 @@ static tls_certificate_manager make_jpssl_cert_mgr(const char* dns) {
     return mgr;
 }
 
+// jpssl DTLS 服务端证书（RSA-4096 自签，CN/SAN=dns，CA=true）。
+// 与 make_jpssl_cert_mgr 同构，仅密钥类型不同：512 字节模数 + SHA256withRSA
+// 自签名（RFC 8017 PKCS#1 v1.5）。密钥在运行时生成，无需新增证书文件。
+static tls_certificate_manager make_jpssl_cert_mgr_rsa4096(const char* dns) {
+    tls_certificate_manager mgr;
+    auto cert = std::make_unique<tls_certificate>();
+    if (!rsa4096_keygen_crt(cert->pub.rsa4096, cert->priv.rsa4096)) return mgr;  // 失败→空管理器
+
+    uint8_t n[512], d[512];
+    cert->pub.rsa4096.n.to_bytes(n);
+    cert->priv.rsa4096.d.to_bytes(d);
+    // x509 公钥布局：n（512 字节）|| e（3 字节，65537）
+    uint8_t pub_key[515];
+    memcpy(pub_key, n, sizeof(n));
+    pub_key[512] = 0x01; pub_key[513] = 0x00; pub_key[514] = 0x01;
+
+    x509::x509_builder b;
+    x509::DistinguishedName dn;
+    dn.push_back({std::vector<uint8_t>(x509::OID_CN, x509::OID_CN + 3), dns});
+    b.set_subject(dn).set_issuer(dn);
+    uint8_t ser[8] = {0x52, 0x52, 0x52, 0x53};
+    b.set_serial(ser, 8);
+    uint64_t now = (uint64_t)time(nullptr);
+    b.set_validity(now - 3600, now + 365 * 86400);
+    b.set_key(x509::KeyType::RSA_4096, pub_key, sizeof(pub_key));
+    b.set_ca(true);
+    b.add_san_dns(dns);
+    auto der = b.build_and_sign(x509::KeyType::RSA_4096, d, sizeof(d));
+
+    cert->subject_name = dns;
+    cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
+    cert->rsa4096 = true;  // sign_scheme 走 512 字节 RSA-4096 路径
+    cert->cert_data = der.to_der();
+    mgr.add_certificate(dns, std::move(cert));
+    return mgr;
+}
+
 // OpenSSL 生成 ECDSA P-256 密钥对
 static EVP_PKEY* ossl_gen_ecdsa_p256() {
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
@@ -157,6 +195,21 @@ static EVP_PKEY* ossl_gen_ecdsa_p256() {
     EVP_PKEY* pkey = nullptr;
     if (EVP_PKEY_keygen_init(ctx) <= 0 ||
         EVP_PKEY_CTX_set_ec_paramgen_curve_nid(ctx, NID_X9_62_prime256v1) <= 0 ||
+        EVP_PKEY_keygen(ctx, &pkey) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        return nullptr;
+    }
+    EVP_PKEY_CTX_free(ctx);
+    return pkey;
+}
+
+// OpenSSL 生成 RSA-4096 密钥对（RSA-4096 维度用例用；含私钥，供服务端签名）
+static EVP_PKEY* ossl_gen_rsa_4096() {
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
+    if (!ctx) return nullptr;
+    EVP_PKEY* pkey = nullptr;
+    if (EVP_PKEY_keygen_init(ctx) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 4096) <= 0 ||
         EVP_PKEY_keygen(ctx, &pkey) <= 0) {
         EVP_PKEY_CTX_free(ctx);
         return nullptr;
@@ -277,8 +330,14 @@ static bool dtls_transport_probe(std::string& why) {
 }
 
 static bool dtls12_jpssl_server_ossl_client(CipherSuite cs, const char* ossl_name,
-                                            std::string& why) {
-    auto cert_mgr = make_jpssl_cert_mgr("dtls.test");
+                                            std::string& why, bool rsa4096_cert = false) {
+    // 证书与套件匹配：ECDHE-ECDSA 用 ECDSA P-256；ECDHE-RSA 用 RSA-4096（512 字节模数）
+    tls_certificate_manager cert_mgr = rsa4096_cert ? make_jpssl_cert_mgr_rsa4096("dtls.test")
+                                                    : make_jpssl_cert_mgr("dtls.test");
+    if (rsa4096_cert && !cert_mgr.get_default_certificate()) {
+        why = "jpssl RSA-4096 cert generation failed";
+        return false;
+    }
 
     dtls_connection srv;
     srv.set_version(DTLSVersion::V12);
@@ -405,8 +464,10 @@ static bool dtls12_jpssl_server_ossl_client(CipherSuite cs, const char* ossl_nam
 // ============================================================
 
 static bool dtls12_ossl_server_jpssl_client(CipherSuite cs, const char* ossl_name,
-                                            std::string& why) {
-    EVP_PKEY* pkey = ossl_gen_ecdsa_p256();
+                                            std::string& why, bool rsa4096_cert = false) {
+    // RSA-4096 维度：OpenSSL 服务端用 4096 位自签证书，jpssl 客户端按 512 字节模数
+    // 校验 ServerKeyExchange 签名（cert_from_x509 → pub.rsa4096 / rsa4096 = true）
+    EVP_PKEY* pkey = rsa4096_cert ? ossl_gen_rsa_4096() : ossl_gen_ecdsa_p256();
     if (!pkey) { why = "ossl keygen failed"; return false; }
     X509* x = ossl_self_signed_dtls(pkey);
     if (!x) { EVP_PKEY_free(pkey); why = "ossl cert failed"; return false; }
@@ -510,6 +571,7 @@ static bool dtls12_ossl_server_jpssl_client(CipherSuite cs, const char* ossl_nam
 struct dtls12_suite_case {
     CipherSuite cs;
     const char* ossl_name;
+    bool rsa4096 = false;   // true = 两端使用 RSA-4096 证书（512 字节模数）
 };
 
 static const dtls12_suite_case kDTLS12Suites[] = {
@@ -517,30 +579,45 @@ static const dtls12_suite_case kDTLS12Suites[] = {
       "ECDHE-ECDSA-AES128-GCM-SHA256" },
     { CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
       "ECDHE-ECDSA-CHACHA20-POLY1305-SHA256" },
+    // DTLS 1.2 ECDHE-RSA（0xC02F）+ RSA-4096 证书：双向复测 512 字节 PKCS#1 v1.5
+    // 签名与证书公钥解析（RFC 6347 / RFC 5246 / RFC 8017）
+    { CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+      "ECDHE-RSA-AES128-GCM-SHA256", true },
 };
 
 void test_dtls12_openssl_interop() {
     std::printf("\n=== DTLS 1.2 套件 × OpenSSL 互操作 ===\n");
     int pass = 0, fail = 0;
+    int rsa4096_pass = 0, rsa4096_fail = 0;  // RSA-4096 维度专账
     for (const auto& e : kDTLS12Suites) {
         {
             std::string why;
-            bool r = dtls12_jpssl_server_ossl_client(e.cs, e.ossl_name, why);
-            std::string tag = std::string("A jpssl-server <-> ossl-client ") + e.ossl_name;
-            if (r) { ++pass; std::cout << "  \xE2\x9C\x93 " << tag << std::endl; }
-            else { ++fail; std::cout << "  \xE2\x9C\x97 " << tag << " - " << why << std::endl; }
+            bool r = dtls12_jpssl_server_ossl_client(e.cs, e.ossl_name, why, e.rsa4096);
+            std::string tag = std::string("A jpssl-server") + (e.rsa4096 ? "(rsa4096)" : "") +
+                              " <-> ossl-client " + e.ossl_name;
+            if (r) { ++pass; if (e.rsa4096) ++rsa4096_pass;
+                     std::cout << "  \xE2\x9C\x93 " << tag << std::endl; }
+            else { ++fail; if (e.rsa4096) ++rsa4096_fail;
+                   std::cout << "  \xE2\x9C\x97 " << tag << " - " << why << std::endl; }
         }
         {
             std::string why;
-            bool r = dtls12_ossl_server_jpssl_client(e.cs, e.ossl_name, why);
-            std::string tag = std::string("B ossl-server <-> jpssl-client ") + e.ossl_name;
-            if (r) { ++pass; std::cout << "  \xE2\x9C\x93 " << tag << std::endl; }
-            else { ++fail; std::cout << "  \xE2\x9C\x97 " << tag << " - " << why << std::endl; }
+            bool r = dtls12_ossl_server_jpssl_client(e.cs, e.ossl_name, why, e.rsa4096);
+            std::string tag = std::string("B ossl-server") + (e.rsa4096 ? "(rsa4096)" : "") +
+                              " <-> jpssl-client " + e.ossl_name;
+            if (r) { ++pass; if (e.rsa4096) ++rsa4096_pass;
+                     std::cout << "  \xE2\x9C\x93 " << tag << std::endl; }
+            else { ++fail; if (e.rsa4096) ++rsa4096_fail;
+                   std::cout << "  \xE2\x9C\x97 " << tag << " - " << why << std::endl; }
         }
     }
     std::printf("  DTLS 1.2 OpenSSL interop: %d pass, %d fail (%d 套件 × 2 方向)\n",
                 pass, fail, (int)(sizeof(kDTLS12Suites) / sizeof(kDTLS12Suites[0])));
+    std::printf("    RSA-4096: %d pass, %d fail (ECDHE-RSA-AES128-GCM-SHA256 × 2 方向)\n",
+                rsa4096_pass, rsa4096_fail);
     TEST("DTLS 1.2 OpenSSL 互操作全部通过", fail == 0);
+    TEST("DTLS 1.2 RSA-4096 互操作用例全部通过",
+         rsa4096_fail == 0 && rsa4096_pass > 0);
 }
 
 int main() {
