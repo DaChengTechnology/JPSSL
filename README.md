@@ -697,6 +697,8 @@ auto rsa_cert = std::make_unique<tls_certificate>();
 rsa_cert->subject_name = "example.net";
 rsa_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
 rsa_keygen(rsa_cert->pub.rsa, rsa_cert->priv.rsa);
+// ── RSA-4096 证书（公开 API 走 from_pem_file 装载，自动填 pub/priv.rsa4096） ──
+// auto rsa4096_cert = tls_certificate::from_pem_file("server-rsa4096.crt", "server-rsa4096.key", &err);
 // ── SM2 证书（RFC 8998 国密 TLS） ──
 auto sm2_cert = std::make_unique<tls_certificate>();
 sm2_cert->subject_name = "example.cn";
@@ -718,6 +720,9 @@ auto cert2 = tls_certificate::from_pem(cert_pem, key_pem);
 // 从 CSR + 私钥加载：subject 与公钥取自 CSR，私钥用于签名
 // cert_data 留空，握手时按 CSR 主体自动生成自签名证书
 auto cert3 = tls_certificate::from_csr_pem_file("server.csr", "server.key", &err);
+// RSA-4096（OpenSSL 生成的 4096 位证书 / 私钥，模数 512 字节）
+auto rsa4096 = tls_certificate::from_pem_file("server-rsa4096.crt", "server-rsa4096.key", &err);
+if (rsa4096) assert(rsa4096->rsa4096);   // 已识别为 RSA-4096
 ```
 
 加载后直接加入 `tls_certificate_manager` 即可用于服务端握手：
@@ -727,7 +732,11 @@ tls_certificate_manager cert_mgr;
 cert_mgr.add_certificate("example.com", std::move(cert));
 ```
 
-支持密钥类型：RSA-2048、Ed25519、Ed448、ECDSA P-256/P-384/P-521、SM2（RSA-4096 私钥暂不支持 TLS 证书签名）。
+支持密钥类型：RSA-2048、RSA-4096、Ed25519、Ed448、ECDSA P-256/P-384/P-521、SM2。
+RSA-4096 证书可直接装载：`from_pem*` / `from_csr*` 会按模数位宽自动识别 2048/4096 并置
+`tls_certificate::rsa4096` 标记，握手时 CertificateVerify（TLS 1.3，RSA-PSS）与
+ServerKeyExchange（TLS 1.2，PKCS#1 v1.5 / RSA-PSS）均输出 512 字节签名；
+TLS 1.2 静态 RSA 套件（RSA 密钥交换）亦支持 512 字节 EncryptedPreMasterSecret 解密。
 
 #### 2. 多域名证书管理（SNI）
 

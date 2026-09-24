@@ -328,8 +328,8 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 | `tls_certificate` | 证书结构体，含公钥、私钥、签名算法 |
 | `tls_certificate::sign(data, len, sig, sig_len)` | 使用证书私钥签名 |
 | `tls_certificate::verify(data, len, sig, sig_len)` | 使用证书公钥验证签名 |
-| `tls_certificate::from_pem(cert_pem, key_pem, err)` | 从 PEM 证书 + PEM 私钥构造服务端证书（私钥支持 PKCS#8/PKCS#1/SEC1/[RFC 8410](https://www.rfc-editor.org/rfc/rfc8410)/加密 PEM） |
-| `tls_certificate::from_pem_file(cert_path, key_path, err)` | 从证书 / 私钥 PEM 文件构造 |
+| `tls_certificate::from_pem(cert_pem, key_pem, err)` | 从 PEM 证书 + PEM 私钥构造服务端证书（私钥支持 PKCS#8/PKCS#1/SEC1/[RFC 8410](https://www.rfc-editor.org/rfc/rfc8410)/加密 PEM；RSA-2048/4096 自动识别） |
+| `tls_certificate::from_pem_file(cert_path, key_path, err)` | 从证书 / 私钥 PEM 文件构造（支持 RSA-4096，模数 512 字节） |
 | `tls_certificate::from_csr_pem(csr_pem, key_pem, err)` | 从 CSR + 私钥构造（握手时按 CSR 主体自动生成自签证书） |
 | `tls_certificate::from_csr_pem_file(csr_path, key_path, err)` | 从 CSR / 私钥 PEM 文件构造 |
 | `tls_certificate_manager::add_certificate(domain, cert)` | 添加域名对应的证书 |
@@ -337,6 +337,11 @@ bool s_ok = tls_server_decrypt(server, client_record.data(),
 | `tls_certificate_manager::get_default_certificate()` | 获取默认证书 |
 | `tls_trust_store` | 客户端信任库：CA 根证书集合（`from_pem` / `from_pem_file` / `from_system` 系统信任库） |
 | `tls_key_type_to_sig_alg(kt)` | KeyType → TLS 签名方案映射（from_pem 内部使用） |
+
+> **RSA-4096**：`tls_certificate` 的 `pub`/`priv` union 含 `rsa4096` 成员（`rsa4096_public_key` /
+> `rsa4096_crt_key`），装载 4096 位证书时 `tls_certificate::rsa4096` 标记置位。TLS 1.3
+> CertificateVerify 输出 512 字节 RSA-PSS 签名，TLS 1.2 的 ServerKeyExchange 支持
+> PKCS#1 v1.5 / RSA-PSS（SHA-256/384/512），静态 RSA 密钥交换支持 512 字节密文解密。
 | `tls_parse_server_name(extensions, len)` | 从扩展中解析 SNI 域名 |
 
 ## 11. 会话状态

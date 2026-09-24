@@ -35,6 +35,9 @@ ctest --test-dir build-win --output-on-failure
 | `test_tls_stability` | TLS 稳定性 / 稳压测试（反复握手 + 数据传输，泄漏启发式检测） |
 | `test_tls_large_msg` | TLS 大消息自动分片 / 合并（16KiB 边界、64KiB 长度字段边界、256KiB、TLS 1.2、socket 端到端 128KiB） |
 | `test_x509` | X.509 v3 证书单元测试 |
+| `test_x509_rsa4096` | X.509 RSA-4096 证书 / 私钥 / CSR 解析与自签名生成（密钥类型识别、EC CA 链验证、512 字节签名往返，65 断言） |
+| `test_tls_rsa4096` | 服务端 RSA-4096 证书装载与握手签名（from_pem/from_csr 装载、RSA-PSS / PKCS#1 v1.5 512 字节签名往返、TLS 1.3 与 TLS 1.2 ECDHE-RSA 完整握手，84 断言） |
+| `test_tls12_rsa4096_kx` | TLS 1.2 静态 RSA 套件的 RSA-4096 密钥交换（512 字节 EncryptedPreMasterSecret 加解密、端到端握手，47 断言） |
 | `test_ct` | 证书透明（国密 + 国际）单元测试 |
 | `test_base64` | Base64（RFC 4648 向量、全长度随机往返、SIMD 交叉验证、非法输入，484 断言） |
 | `test_ed25519_rfc` / `test_ed448_rfc` | RFC 8032 向量（OpenSSL 对比） |

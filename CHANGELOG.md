@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.1.11] - 2026-09-24
+
+### Added
+- **服务端 RSA-4096 证书装载与签名**：`tls_certificate` 支持装载 RSA-4096 证书 /
+  私钥 / CSR（`from_pem` / `from_pem_file` / `from_csr_pem` / `from_csr_pem_file`）。
+  - `tls_certificate` 的 `pub`/`priv` union 新增 `rsa4096_public_key` / `rsa4096_crt_key`
+    成员与 `bool rsa4096` 装载标记；`tls_session` 新增 `rsa4096_key`；
+  - TLS 1.3 CertificateVerify：RSA-PSS（SHA-256/384/512）输出 512 字节签名
+    （`rsassa_pss_sign4096` + CRT 快速路径）；
+  - TLS 1.2 ServerKeyExchange：PKCS#1 v1.5（`RSASP14096`，CRT 缺失回退全模幂）与
+    RSA-PSS 均支持 512 字节签名，客户端侧 `verify_scheme` 同步支持 512 字节验签；
+  - TLS 1.2 静态 RSA 套件（RSA 密钥交换）：服务端按 512 字节 EncryptedPreMasterSecret
+    走 `rsa4096_crt_decrypt`，客户端按证书尺寸走 `rsa4096_encrypt`；
+  - CSR 装载路径：`tls_make_x509_self_signed` 按装载标记选择 4096 位公钥/私钥生成
+    自签名证书。
+- 新增测试：`test_tls_rsa4096`（84 断言，TLS 1.3 / TLS 1.2 ECDHE-RSA 完整握手）、
+  `test_tls12_rsa4096_kx`（47 断言，TLS 1.2 静态 RSA 密钥交换）、
+  `test_x509_rsa4096`（65 断言，证书/私钥/CSR 解析与自签名生成）；
+  新增测试证书 `tests/certs/tls/server-rsa4096{,-key}.pem`、`server-rsa4096.csr`
+  （EC P-256 CA 签发的 4096 位叶子）。
+
+### Fixed
+- **RSA 证书公钥类型识别**：`x509_cert::from_der` 此前对所有 RSA 证书恒判定为
+  `KeyType::RSA_2048`，导致 RSA-4096 证书装载被误判为「证书/私钥密钥类型不匹配」；
+  现按模数位宽（> 256 字节即 RSA-4096）判定。
+- **RSA CSR 公钥解析**：`csr::from_der` 解析 RSAPublicKey 时复用了外层 SEQUENCE 的
+  偏移，`public_key` 被保留为 DER SEQUENCE 而非 `n||e`，RSA CSR 装载会得到错误模数；
+  现内部偏移从 0 重新开始。
+- **`x509_builder::build_and_sign` RSA-4096 越界写**：RSA 分支固定按 256 字节填充和
+  模幂、签名缓冲 `uint8_t sig_buf[256]`，RSA-4096 自签名证书会写穿栈缓冲；现按模数
+  长度（256/512）计算并扩容缓冲。
+- `dtls` 客户端叶子公钥导入支持 RSA-4096（此前按 2048 截断取模数）。
+
+### Notes
+- 版本号 1.1.10 → 1.1.11（同步 CMake `project(jpssl VERSION ...)`）。
+
 ## [1.1.10] - 2026-08-21
 
 ### Added
