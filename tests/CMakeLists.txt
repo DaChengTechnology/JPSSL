@@ -73,6 +73,11 @@ add_executable(test_tls test_tls.cpp)
 target_include_directories(test_tls PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_tls PRIVATE jpssl_cpu ${MUSA_LIBS})
 
+# ── TLS RSA-4096 证书装载 / 签名验签单元测试 ─────────────────────────────
+add_executable(test_tls_rsa4096 test_tls_rsa4096.cpp)
+target_include_directories(test_tls_rsa4096 PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_tls_rsa4096 PRIVATE jpssl_cpu ${MUSA_LIBS})
+
 # ── QUIC v1/v2 SSL 支持单元测试 ──────────────────────────────────────────
 add_executable(test_quic test_quic.cpp)
 target_include_directories(test_quic PRIVATE ${INCLUDE_DIR})
@@ -474,6 +479,7 @@ add_test(NAME test_sha512        COMMAND test_sha512)
 endif()
 add_test(NAME test_sha1          COMMAND test_sha1)
 add_test(NAME test_tls           COMMAND test_tls)
+add_test(NAME test_tls_rsa4096  COMMAND test_tls_rsa4096)
 add_test(NAME test_quic          COMMAND test_quic)
 add_test(NAME test_dtls          COMMAND test_dtls)
 if(OpenSSL_FOUND)
