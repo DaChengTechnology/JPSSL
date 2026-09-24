@@ -15,6 +15,20 @@
     走 `rsa4096_crt_decrypt`，客户端按证书尺寸走 `rsa4096_encrypt`；
   - CSR 装载路径：`tls_make_x509_self_signed` 按装载标记选择 4096 位公钥/私钥生成
     自签名证书。
+- **`jpssl-cert` CLI 支持 `--key-type rsa4096`**：`gen` / `tlsgen` 可用
+  `rsa4096_keygen_crt` 生成 4096 位密钥对（实测约 0.36s），输出自签名 X.509 v3 证书
+  （512 字节 SHA256withRSA 签名）与 PKCS#8 PEM 私钥（内嵌完整 PKCS#1 参数，
+  CRT 项各 256 字节）；`info` / `key` 子命令可识别 `RSA-4096`。
+- **互操作测试矩阵扩展到 RSA-4096**（运行时生成密钥，无需新增证书文件）：
+  - `test_tls_openssl_interop`：TLS 1.2 新增 4 套件 × 2 方向（ECDHE-RSA-CHACHA20、
+    ECDHE-RSA-AES256-GCM、RSA-AES256-GCM 静态密钥交换、DHE-RSA-AES128-GCM）、
+    TLS 1.3 新增 TLS_AES_128_GCM_SHA256 × 2 方向，共 10 个 RSA-4096 用例，
+    覆盖 512 字节 PKCS#1 v1.5 / RSA-PSS 握手签名、512 字节
+    EncryptedPreMasterSecret 加解密与客户端侧 512 字节验签；
+  - `test_dtls_openssl_interop`：DTLS 1.2 新增 ECDHE-RSA-AES128-GCM-SHA256
+    （0xC02F）× 2 方向（jpssl DTLS 服务端 4096 证书 / OpenSSL 服务端 4096 自签证书）。
+- 新增测试：`test_cmd_cert_rsa4096`（35 断言，CLI 端到端，经 `$<TARGET_FILE:jpssl-cert>`
+  传入 CLI 路径，未构建 CLI 的平台自动跳过）。
 - 新增测试：`test_tls_rsa4096`（84 断言，TLS 1.3 / TLS 1.2 ECDHE-RSA 完整握手）、
   `test_tls12_rsa4096_kx`（47 断言，TLS 1.2 静态 RSA 密钥交换）、
   `test_x509_rsa4096`（65 断言，证书/私钥/CSR 解析与自签名生成）；

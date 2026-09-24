@@ -387,7 +387,7 @@ LD_LIBRARY_PATH=./build ./your_app
 # 生成自签名 X.509 v3 证书 + 私钥 (有效期默认 365 天)
 # 默认输出到 ~/.ssh/cert.der 与 ~/.ssh/key.bin (目录自动创建, 私钥权限 0600)
 jpssl-cert gen --cn example.com --key-type ed25519
-# 支持的密钥类型: ed25519 | ecdsa | sm2 | rsa2048 | ed448
+# 支持的密钥类型: ed25519 | ecdsa | sm2 | rsa2048 | rsa4096 | ed448
 # 用 --days 指定有效期 (gen / tlsgen 均支持, 默认 365 天)
 # 用 --out / --key-out 指定其他位置 (支持 ~ 展开)
 jpssl-cert gen --cn example.com --key-type ed25519 --days 90 --out ~/certs/cert.der --key-out ~/certs/key.bin
@@ -1181,7 +1181,10 @@ std::vector<uint8_t> resp; server.recv(resp); // 接收
 > 说明：DTLS 1.3 未实现 HelloRetryRequest 与 Connection ID（RFC 9146）；DTLS 1.2
 > cookie 交换默认关闭（`dtls_session::require_cookie = true` 开启）。
 
-互操作测试：`test_dtls_openssl_interop`（DTLS 1.2 与 OpenSSL 双向互通）、`test_dtls_wolfssl_interop`（DTLS 1.2/1.3 与 wolfSSL 5.9.2 双向互通）；`test_dtls13_openssl_interop` 已在编译期探测 OpenSSL DTLS 1.3 支持，上游实现后自动启用真实互通用例。
+互操作测试：`test_dtls_openssl_interop`（DTLS 1.2 与 OpenSSL 双向互通，含
+ECDHE-RSA-AES128-GCM-SHA256 + RSA-4096 证书的 512 字节签名用例）、
+`test_dtls_wolfssl_interop`（DTLS 1.2/1.3 与 wolfSSL 5.9.2 双向互通）；
+`test_dtls13_openssl_interop` 已在编译期探测 OpenSSL DTLS 1.3 支持，上游实现后自动启用真实互通用例。
 
 ### Ed25519
 

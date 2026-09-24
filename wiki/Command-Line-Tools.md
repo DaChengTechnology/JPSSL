@@ -13,7 +13,7 @@
 # 生成自签名 X.509 v3 证书 + 私钥 (有效期默认 365 天)
 # 默认输出到 ~/.ssh/cert.der 与 ~/.ssh/key.bin (目录自动创建, 私钥权限 0600)
 jpssl-cert gen --cn example.com --key-type ed25519
-# 支持的密钥类型: ed25519 | ecdsa | sm2 | rsa2048 | ed448
+# 支持的密钥类型: ed25519 | ecdsa | sm2 | rsa2048 | rsa4096 | ed448
 # 用 --days 指定有效期 (gen / tlsgen 均支持, 默认 365 天)
 # 用 --out / --key-out 指定其他位置 (支持 ~ 展开)
 jpssl-cert gen --cn example.com --key-type ed25519 --days 90 --out ~/certs/cert.der --key-out ~/certs/key.bin

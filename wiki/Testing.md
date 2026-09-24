@@ -19,7 +19,7 @@ ctest --test-dir build-win --output-on-failure
 | CTest 名称 | 覆盖内容 |
 |------------|----------|
 | `test_dtls` | DTLS 1.2/1.3（RFC 6347/9147）单元测试（记录层、cookie、分片/重传、密钥调度、Finished） |
-| `test_dtls_openssl_interop` | DTLS 1.2 与 OpenSSL 4 双向互通（ECDHE-ECDSA × AES-128-GCM / ChaCha20-Poly1305） |
+| `test_dtls_openssl_interop` | DTLS 1.2 与 OpenSSL 双向互通（ECDHE-ECDSA × AES-128-GCM / ChaCha20-Poly1305，以及 ECDHE-RSA-AES128-GCM-SHA256 × RSA-4096 证书，双向共 6 用例） |
 | `test_dtls13_openssl_interop` | DTLS 1.3 与 OpenSSL 互通检测（OpenSSL 未实现 DTLS 1.3 时编译期 SKIP） |
 | `test_dtls_wolfssl_interop` | DTLS 1.2/1.3 与 wolfSSL 5.9.2 双向互通（4 套件 × 2 方向 = 8 用例，需 `JP_WOLFSSL_PREFIX`） |
 | `test_aes` | AES 全覆盖单元测试（OpenSSL 对比） |
@@ -29,6 +29,8 @@ ctest --test-dir build-win --output-on-failure
 | `test_sha1` | SHA-1（NIST 向量、边界长度、增量更新、AVX2/AVX512 多缓冲交叉验证、批量分派、OpenSSL 对比） |
 | `test_sha3` / `test_sha512` | SHA-3、SHA-384/512（OpenSSL 对比） |
 | `test_tls` | TLS 1.2/1.3 单元测试 |
+| `test_tls_openssl_interop` | TLS 1.2（25 套件）/ TLS 1.3（6 套件）与 OpenSSL 双向互通；含 RSA-4096 证书矩阵（TLS 1.2 4 套件 × 2 方向 + TLS 1.3 1 套件 × 2 方向，覆盖 512 字节 PKCS#1 v1.5 / RSA-PSS 签名与静态 RSA 密钥交换） |
+| `test_cmd_cert_rsa4096` | `jpssl-cert` CLI 的 `gen` / `tlsgen --key-type rsa4096` 端到端（CLI 生成证书/私钥 → x509 解析 → 服务端装载 → 512 字节 RSA-PSS 签名往返，35 断言） |
 | `test_tls448` | TLS 1.3 X448/Ed448 握手测试（OpenSSL 对比） |
 | `test_tls_sm` | TLS 国密套件（RFC 8998）测试 |
 | `test_tls_socket` | TLS socket 封装层回环测试 |
