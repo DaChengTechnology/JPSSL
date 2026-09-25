@@ -8,7 +8,7 @@ build-ios/
 .codewhale/
 build_test/
 build_test_musa/
-wiki/
+wiki/__pycache__/
 package-lock.json
 build-bench/
 build-ohos*/

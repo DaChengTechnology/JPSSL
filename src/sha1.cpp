@@ -113,7 +113,7 @@ void sha1_final(sha1_ctx* ctx, uint8_t digest[20]) {
 
 void sha1_batch(const uint8_t* const* msgs, size_t len, uint8_t* outs, size_t count) {
     size_t i = 0;
-#if defined(__x86_64__) || defined(_M_X64)
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
     if (cpu_has_avx512bw() && count >= 16) {
         for (; i + 16 <= count; i += 16) {
             const uint8_t* g[16];
@@ -121,6 +121,8 @@ void sha1_batch(const uint8_t* const* msgs, size_t len, uint8_t* outs, size_t co
             sha1_multi_avx512(g, len, reinterpret_cast<uint8_t(*)[20]>(outs + i * 20));
         }
     }
+#endif
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
     if (cpu_has_avx2() && count - i >= 8) {
         for (; i + 8 <= count; i += 8) {
             const uint8_t* g[8];

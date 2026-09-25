@@ -32,7 +32,7 @@
 #endif
 #endif
 
-namespace jpssl::tls {
+namespace jpssl { namespace tls {   // C++14 及以下：嵌套命名空间定义需展开
 
 // ── 套件→内核 cipher_type / key 长度 映射 ──────────────────────────────
 namespace {
@@ -262,4 +262,4 @@ ktls_result ktls_enable(const ktls_params& p, int fd, std::string* error) {
 #endif
 }
 
-} // namespace jpssl::tls
+} } // namespace jpssl::tls

@@ -21,17 +21,21 @@ static void x25519_scalar_mult_cpu(uint8_t out[32], const uint8_t scalar[32], co
 } } // namespace jpssl::x25519_cpu_impl
 
 // ── 前向声明 ──
+#if defined(JP_AVX512)
 namespace jpssl { namespace x25519_avx512_impl {
 void x25519_scalar_mult_avx512(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32]);
 } }
+#endif
 
 namespace jpssl {
 
 void x25519_scalar_mult(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32]) {
+#if defined(JP_AVX512)
     if (cpu_has_avx512()) {
         x25519_avx512_impl::x25519_scalar_mult_avx512(out, scalar, point);
         return;
     }
+#endif
     x25519_cpu_impl::x25519_scalar_mult_cpu(out, scalar, point);
 }
 

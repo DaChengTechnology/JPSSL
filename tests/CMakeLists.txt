@@ -73,6 +73,11 @@ add_executable(test_tls test_tls.cpp)
 target_include_directories(test_tls PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_tls PRIVATE jpssl_cpu ${MUSA_LIBS})
 
+# ── TLS RSA-4096 证书装载 / 签名验签单元测试 ─────────────────────────────
+add_executable(test_tls_rsa4096 test_tls_rsa4096.cpp)
+target_include_directories(test_tls_rsa4096 PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_tls_rsa4096 PRIVATE jpssl_cpu ${MUSA_LIBS})
+
 # ── QUIC v1/v2 SSL 支持单元测试 ──────────────────────────────────────────
 add_executable(test_quic test_quic.cpp)
 target_include_directories(test_quic PRIVATE ${INCLUDE_DIR})
@@ -223,6 +228,18 @@ add_executable(test_x509 test_x509.cpp)
 target_include_directories(test_x509 PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_x509 PRIVATE jpssl_cpu ${MUSA_LIBS})
 
+# ── X.509 RSA-4096 证书/CSR 解析与自签名生成测试 ──
+add_executable(test_x509_rsa4096 test_x509_rsa4096.cpp)
+target_include_directories(test_x509_rsa4096 PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_x509_rsa4096 PRIVATE jpssl_cpu ${MUSA_LIBS})
+
+# ── jpssl-cert CLI RSA-4096 端到端测试（依赖 jpssl-cert 可执行文件）──
+if(NOT JPSSL_AS_SUBPROJECT AND NOT JP_OHOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+add_executable(test_cmd_cert_rsa4096 test_cmd_cert_rsa4096.cpp)
+target_include_directories(test_cmd_cert_rsa4096 PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_cmd_cert_rsa4096 PRIVATE jpssl_cpu ${MUSA_LIBS})
+endif()
+
 add_executable(test_ct test_ct.cpp)
 target_include_directories(test_ct PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_ct PRIVATE jpssl_cpu ${MUSA_LIBS})
@@ -238,6 +255,11 @@ target_include_directories(test_ktls PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_ktls PRIVATE jpssl_cpu ${MUSA_LIBS})
 target_include_directories(test_tls_socket PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_tls_socket PRIVATE jpssl_cpu ${MUSA_LIBS})
+
+# ---- TLS 1.2 静态 RSA（RSA 密钥交换）套件 RSA-4096 支持（含 RSA-2048 回归）----
+add_executable(test_tls12_rsa4096_kx test_tls12_rsa4096_kx.cpp)
+target_include_directories(test_tls12_rsa4096_kx PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_tls12_rsa4096_kx PRIVATE jpssl_cpu ${MUSA_LIBS})
 
 # ---- TLS stability / soak test (repeated handshakes + data transfer) ----
 add_executable(test_tls_stability test_tls_stability.cpp)
@@ -469,6 +491,7 @@ add_test(NAME test_sha512        COMMAND test_sha512)
 endif()
 add_test(NAME test_sha1          COMMAND test_sha1)
 add_test(NAME test_tls           COMMAND test_tls)
+add_test(NAME test_tls_rsa4096  COMMAND test_tls_rsa4096)
 add_test(NAME test_quic          COMMAND test_quic)
 add_test(NAME test_dtls          COMMAND test_dtls)
 if(OpenSSL_FOUND)
@@ -485,10 +508,16 @@ add_test(NAME test_tls448        COMMAND test_tls448)
 endif()
 add_test(NAME test_tls_sm        COMMAND test_tls_sm)
 add_test(NAME test_x509          COMMAND test_x509)
+add_test(NAME test_x509_rsa4096 COMMAND test_x509_rsa4096)
+
+if(NOT JPSSL_AS_SUBPROJECT AND NOT JP_OHOS AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+add_test(NAME test_cmd_cert_rsa4096 COMMAND test_cmd_cert_rsa4096 $<TARGET_FILE:jpssl-cert>)
+endif()
 add_test(NAME test_ktls        COMMAND test_ktls)
 add_test(NAME test_ct            COMMAND test_ct)
 add_test(NAME test_base64        COMMAND test_base64)
 add_test(NAME test_tls_socket    COMMAND test_tls_socket)
+add_test(NAME test_tls12_rsa4096_kx COMMAND test_tls12_rsa4096_kx)
 if(OpenSSL_FOUND)
 add_test(NAME test_tls_openssl_interop COMMAND test_tls_openssl_interop)
 endif()

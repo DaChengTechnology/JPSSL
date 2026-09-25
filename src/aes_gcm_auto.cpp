@@ -30,7 +30,7 @@ static void detect_best() {
         g_best_level = 4; // ARM NEON（AESE + PMULL，4 路并行）
     } else
 #endif
-#if defined(JP_AVX512)
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
     if (feats.avx512 && feats.vpclmulqdq_vaes) {
         g_best_level = 3; // AVX512 (8 路 VAES)
     } else
@@ -60,7 +60,7 @@ void aes_gcm_encrypt_auto(const aes_context& ctx,
             aes_gcm_encrypt_neon(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
             break;
 #endif
-#ifdef JP_AVX512
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
         case 3:
             aes_gcm_encrypt_avx512(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
             break;
@@ -70,7 +70,7 @@ void aes_gcm_encrypt_auto(const aes_context& ctx,
             aes_gcm_encrypt_vaes(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
             break;
 #endif
-#ifdef JP_AVX2
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
         case 1:
             aes_gcm_encrypt_avx2(ctx, iv, iv_len, plaintext, aad, ciphertext, tag, tag_len);
             break;
@@ -94,7 +94,7 @@ bool aes_gcm_decrypt_auto(const aes_context& ctx,
             return aes_gcm_decrypt_neon(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
                                         plaintext);
 #endif
-#ifdef JP_AVX512
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
         case 3:
             return aes_gcm_decrypt_avx512(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
                                           plaintext);
@@ -104,7 +104,7 @@ bool aes_gcm_decrypt_auto(const aes_context& ctx,
             return aes_gcm_decrypt_vaes(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
                                         plaintext);
 #endif
-#ifdef JP_AVX2
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
         case 1:
             return aes_gcm_decrypt_avx2(ctx, iv, iv_len, ciphertext, aad, tag, tag_len,
                                         plaintext);
@@ -130,7 +130,7 @@ void aes_gcm_encrypt_inplace(const aes_context& ctx,
             aes_gcm_encrypt_neon_inplace(ctx, iv, iv_len, buf, data_len, aad, tag, tag_len);
             return;
 #endif
-#ifdef JP_AVX512
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
         case 3:
             aes_gcm_encrypt_avx512_inplace(ctx, iv, iv_len, buf, data_len, aad, tag, tag_len);
             return;
@@ -140,7 +140,7 @@ void aes_gcm_encrypt_inplace(const aes_context& ctx,
             aes_gcm_encrypt_vaes_inplace(ctx, iv, iv_len, buf, data_len, aad, tag, tag_len);
             return;
 #endif
-#ifdef JP_AVX2
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
         case 1:
             aes_gcm_encrypt_avx2_inplace(ctx, iv, iv_len, buf, data_len, aad, tag, tag_len);
             return;
@@ -167,7 +167,7 @@ bool aes_gcm_decrypt_inplace(const aes_context& ctx,
             return aes_gcm_decrypt_neon_inplace(ctx, iv, iv_len, buf, data_len, aad,
                                                 tag, tag_len);
 #endif
-#ifdef JP_AVX512
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
         case 3:
             return aes_gcm_decrypt_avx512_inplace(ctx, iv, iv_len, buf, data_len, aad,
                                                   tag, tag_len);
@@ -177,7 +177,7 @@ bool aes_gcm_decrypt_inplace(const aes_context& ctx,
             return aes_gcm_decrypt_vaes_inplace(ctx, iv, iv_len, buf, data_len, aad,
                                                 tag, tag_len);
 #endif
-#ifdef JP_AVX2
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
         case 1:
             return aes_gcm_decrypt_avx2_inplace(ctx, iv, iv_len, buf, data_len, aad,
                                                 tag, tag_len);

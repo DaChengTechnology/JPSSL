@@ -42,7 +42,7 @@ bool ed25519_batch_verify_cpu(
     const uint8_t* const* pubs, const uint8_t* const* msgs,
     const size_t* msg_lens, const uint8_t* const* sigs, int count);
 
-#ifdef JP_AVX512
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
 bool ed25519_batch_verify_avx512(
     const uint8_t* const* pubs, const uint8_t* const* msgs,
     const size_t* msg_lens, const uint8_t* const* sigs, int count);

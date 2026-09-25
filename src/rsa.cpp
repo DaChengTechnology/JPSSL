@@ -133,9 +133,6 @@ static bool keygen_with_watchdog(int timeout_ms, FN&& work) {
 // table over 6542 small primes (<=65521), half-width Montgomery MR with
 // 40/64 rounds, and a gcd(p-1,e)==1 check. This wrapper only keeps the
 // deadline fallback to the prebuilt prime table.
-// Incremental prime search: delegate to rsa_body.inc kgen_next_prime_
-// (6542-small-prime sieve + half-width MR + gcd(p-1,e)==1 check).
-// Only keeps the deadline fallback to the prebuilt prime table.
 
 // C++14 兼容的编译期分派（替代 if constexpr）：按 K 选择 32/64 位素数例程。
 template <typename BN>

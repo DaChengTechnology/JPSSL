@@ -20,6 +20,8 @@
 #include "chacha20_poly1305.hpp"
 #include "ed25519.hpp"
 #include "hmac.hpp"
+#include "jpssl_optional.hpp"
+#include "jpssl_span.hpp"
 #include "rand_os.hpp"
 #include "rsa.hpp"
 #include "sha1.hpp"
@@ -143,7 +145,7 @@ static jbyteArray native_base64_encode(JNIEnv* env, jclass, jbyteArray data) {
 static jbyteArray native_base64_decode(JNIEnv* env, jclass, jbyteArray data) {
     std::vector<uint8_t> v = to_bytes(env, data);
     std::string s(v.begin(), v.end());
-    std::optional<std::vector<uint8_t>> r = base64_decode(s);
+    jpssl::optional<std::vector<uint8_t>> r = base64_decode(s);
     if (!r) {
         throw_iae(env, "非法 base64 数据");
         return nullptr;
@@ -242,11 +244,11 @@ static void make_aes_context(JNIEnv* env, const std::vector<uint8_t>& key,
         return;
     }
     if (key.size() == 16) {
-        ctx->init(std::span<const uint8_t, 16>(key.data(), 16));
+        ctx->init(jpssl::span<const uint8_t, 16>(key.data(), 16));
     } else if (key.size() == 24) {
-        ctx->init(std::span<const uint8_t, 24>(key.data(), 24));
+        ctx->init(jpssl::span<const uint8_t, 24>(key.data(), 24));
     } else {
-        ctx->init(std::span<const uint8_t, 32>(key.data(), 32));
+        ctx->init(jpssl::span<const uint8_t, 32>(key.data(), 32));
     }
 }
 

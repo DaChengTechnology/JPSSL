@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-namespace jpssl::dtls_examples {
+namespace jpssl { namespace dtls_examples {   // C++14 及以下需展开
 
 using jpssl::dtls::DTLSVersion;
 using jpssl::tls::CipherSuite;
@@ -176,4 +176,4 @@ static void print_session_info(const char* side, jpssl::dtls::dtls_connection& c
                 (unsigned)s.ks_group, (unsigned)s.cipher_suite);
 }
 
-} // namespace jpssl::dtls_examples
+} } // namespace jpssl::dtls_examples

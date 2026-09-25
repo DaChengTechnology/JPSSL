@@ -38,7 +38,7 @@ bool ed448_batch_verify(
     for (int offset = 0; offset < count; offset += bs) {
         int n = (offset + bs <= count) ? bs : (count - offset);
 
-#ifdef JP_AVX512
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
         auto feats = cpu_features::detect();
         if (feats.avx512) {
             if (!detail::ed448_batch_verify_avx512(
@@ -48,7 +48,7 @@ bool ed448_batch_verify(
         }
 #endif
 
-#ifdef JP_AVX2
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
         if (cpu_has_avx2()) {
             if (!detail::ed448_batch_verify_avx2(
                     pubs + offset, msgs + offset, msg_lens + offset, sigs + offset, n))

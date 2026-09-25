@@ -15,7 +15,7 @@
 
 #include "tls.hpp"
 
-namespace jpssl::tls {
+namespace jpssl { namespace tls {   // C++14 及以下：嵌套命名空间定义需展开
 
 /// kTLS 配置/启用结果
 enum class ktls_result {
@@ -58,4 +58,4 @@ ktls_result ktls_export_params(const tls_session& s, ktls_params& out);
 /// 内核负责 TLS 记录封装与加解密（会覆盖用户态对同一 fd 的加解密）。
 ktls_result ktls_enable(const ktls_params& p, int fd, std::string* error = nullptr);
 
-} // namespace jpssl::tls
+} } // namespace jpssl::tls

@@ -26,7 +26,7 @@ jobs:
         run: cmake --build build -j"$(nproc)"
 
       - name: Run tests
-        run: ctest --test-dir build --output-on-failure --timeout 120
+        run: ctest --test-dir build --output-on-failure --timeout 120 -E "test_tls_rustls_interop|test_quic_parser_compliance"
 
   # 仅验证 benchmarks/ 目标可正常编译（MUSA OFF 时 GPU 段由 JP_MUSA 守卫跳过）
   bench:

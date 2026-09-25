@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- **TLS 1.2 / 1.3**：完整握手与记录层，ECDHE/RSA/DHE/PSK 密钥交换、0-RTT 早数据、SNI 多域名证书、RFC 8998 国密套件（TLS_SM4_GCM_SM3）
+- **TLS 1.2 / 1.3**：完整握手与记录层，ECDHE/RSA/DHE/PSK 密钥交换、0-RTT 早数据、SNI 多域名证书、RFC 8998 国密套件（TLS_SM4_GCM_SM3）、kTLS 内核记录层卸载（Linux）
 - **DTLS 1.2 / 1.3**：标准数据报 TLS（RFC 6347 / RFC 9147），cookie、分片/重组、重传/ACK、记录号加密；与 OpenSSL（DTLS 1.2）及 wolfSSL 5.9.2（DTLS 1.2/1.3）双向互操作测试
 - **QUIC v1 / v2**：QUIC 所需 TLS 层支持（RFC 9001 / RFC 9369）——无记录层握手、`quic_transport_parameters` 扩展、Initial/握手/1-RTT 数据包保护密钥、头部保护掩码、varint 编解码；与 OpenSSL QUIC 双向互通，v1/v2 Initial 包通过独立解析器合规校验
 - **对称加密与 AEAD**：AES-128/256（ECB/CBC/GCM）、ChaCha20-Poly1305、SM4（ECB/CBC/GCM/CCM）
@@ -59,6 +59,8 @@
   - [UDP 链接（数据报模式）](#udp-链接数据报模式)
   - [非阻塞模式（事件循环）](#非阻塞模式事件循环)
   - [协程 I/O（C++20）](#协程-ioc20)
+  - [跳过对端证书认证](#跳过对端证书认证)
+  - [kTLS（内核 TLS）](#ktls内核-tls)
 - [国际证书透明（RFC 6962）+ HTTPS 示例](#国际证书透明rfc-6962-https-示例)
   - [修复的缺陷](#修复的缺陷)
 
@@ -119,7 +121,9 @@
 │  ├─ tls13_server.cpp       TLS 1.3 服务端握手│
 │  ├─ tls13_client.cpp       TLS 1.3 客户端握手│
 │  ├─ tls12_server.cpp       TLS 1.2 服务端握手│
-│  └─ tls12_client.cpp       TLS 1.2 客户端握手│
+│  ├─ tls12_client.cpp       TLS 1.2 客户端握手│
+│  ├─ tls_socket.cpp      TLS socket 封装层 (TCP/UDP/非阻塞/协程)│
+│  └─ ktls.cpp            kTLS 内核记录层卸载 (Linux)│
 └──────────────────────────────────────────────────┘
 ```
 
@@ -383,7 +387,7 @@ LD_LIBRARY_PATH=./build ./your_app
 # 生成自签名 X.509 v3 证书 + 私钥 (有效期默认 365 天)
 # 默认输出到 ~/.ssh/cert.der 与 ~/.ssh/key.bin (目录自动创建, 私钥权限 0600)
 jpssl-cert gen --cn example.com --key-type ed25519
-# 支持的密钥类型: ed25519 | ecdsa | sm2 | rsa2048 | ed448
+# 支持的密钥类型: ed25519 | ecdsa | sm2 | rsa2048 | rsa4096 | ed448
 # 用 --days 指定有效期 (gen / tlsgen 均支持, 默认 365 天)
 # 用 --out / --key-out 指定其他位置 (支持 ~ 展开)
 jpssl-cert gen --cn example.com --key-type ed25519 --days 90 --out ~/certs/cert.der --key-out ~/certs/key.bin
@@ -664,7 +668,7 @@ x25519_scalar_mult(shared, alice_priv, bob_pub);
 
 TLS 模块提供完整的 TLS 1.2 和 TLS 1.3 握手流程、记录层加解密、SNI 多域名证书管理、0-RTT 早数据。
 
-支持 AES-128/256-GCM、ChaCha20-Poly1305、AES-128-CCM 等密码套件，以及 Ed25519、ECDSA P-256/P-384/P-521、RSA-2048/4096（含 RSA-PSS SHA-256/384/512）等多种证书签名算法。
+支持 AES-128/256-GCM、ChaCha20-Poly1305、AES-128-CCM 等密码套件，以及 Ed25519、ECDSA P-256/P-384/P-521、RSA-2048/4096（含 PKCS#1 v1.5 与 RSA-PSS 的 SHA-256/384/512）等多种证书签名算法。
 
 ```cpp
 #include "tls.hpp"
@@ -693,6 +697,8 @@ auto rsa_cert = std::make_unique<tls_certificate>();
 rsa_cert->subject_name = "example.net";
 rsa_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
 rsa_keygen(rsa_cert->pub.rsa, rsa_cert->priv.rsa);
+// ── RSA-4096 证书（公开 API 走 from_pem_file 装载，自动填 pub/priv.rsa4096） ──
+// auto rsa4096_cert = tls_certificate::from_pem_file("server-rsa4096.crt", "server-rsa4096.key", &err);
 // ── SM2 证书（RFC 8998 国密 TLS） ──
 auto sm2_cert = std::make_unique<tls_certificate>();
 sm2_cert->subject_name = "example.cn";
@@ -714,6 +720,9 @@ auto cert2 = tls_certificate::from_pem(cert_pem, key_pem);
 // 从 CSR + 私钥加载：subject 与公钥取自 CSR，私钥用于签名
 // cert_data 留空，握手时按 CSR 主体自动生成自签名证书
 auto cert3 = tls_certificate::from_csr_pem_file("server.csr", "server.key", &err);
+// RSA-4096（OpenSSL 生成的 4096 位证书 / 私钥，模数 512 字节）
+auto rsa4096 = tls_certificate::from_pem_file("server-rsa4096.crt", "server-rsa4096.key", &err);
+if (rsa4096) assert(rsa4096->rsa4096);   // 已识别为 RSA-4096
 ```
 
 加载后直接加入 `tls_certificate_manager` 即可用于服务端握手：
@@ -723,7 +732,11 @@ tls_certificate_manager cert_mgr;
 cert_mgr.add_certificate("example.com", std::move(cert));
 ```
 
-支持密钥类型：RSA-2048、Ed25519、Ed448、ECDSA P-256/P-384/P-521、SM2（RSA-4096 私钥暂不支持 TLS 证书签名）。
+支持密钥类型：RSA-2048、RSA-4096、Ed25519、Ed448、ECDSA P-256/P-384/P-521、SM2。
+RSA-4096 证书可直接装载：`from_pem*` / `from_csr*` 会按模数位宽自动识别 2048/4096 并置
+`tls_certificate::rsa4096` 标记，握手时 CertificateVerify（TLS 1.3，RSA-PSS）与
+ServerKeyExchange（TLS 1.2，PKCS#1 v1.5 / RSA-PSS）均输出 512 字节签名；
+TLS 1.2 静态 RSA 套件（RSA 密钥交换）亦支持 512 字节 EncryptedPreMasterSecret 解密。
 
 #### 2. 多域名证书管理（SNI）
 
@@ -1168,7 +1181,10 @@ std::vector<uint8_t> resp; server.recv(resp); // 接收
 > 说明：DTLS 1.3 未实现 HelloRetryRequest 与 Connection ID（RFC 9146）；DTLS 1.2
 > cookie 交换默认关闭（`dtls_session::require_cookie = true` 开启）。
 
-互操作测试：`test_dtls_openssl_interop`（DTLS 1.2 与 OpenSSL 双向互通）、`test_dtls_wolfssl_interop`（DTLS 1.2/1.3 与 wolfSSL 5.9.2 双向互通）；`test_dtls13_openssl_interop` 已在编译期探测 OpenSSL DTLS 1.3 支持，上游实现后自动启用真实互通用例。
+互操作测试：`test_dtls_openssl_interop`（DTLS 1.2 与 OpenSSL 双向互通，含
+ECDHE-RSA-AES128-GCM-SHA256 + RSA-4096 证书的 512 字节签名用例）、
+`test_dtls_wolfssl_interop`（DTLS 1.2/1.3 与 wolfSSL 5.9.2 双向互通）；
+`test_dtls13_openssl_interop` 已在编译期探测 OpenSSL DTLS 1.3 支持，上游实现后自动启用真实互通用例。
 
 ### Ed25519
 
@@ -1382,7 +1398,9 @@ jpssl/
 │   ├── sm4_gcm.hpp              SM4-GCM AEAD (含 AVX2/AVX512 自动分派)
 │   ├── sm4_ccm.hpp              SM4-CCM AEAD
 │   ├── x509.hpp                 X.509 v3 证书 (RFC 5280)
-│   └── tls.hpp                  TLS 1.2/1.3 (含 RFC 8998 + ECDHE)
+│   ├── tls.hpp                  TLS 1.2/1.3 (含 RFC 8998 + ECDHE)
+│   ├── tls_socket.hpp           TLS socket 封装层 (TCP/UDP/非阻塞/协程/kTLS)
+│   └── ktls.hpp                 kTLS (Linux 内核 TLS 记录层卸载)
 ├── src/
 │   ├── aes_cpu.cpp / aes_musa.cpp / aes_gpu.mu
 │   ├── aes_gcm_avx2.cpp / aes_gcm_avx512.cpp / aes_gcm_auto.cpp / aes_gcm_neon.cpp
@@ -1398,6 +1416,8 @@ jpssl/
 │   ├── tls_router.cpp (公共基座 + 版本选择)
 │   ├── tls13_server.cpp / tls13_client.cpp (TLS 1.3 RFC 8446 + RFC 8998)
 │   ├── tls12_server.cpp / tls12_client.cpp (TLS 1.2 RFC 5246)
+│   ├── tls_socket.cpp           TLS socket 封装层 (TCP/UDP/非阻塞/协程)
+│   ├── ktls.cpp                 kTLS (Linux 内核 TLS 记录层卸载)
 │   ├── cmd/
 │   │   ├── jpssl_cert.cpp       X.509 证书命令行工具
 │   │   └── jpssl_crypt.cpp      加解密/哈希命令行工具
@@ -1405,6 +1425,7 @@ jpssl/
 ├── tests/
 │   ├── CMakeLists.txt           独立测试构建 (add_subdirectory(tests))
 │   ├── test_x509.cpp            X.509 v3 证书单元测试
+│   ├── test_ktls.cpp            kTLS 单元测试（16 项）
 │   └── ...                      其余单元测试与 benchmark
 ├── CMakeLists.txt
 └── README.md
@@ -1485,6 +1506,7 @@ ECDSA/SHA-256 的国密证书透明实现（参考 GM/T《证书透明规范》�
 - `tls::tls_listener`：`listen(port)` + `accept(conn, cert_manager)`，
   接受连接并自动完成服务端握手。
 - record 层自动处理半包/粘包、握手消息封装与加密 record 透传。
+- `tls_connection::set_skip_verify(true)`：跳过对端证书认证（自签证书 / 内网测试环境）。仅关闭证书链验证、主机名匹配与服务端 CertificateVerify 校验，TLS 握手与密钥交换照常进行，连接仍可加密收发数据；默认 `false`（不跳过），`trust_store` / `cert_manager` 为 nullptr 时的默认行为不变。
 
 ### 外部 fd 托管
 
@@ -1597,6 +1619,53 @@ ex.run();                                // 驱动：poll 就绪并恢复挂起�
 - `tls_co_executor`：单线程 poll 驱动执行器，多个连接共享；`run_once()` / `run()` 在 socket 就绪时恢复挂起协程。
 - `co_send` / `co_recv` 语义与 `send` / `recv` 一致（自动分片/合并 record、跳过 NewSessionTicket）；使用前需 `set_nonblocking(true)` 并 `attach_co_executor(&ex)`。
 - 可运行示例：`examples/tls_socket/coroutine_echo`（双端协程回环）。
+
+### 跳过对端证书认证
+
+`set_skip_verify(true)` 适用于自签证书 / 内网测试环境：仅关闭证书链验证、
+主机名匹配与服务端 CertificateVerify 校验，TLS 握手与密钥交换照常进行，
+连接仍可加密收发数据。
+
+```cpp
+tls::tls_connection conn;
+conn.set_skip_verify(true);              // 跳过对端证书认证（默认 false）
+if (conn.connect("example.com", 443)) { /* 不验证证书链，直接建立加密连接 */ }
+```
+
+### kTLS（内核 TLS）
+
+`include/ktls.hpp` / `src/ktls.cpp` 提供 **Linux 内核 TLS（kTLS）记录层卸载**：
+握手仍在用户态完成后，把会话密钥通过 `setsockopt(SOL_TCP, TCP_ULP, "tls")` +
+`setsockopt(SOL_TLS, TLS_TX/TLS_RX, &crypto_info)` 交给内核，此后应用数据以
+明文直接 `send/recv`，由内核负责 TLS record 封装与加解密，降低系统调用与
+加解密开销。
+
+- 平台要求：仅 Linux 内核 >= 4.13 且开启 `CONFIG_TLS`；其他平台（Windows /
+  macOS / 不支持的内核）`ktls_is_supported()` 返回 `unsupported`，`enable_ktls()`
+  返回 false 并给出原因，优雅降级，不影响既有 TLS/DTLS 功能。
+- 套件映射：TLS 1.2 / 1.3 的 AES-GCM-128/256、ChaCha20-Poly1305、AES-CCM、
+  SM4-GCM/CCM。
+- 使用方式一（推荐，socket 封装层）：握手完成后调用
+  `tls_connection::enable_ktls(&err)`，成功后 `ktls_active()` 为 true，
+  连接进入明文直通模式：
+
+```cpp
+tls::tls_connection conn;
+if (conn.connect("example.com", 443)) {      // 用户态完成 TLS 1.3 握手
+    std::string err;
+    if (conn.enable_ktls(&err)) {              // 把密钥交给 Linux 内核
+        conn.send("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"); // 明文直通
+    } else {
+        // 内核不支持 kTLS：仍走用户态加解密，功能不受影响
+    }
+}
+```
+
+- 使用方式二（底层 API）：`ktls_is_supported()` 检测支持；
+  `ktls_export_params(session, params)` 从已握手完成的 `tls_session` 导出
+  TX/RX 密钥材料；`ktls_enable(params, fd, &err)` 在已连接、已握手的 TCP
+  fd 上启用内核 TLS。
+- 测试：`tests/test_ktls.cpp`（16 项单元测试，已接入 ctest）。
 
 ## 国际证书透明（RFC 6962）+ HTTPS 示例
 

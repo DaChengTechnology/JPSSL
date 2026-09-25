@@ -20,13 +20,13 @@ void x448_scalar_mult_batch(uint8_t out[][56],
                             int count)
 {
     if (count <= 0) return;
-#if defined(JP_AVX512)
+#if defined(JP_AVX512) && (defined(__x86_64__) || defined(_M_X64))
     if (cpu_has_avx512()) {
         x448_scalar_mult_batch_avx512(out, scalars, points, count);
         return;
     }
 #endif
-#if defined(JP_AVX2)
+#if defined(JP_AVX2) && (defined(__x86_64__) || defined(_M_X64))
     if (cpu_has_avx2()) {
         x448_scalar_mult_batch_avx2(out, scalars, points, count);
         return;

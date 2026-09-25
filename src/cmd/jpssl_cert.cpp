@@ -2,14 +2,14 @@
  * jpssl-cert — X.509 v3 证书生成/查看/验证命令行工具
  *
  * 用法:
- *   jpssl-cert gen    --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048] [--days 365]
+ *   jpssl-cert gen    --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048|rsa4096|ed448] [--days 365]
  *                     [--out ~/.ssh/cert.der] [--key-out ~/.ssh/key.bin]
  *   jpssl-cert info   --cert <file>           (DER 或 PEM)
  *   jpssl-cert key    --key <file>            (私钥 PEM)
  *   jpssl-cert csr    --csr <file>            (CSR PEM)
  *   jpssl-cert verify --cert <leaf.der> --ca <root.der>
  *   jpssl-cert chain  --cert <leaf.der> --ca <root.der> [--ca <inter.der> ...]
- *   jpssl-cert tlsgen --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048] [--days 365]
+ *   jpssl-cert tlsgen --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048|rsa4096|ed448] [--days 365]
  *                     [--out cert.der] [--key-out key.bin]
  */
 
@@ -41,19 +41,19 @@ static void usage() {
     std::printf(R"(jpssl-cert — X.509 v3 证书工具
 
 用法:
-  jpssl-cert gen    --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048] [--days 365]
+  jpssl-cert gen    --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048|rsa4096|ed448] [--days 365]
                     [--out ~/.ssh/cert.der] [--key-out ~/.ssh/key.bin]
   jpssl-cert info   --cert <file>           (DER 或 PEM 证书)
   jpssl-cert key    --key <file>            (私钥 PEM)
   jpssl-cert csr    --csr <file>            (CSR PEM)
   jpssl-cert verify --cert <leaf.der> --ca <root.der> [--ca <inter.der> ...]
   jpssl-cert chain  --cert <leaf.der> --ca <root.der> [--ca <inter.der> ...]
-  jpssl-cert tlsgen --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048]
+  jpssl-cert tlsgen --cn <name> [--key-type ed25519|ecdsa|sm2|rsa2048|rsa4096|ed448]
                     [--days 365] [--out ~/.ssh/cert.der] [--key-out ~/.ssh/key.bin]
 
 选项:
   --cn, --common-name <name>    Subject Common Name
-  --key-type <type>             密钥类型 (默认 ed25519)
+  --key-type <type>             密钥类型 (默认 ed25519; 支持 ed25519, ecdsa, sm2, rsa2048, rsa4096, ed448)
   --days <n>                    有效期天数 (默认 365, gen/tlsgen 均支持)
   --out, --cert <file>          输出/输入 证书文件 (DER 或 PEM; 默认 ~/.ssh/cert.der)
   --key-out <file>              私钥输出文件 (默认 ~/.ssh/key.bin)
@@ -226,13 +226,31 @@ static std::vector<uint8_t> encode_pkcs1_rsa(const rsa_private_key& k) {
     return der::encode_sequence(body);
 }
 
+// PKCS#1 RSAPrivateKey (RFC 8017 3.2) — RSA-4096 变体：
+// n/e/d 模长 512 字节，CRT 参数 p/q/dP/dQ/qInv 各 256 字节；
+// 统一按 512 字节取值后交由 encode_integer 去高位零字节（CRT 参数自动右对齐）。
+static std::vector<uint8_t> encode_pkcs1_rsa4096(const rsa4096_crt_key& k) {
+    std::vector<uint8_t> body;
+    body.push_back(0x02); body.push_back(0x01); body.push_back(0x00);  // version = 0
+    auto add_bn = [&](const rsa4096_bignum& v) {
+        uint8_t buf[512] = {};
+        v.to_bytes(buf);
+        auto iv = der::encode_integer(std::vector<uint8_t>(buf, buf + 512));
+        body.insert(body.end(), iv.begin(), iv.end());
+    };
+    add_bn(k.n); add_bn(k.e); add_bn(k.d);
+    add_bn(k.p); add_bn(k.q); add_bn(k.dP); add_bn(k.dQ); add_bn(k.qInv);
+    return der::encode_sequence(body);
+}
+
 // Encode a private key as PKCS#8 DER. Ed25519/Ed448 use RFC 8410; EC and SM2
 // wrap a SEC1 ECPrivateKey; RSA wraps a PKCS#1 RSAPrivateKey.
-// `rsa` is required only for RSA_2048.
+// `rsa` is required only for RSA_2048, `rsa4096` only for RSA_4096.
 static std::vector<uint8_t> encode_private_key_der(KeyType kt,
                                                    const uint8_t* priv, size_t priv_len,
                                                    const uint8_t* pub, size_t pub_len,
-                                                   const rsa_private_key* rsa) {
+                                                   const rsa_private_key* rsa,
+                                                   const rsa4096_crt_key* rsa4096 = nullptr) {
     switch (kt) {
         case KeyType::Ed25519: {
             if (priv_len < 32) die("Ed25519 私钥长度不足");
@@ -289,6 +307,17 @@ static std::vector<uint8_t> encode_private_key_der(KeyType kt,
             alg.insert(alg.end(), nul.begin(), nul.end());
             return wrap_pkcs8(der::encode_sequence(alg), pkcs1);
         }
+        case KeyType::RSA_4096: {
+            // 算法 OID 与 RSA-2048 相同（rsaEncryption + NULL），仅密钥长度不同
+            if (!rsa4096) die("RSA-4096 私钥参数缺失");
+            std::vector<uint8_t> pkcs1 = encode_pkcs1_rsa4096(*rsa4096);
+            std::vector<uint8_t> alg;
+            auto oid = der::encode_oid(OID_RSA_ENCRYPTION, sizeof(OID_RSA_ENCRYPTION));
+            alg.insert(alg.end(), oid.begin(), oid.end());
+            auto nul = der::encode_tlv(ASN1Tag::NULL_TAG, (const uint8_t*)nullptr, 0);
+            alg.insert(alg.end(), nul.begin(), nul.end());
+            return wrap_pkcs8(der::encode_sequence(alg), pkcs1);
+        }
         default:
             die("不支持的私钥类型");
             return {};
@@ -310,7 +339,8 @@ struct KeyPair {
     KeyType kt;
     std::vector<uint8_t> pub;
     std::vector<uint8_t> priv;
-    rsa_private_key rsa_prv;   // RSA-2048 完整 CRT 参数（编码 PKCS#1 用）
+    rsa_private_key rsa_prv;       // RSA-2048 完整 CRT 参数（编码 PKCS#1 用）
+    rsa4096_crt_key rsa4096_prv;   // RSA-4096 完整 CRT 参数（编码 PKCS#1 用）
 };
 
 static KeyPair gen_keypair(const std::string& type) {
@@ -337,12 +367,22 @@ static KeyPair gen_keypair(const std::string& type) {
         kp.pub[256] = 0x01; kp.pub[257] = 0x00; kp.pub[258] = 0x01;
         kp.priv.resize(256);
         prv.d.to_bytes(kp.priv.data());
+    } else if (type == "rsa4096") {
+        kp.kt = KeyType::RSA_4096;
+        rsa4096_public_key pub; rsa4096_crt_key crt;
+        if (!rsa4096_keygen_crt(pub, crt)) die("RSA-4096 密钥生成失败");
+        kp.rsa4096_prv = crt;
+        kp.pub.resize(515);                      // n(512) || e(3)
+        pub.n.to_bytes(kp.pub.data());
+        kp.pub[512] = 0x01; kp.pub[513] = 0x00; kp.pub[514] = 0x01;
+        kp.priv.resize(512);                     // 私钥仅携带 d（与 RSA-2048 布局一致）
+        crt.d.to_bytes(kp.priv.data());
     } else if (type == "ed448") {
         kp.kt = KeyType::Ed448;
         kp.pub.resize(57); kp.priv.resize(57);
         ed448_keygen(kp.pub.data(), kp.priv.data());
     } else {
-        die("未知密钥类型，支持: ed25519, ecdsa, sm2, rsa2048, ed448");
+        die("未知密钥类型，支持: ed25519, ecdsa, sm2, rsa2048, rsa4096, ed448");
     }
     return kp;
 }
@@ -399,7 +439,8 @@ static void cmd_gen(int argc, char** argv) {
     std::string key_path = prepare_output_path(key_file.c_str());
     write_file(out_path.c_str(), der);
     auto key_der = encode_private_key_der(kp.kt, kp.priv.data(), kp.priv.size(),
-                                          kp.pub.data(), kp.pub.size(), &kp.rsa_prv);
+                                          kp.pub.data(), kp.pub.size(), &kp.rsa_prv,
+                                          &kp.rsa4096_prv);
     std::vector<uint8_t> key_out;
     std::string key_desc = "PKCS#8 PEM";
     if (key_fmt == "der") {
@@ -566,11 +607,17 @@ static void cmd_tlsgen(int argc, char** argv) {
     } else if (key_type == "rsa2048") {
         tls_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
         rsa_keygen(tls_cert->pub.rsa, tls_cert->priv.rsa);
+    } else if (key_type == "rsa4096") {
+        // union 的 rsa4096 成员 + rsa4096 标记：后续签名/编码走 512 字节路径
+        tls_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
+        tls_cert->rsa4096 = true;
+        if (!rsa4096_keygen_crt(tls_cert->pub.rsa4096, tls_cert->priv.rsa4096))
+            die("RSA-4096 密钥生成失败");
     } else if (key_type == "ed448") {
         tls_cert->sig_alg = SignatureAlgorithm::ED448;
         ed448_keygen(tls_cert->pub.ed448, tls_cert->priv.ed448);
     } else {
-        die("未知密钥类型");
+        die("未知密钥类型，支持: ed25519, ecdsa, sm2, rsa2048, rsa4096, ed448");
     }
 
     auto der = tls_make_x509_self_signed(*tls_cert, days);
@@ -581,6 +628,7 @@ static void cmd_tlsgen(int argc, char** argv) {
     KeyType kt;
     const uint8_t* priv = nullptr; size_t priv_len = 0;
     const uint8_t* pub = nullptr; size_t pub_len = 0;
+    const rsa4096_crt_key* rsa4096_prv = nullptr;
     if (key_type == "ed25519") {
         kt = KeyType::Ed25519;
         priv = tls_cert->priv.ed25519; priv_len = 64;
@@ -599,12 +647,15 @@ static void cmd_tlsgen(int argc, char** argv) {
         pub = tls_cert->pub.ed448; pub_len = 57;
     } else if (key_type == "rsa2048") {
         kt = KeyType::RSA_2048;
+    } else if (key_type == "rsa4096") {
+        kt = KeyType::RSA_4096;
+        rsa4096_prv = &tls_cert->priv.rsa4096;
     } else {
-        die("未知密钥类型");
+        die("未知密钥类型，支持: ed25519, ecdsa, sm2, rsa2048, rsa4096, ed448");
         return;
     }
     auto key_der = encode_private_key_der(kt, priv, priv_len, pub, pub_len,
-                                          &tls_cert->priv.rsa);
+                                          &tls_cert->priv.rsa, rsa4096_prv);
     std::vector<uint8_t> key_out;
     std::string key_desc = "PKCS#8 PEM";
     if (key_fmt == "der") {
