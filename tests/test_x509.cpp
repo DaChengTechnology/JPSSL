@@ -473,6 +473,182 @@ void test_cert_rsa() {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  8b. RSA-3072 证书与证书链（回归：叶子 2048 ← 中间 3072 ← 根 4096）
+// ═══════════════════════════════════════════════════════════════════════
+void test_cert_rsa_3072() {
+    std::printf("\n=== X.509 RSA-3072 / 链（2048 ← 3072 ← 4096）===\n");
+
+    rsa4096_public_key root_pub; rsa4096_private_key root_priv;
+    rsa3072_public_key ca_pub;   rsa3072_private_key ca_priv;
+    rsa_public_key leaf_pub;     rsa_private_key leaf_priv;
+    if (!rsa4096_keygen(root_pub, root_priv) ||
+        !rsa3072_keygen(ca_pub, ca_priv) ||
+        !rsa_keygen(leaf_pub, leaf_priv)) {
+        std::printf("  SKIP: RSA keygen failed\n");
+        return;
+    }
+
+    // 模数 n / 私钥 d / SPKI 公钥（n||e）
+    uint8_t root_mod[512], ca_mod[384], leaf_mod[256];
+    uint8_t root_d[512], ca_d[384], leaf_d[256];
+    root_pub.n.to_bytes(root_mod); root_priv.d.to_bytes(root_d);
+    ca_pub.n.to_bytes(ca_mod);     ca_priv.d.to_bytes(ca_d);
+    leaf_pub.n.to_bytes(leaf_mod); leaf_priv.d.to_bytes(leaf_d);
+    std::vector<uint8_t> root_spki(root_mod, root_mod + sizeof(root_mod));
+    std::vector<uint8_t> ca_spki(ca_mod, ca_mod + sizeof(ca_mod));
+    uint8_t leaf_spki[259];
+    memcpy(leaf_spki, leaf_mod, sizeof(leaf_mod));
+    root_spki.push_back(0x01); root_spki.push_back(0x00); root_spki.push_back(0x01);
+    ca_spki.push_back(0x01);   ca_spki.push_back(0x00);   ca_spki.push_back(0x01);
+    leaf_spki[256] = 0x01; leaf_spki[257] = 0x00; leaf_spki[258] = 0x01;
+
+    DistinguishedName root_dn, ca_dn, leaf_dn;
+    root_dn.push_back({std::vector<uint8_t>(OID_CN, OID_CN + sizeof(OID_CN)), "RSA4096 Root"});
+    ca_dn.push_back({std::vector<uint8_t>(OID_CN, OID_CN + sizeof(OID_CN)), "RSA3072 CA"});
+    leaf_dn.push_back({std::vector<uint8_t>(OID_CN, OID_CN + sizeof(OID_CN)), "leaf2048.test"});
+
+    uint64_t now = (uint64_t)time(nullptr);
+    uint8_t s1[8] = {0x11}, s2[8] = {0x22}, s3[8] = {0x33};
+
+    // 1) 根 CA：RSA-4096 自签名
+    x509_builder rb;
+    rb.set_subject(root_dn).set_issuer(root_dn);
+    rb.set_serial(s1, 8);
+    rb.set_validity(now, now + 3650 * 86400);
+    rb.set_key(KeyType::RSA_4096, root_spki.data(), root_spki.size());
+    rb.set_ca(true, 1);
+    rb.set_key_usage(KU_KEY_CERT_SIGN);
+    auto root_cert = rb.build_and_sign(KeyType::RSA_4096, root_d, 512);
+    TEST("4096 根自签验签", root_cert.verify_signature(root_cert));
+
+    // 2) 中间 CA：RSA-3072，由 4096 根签发（跨密钥签名需显式传签名者模数）
+    x509_builder cb;
+    cb.set_subject(ca_dn).set_issuer(root_dn);
+    cb.set_serial(s2, 8);
+    cb.set_validity(now, now + 1825 * 86400);
+    cb.set_key(KeyType::RSA_3072, ca_spki.data(), ca_spki.size());
+    cb.set_ca(true, 0);
+    cb.set_key_usage(KU_KEY_CERT_SIGN);
+    auto ca_cert = cb.build_and_sign(KeyType::RSA_4096, root_d, 512, root_mod, 512);
+    TEST("3072 中间 CA 经 4096 根验签", ca_cert.verify_signature(root_cert));
+
+    // 3) 叶子：RSA-2048，由 3072 中间 CA 签发（线上故障点：k=384 验签）
+    x509_builder lb;
+    lb.set_subject(leaf_dn).set_issuer(ca_dn);
+    lb.set_serial(s3, 8);
+    lb.set_validity(now, now + 365 * 86400);
+    lb.set_key(KeyType::RSA_2048, leaf_spki, sizeof(leaf_spki));
+    lb.set_ca(false);
+    lb.set_key_usage(KU_DIGITAL_SIGNATURE);
+    lb.set_server_auth();
+    lb.add_san_dns("leaf2048.test");
+    auto leaf_cert = lb.build_and_sign(KeyType::RSA_3072, ca_d, 384, ca_mod, 384);
+    TEST("2048 叶子经 3072 中间 CA 验签", leaf_cert.verify_signature(ca_cert));
+
+    // 4) DER 往返：档位判定（256/384/512 三档）与公钥长度
+    auto root_p = x509_cert::from_der(root_cert.to_der());
+    auto ca_p   = x509_cert::from_der(ca_cert.to_der());
+    auto leaf_p = x509_cert::from_der(leaf_cert.to_der());
+    TEST("链 3 张全部解析", root_p && ca_p && leaf_p);
+    if (root_p && ca_p && leaf_p) {
+        TEST("4096 key_type", root_p->key_type == KeyType::RSA_4096);
+        TEST("3072 key_type", ca_p->key_type == KeyType::RSA_3072);
+        TEST("2048 key_type", leaf_p->key_type == KeyType::RSA_2048);
+        TEST("3072 public_key = n||e (387)", ca_p->public_key.size() == 387);
+        TEST("2048 叶子经 3072 验签（解析后）", leaf_p->verify_signature(*ca_p));
+        TEST("3072 中间经 4096 验签（解析后）", ca_p->verify_signature(*root_p));
+
+        // 5) 链验证：root 自签名（root 必须是 CA）
+        std::vector<x509_cert> chain = {*leaf_p, *ca_p, *root_p};
+        TEST("链验证 2048←3072←4096", x509_verify_chain(chain, now).success);
+
+        // 6) 带信任锚的链验证（锚点须与链尾一致）
+        TEST("带锚点链验证", x509_verify_chain_anchored(chain, {*root_p}, now).success);
+        TEST("锚点不匹配被拒绝", !x509_verify_chain_anchored(chain, {*ca_p}, now).success);
+        // 锚点身份匹配：编码差异（此处 version 变化）不影响锚点认定
+        x509_cert enc_diff = *root_p;
+        enc_diff.version = 0;
+        TEST("锚点编码差异仍可匹配", x509_verify_chain_anchored(chain, {enc_diff}, now).success);
+
+        // 7) 负例：叶子签名篡改后必须失败
+        x509_cert tampered = *leaf_p;
+        tampered.signature[0] ^= 0xFF;
+        TEST("叶子签名篡改被拒绝", !tampered.verify_signature(*ca_p));
+    }
+
+    // 8) RSA-4096 × PSS：build_and_sign 只能拿 n/d/e，而 rsassa_pss_sign4096 需要
+    //    CRT 参数（rsa_pss.cpp 无全模幂回退），故此处用 CRT 私钥对 TBS 手工签名后
+    //    回填签名，验证 4096+PSS 的验签路径（k=512 + PSS + SHA-384)。
+    {
+        rsa4096_public_key p4; rsa4096_crt_key k4;
+        if (rsa4096_keygen_crt(p4, k4)) {
+            uint8_t m4[512]; p4.n.to_bytes(m4);
+            std::vector<uint8_t> spki4(m4, m4 + sizeof(m4));
+            spki4.push_back(0x01); spki4.push_back(0x00); spki4.push_back(0x01);
+            x509_builder b4;
+            b4.set_subject(root_dn).set_issuer(root_dn);
+            b4.set_serial(s1, 8);
+            b4.set_validity(now, now + 365 * 86400);
+            b4.set_key(KeyType::RSA_4096, spki4.data(), spki4.size());
+            b4.set_ca(true, 0);
+            b4.cert.sign_key_type = KeyType::RSA_4096;   // sigAlgo 编码用（PSS 参数）
+            b4.cert.sig_is_pss = true;
+            b4.cert.sig_hash_len = 48;
+            b4.cert.signature.clear();
+            auto tbs_holder = x509_cert::from_der(b4.cert.to_der());
+            uint8_t sig4[512];
+            bool signed_ok = tbs_holder &&
+                rsassa_pss_sign4096(k4, tbs_holder->tbs_raw.data(),
+                                    tbs_holder->tbs_raw.size(), sig4, 0, PssHash::SHA384);
+            TEST("4096 PSS/SHA-384 手工签名", signed_ok);
+            b4.cert.signature.assign(sig4, sig4 + sizeof(sig4));
+            auto full4 = x509_cert::from_der(b4.cert.to_der());
+            TEST("4096 PSS/SHA-384 验签", full4 && full4->verify_signature(*full4));
+            TEST("4096 PSS 算法字段", full4 && full4->sig_is_pss && full4->sig_hash_len == 48);
+        }
+    }
+
+    // 9) RSA-3072 全矩阵（PKCS#1 v1.5 / PSS × SHA-256/384/512），2048/4096 抽检 SHA-384
+    struct Profile { KeyType kt; const uint8_t* spki; size_t spki_len;
+                     const uint8_t* d; size_t dlen; const char* label; };
+    const Profile profiles[] = {
+        {KeyType::RSA_2048, leaf_spki, sizeof(leaf_spki), leaf_d, sizeof(leaf_d), "2048"},
+        {KeyType::RSA_3072, ca_spki.data(), ca_spki.size(), ca_d, sizeof(ca_d), "3072"},
+        {KeyType::RSA_4096, root_spki.data(), root_spki.size(), root_d, sizeof(root_d), "4096"},
+    };
+    struct Variant { int hash_len; bool pss; const char* name; };
+    const Variant variants[] = {
+        {32, false, "SHA-256/PKCS1"}, {48, false, "SHA-384/PKCS1"}, {64, false, "SHA-512/PKCS1"},
+        {32, true,  "SHA-256/PSS"},   {48, true,  "SHA-384/PSS"},   {64, true,  "SHA-512/PSS"},
+    };
+    char msg[128];
+    for (const auto& pr : profiles) {
+        for (const auto& v : variants) {
+            if (pr.kt != KeyType::RSA_3072 && v.hash_len != 48) continue;
+            // RSA-4096 PSS 的签名侧需要 CRT 私钥（见下方第 9 项单独验证）
+            if (pr.kt == KeyType::RSA_4096 && v.pss) continue;
+            x509_builder vb;
+            vb.set_subject(ca_dn).set_issuer(ca_dn);
+            vb.set_serial(s2, 8);
+            vb.set_validity(now, now + 365 * 86400);
+            vb.set_key(pr.kt, pr.spki, pr.spki_len);
+            vb.set_ca(true, 0);
+            vb.cert.sig_hash_len = v.hash_len;
+            vb.cert.sig_is_pss = v.pss;
+            auto c = vb.build_and_sign(pr.kt, pr.d, pr.dlen);
+            auto p = x509_cert::from_der(c.to_der());
+            std::snprintf(msg, sizeof(msg), "RSA-%s %s 自签验签", pr.label, v.name);
+            TEST(msg, p && p->verify_signature(*p));
+            std::snprintf(msg, sizeof(msg), "RSA-%s %s 算法字段", pr.label, v.name);
+            TEST(msg, p && p->sig_is_pss == v.pss && p->sig_hash_len == v.hash_len);
+            const x509_cert& other = (pr.kt == KeyType::RSA_4096) ? ca_cert : root_cert;
+            std::snprintf(msg, sizeof(msg), "RSA-%s %s 异密钥验签被拒绝", pr.label, v.name);
+            TEST(msg, p && !p->verify_signature(other));
+        }
+    }
+}
+
 static const char* ED25519_PEM =
     "-----BEGIN PRIVATE KEY-----\n"
     "MC4CAQAwBQYDK2VwBCIEIKfpxpOk0waaIqhDjWytd5JUmUqnUK3J7gRLTd1kaprI\n"
@@ -913,6 +1089,7 @@ int main() {
     test_cert_chain();
     test_tls_x509_integration();
     test_cert_rsa();
+    test_cert_rsa_3072();
     test_pem_cert_read();
     test_private_key_read();
     test_csr_read();

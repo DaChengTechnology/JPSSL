@@ -570,4 +570,48 @@ size_t rsa4096_batch_decrypt(const rsa4096_private_key& key,
     return success;
 }
 
+size_t rsa3072_batch_decrypt(const rsa3072_private_key& key,
+                             const uint8_t* cts, uint8_t* pts, size_t count) {
+    // CRT 批量 (dec_fn 同款), 跨记录 OpenMP 并行
+    // K=48 没有 AVX2/AVX-512 内核 (见 rsa_batch_avx2.cpp / rsa_batch_avx512.cpp 注释),
+    // 全宽路径由 dispatch 内的标量 CIOS 承担。
+    if (key.p.is_zero() || key.q.is_zero()) {
+        mont_ctx3072 mc = rsa3072_mont_init(key.n);
+        int exp_bits = 0;
+        for (int i = 47; i >= 0; --i) {
+            if (key.d.d[i]) {
+                uint64_t t = key.d.d[i];
+                int b = 64;
+                while (t) { t >>= 1; --b; }
+                exp_bits = (i + 1) * 64 - b;
+                break;
+            }
+        }
+        rsa_batch_decrypt_dispatch(key.n.d, key.d.d,
+                                   mc.R2_mod_m.d, mc.R_mod_m.d, mc.m_prime,
+                                   cts, pts, count, 48, exp_bits);
+    } else {
+        rsa3072_crt_key crt;
+        crt.n = key.n; crt.e = key.e; crt.d = key.d;
+        crt.p = key.p; crt.q = key.q; crt.dP = key.dP; crt.dQ = key.dQ; crt.qInv = key.qInv;
+#ifdef _OPENMP
+        #pragma omp parallel for num_threads(4) schedule(static)
+#endif
+        for (long long i = 0; i < (long long)count; ++i) {
+            rsa3072_bignum c = rsa3072_bignum::from_bytes(cts + i * RSA_3072_BYTES, RSA_3072_BYTES), m;
+            RSADP3072(crt, c, m);
+            m.to_bytes(pts + i * RSA_3072_BYTES);
+        }
+    }
+    size_t success = 0;
+    for (size_t i = 0; i < count; ++i) {
+        std::vector<uint8_t> pt;
+        if (pkcs1_unpad(pts + i * RSA_3072_BYTES, RSA_3072_BYTES, pt)) {
+            memmove(pts + success * RSA_3072_BYTES, pts + i * RSA_3072_BYTES, RSA_3072_BYTES);
+            ++success;
+        }
+    }
+    return success;
+}
+
 } // namespace jpssl

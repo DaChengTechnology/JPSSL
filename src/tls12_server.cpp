@@ -36,6 +36,45 @@ void tls12_prf(const uint8_t* secret, size_t secret_len, const char* label, cons
 void tls12_prf_sha384(const uint8_t* secret, size_t secret_len, const char* label, const uint8_t* seed, size_t seed_len, uint8_t* out, size_t out_len);
 std::vector<uint8_t> tls12_psk_premaster(const uint8_t* psk, size_t psk_len, const uint8_t* other, size_t other_len);
 
+// ── RSA 私钥装载 / premaster 解密：按密钥位数分派（2048 / 3072 / 4096）──────
+// 集中在这里，避免各处 if (rsa_bits == 4096) 再漏掉新档位。
+static void tls12_load_session_rsa_key(tls_session& s, const tls_certificate& cert) {
+    switch (cert.rsa_bits) {
+        case 3072:
+            s.rsa3072_key = std::make_shared<jpssl::rsa3072_crt_key>(cert.priv.rsa3072);
+            s.rsa_bits = 3072;
+            break;
+        case 4096:
+            s.rsa4096_key = std::make_shared<jpssl::rsa4096_crt_key>(cert.priv.rsa4096);
+            s.rsa_bits = 4096;
+            break;
+        default:
+            s.rsa_key = std::make_shared<jpssl::rsa_private_key>(cert.priv.rsa);
+            s.rsa_bits = 2048;
+            break;
+    }
+}
+
+// 用证书私钥解密 ClientKeyExchange 的 RSA 加密 premaster（RSAES-PKCS1-v1_5）
+static bool tls12_rsa_decrypt_cert_pms(const tls_certificate& cert, const uint8_t* ct,
+                                std::vector<uint8_t>& pt) {
+    switch (cert.rsa_bits) {
+        case 3072: return rsa3072_crt_decrypt(cert.priv.rsa3072, ct, pt);
+        case 4096: return rsa4096_crt_decrypt(cert.priv.rsa4096, ct, pt);
+        default:   return rsa_decrypt(cert.priv.rsa, ct, pt);
+    }
+}
+
+// 用会话保存的私钥解密 premaster（tls12_process_client_key_exchange）
+static bool tls12_rsa_decrypt_session_pms(const tls_session& s, const uint8_t* ct,
+                                   std::vector<uint8_t>& pt) {
+    switch (s.rsa_bits) {
+        case 3072: return s.rsa3072_key && rsa3072_crt_decrypt(*s.rsa3072_key, ct, pt);
+        case 4096: return s.rsa4096_key && rsa4096_crt_decrypt(*s.rsa4096_key, ct, pt);
+        default:   return s.rsa_key && rsa_decrypt(*s.rsa_key, ct, pt);
+    }
+}
+
 
 // ═════════════════════════════════════════════════════════════════════════
 

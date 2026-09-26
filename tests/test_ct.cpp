@@ -7,6 +7,8 @@
  *   3. SCT / STH serialization round-trips and SM2 signatures
  *   4. Full flow: SM2 CA -> precert -> log add-pre-chain -> SCT ->
  *      finalize_precert -> final cert SCT extraction -> add-chain -> STH
+ *   5. RFC 6962 RSA CT: SHA-256 + RSA-2048 PKCS#1 v1.5
+ *   6. RFC 6962 RSA-3072 CT: 3072 位日志密钥的 LogID(SPKI)/自签证书
  */
 #include "base64.hpp"
 #include "ct.hpp"
@@ -615,6 +617,63 @@ static void test_rsa_flow() {
     TEST("rsa log STH tree size 0", sth3.tree_size == 0);
 }
 
+// ---------------------------------------------------------------------------
+// 6b. RFC 6962 RSA-3072 CT：3072 位日志密钥（384 字节模数 / 384 字节签名）
+//
+// ct.hpp 的 RSA CT API（issue_sct_rsa / verify_sct_rsa / sign_sth_rsa /
+// verify_sth_rsa / ct_log）参数为 rsa_crt_key / rsa_public_key（2048 位）；
+// 3072 位日志密钥沿用同一 RFC 6962 流程：
+//   LogID = SHA-256(SubjectPublicKeyInfo)，SCT/STH 签名 = SHA-256 + RSA PKCS#1 v1.5。
+// 此处按 SPKI/X.509 集成级镜像验证 3072 档（模数 384 字节、签名字节数 384）。
+// ---------------------------------------------------------------------------
+static void test_rsa3072_flow() {
+    std::printf("\n=== RFC 6962 RSA-3072 CT flow ===\n");
+
+    rsa3072_public_key log_pub;
+    rsa3072_crt_key log_priv;
+    TEST("rsa3072 keygen", rsa3072_keygen_crt(log_pub, log_priv));
+
+    // RSA-3072 公钥 raw = n(384 字节) || 0x010001
+    uint8_t raw[387];
+    log_pub.n.to_bytes(raw);
+    raw[384] = 0x01; raw[385] = 0x00; raw[386] = 0x01;
+    auto spki = der::encode_spki(KeyType::RSA_3072, raw, sizeof(raw));
+
+    // SPKI 中模数必须编码为 385 字节 INTEGER（384 + DER 符号字节 0x00）
+    bool mod_ok = false, exp_ok = false;
+    for (size_t i = 0; i + 4 < spki.size(); ++i) {
+        if (spki[i] == 0x02 && spki[i+1] == 0x82 && spki[i+2] == 0x01 &&
+            spki[i+3] == 0x81 && spki[i+4] == 0x00) mod_ok = true;
+        if (spki[i] == 0x02 && spki[i+1] == 0x03 && spki[i+2] == 0x01 &&
+            spki[i+3] == 0x00 && spki[i+4] == 0x01) exp_ok = true;
+    }
+    TEST("rsa3072 SPKI modulus is 385-byte INTEGER", mod_ok);
+    TEST("rsa3072 SPKI exponent is 65537", exp_ok);
+
+    std::array<uint8_t, CT_LOG_ID_SIZE> log_id{};
+    sha256(spki.data(), spki.size(), log_id.data());
+
+    // X.509 集成：3072 位自签日志证书 -> LogID 必须等于 SHA-256(SPKI)
+    x509_builder lb;
+    DistinguishedName log_dn;
+    log_dn.push_back({std::vector<uint8_t>(OID_CN, OID_CN + sizeof(OID_CN)), "CT Log 3072"});
+    lb.set_subject(log_dn).set_issuer(log_dn);
+    uint8_t serial[8] = {0x78, 0, 0, 0, 0, 0, 0, 0};
+    lb.set_serial(serial, 8);
+    uint64_t now = fake_now() / 1000;
+    lb.set_validity(now - 86400, now + 3650 * 86400);
+    lb.set_key(KeyType::RSA_3072, raw, sizeof(raw));
+    lb.set_ca(false);
+    uint8_t d[384];
+    log_priv.d.to_bytes(d);
+    auto log_cert = lb.build_and_sign(KeyType::RSA_3072, d, sizeof(d));
+    TEST("rsa3072 log cert key type", log_cert.key_type == KeyType::RSA_3072);
+    TEST("rsa3072 log cert signature size", log_cert.signature.size() == 384);
+    TEST("rsa3072 log cert self-verify", log_cert.verify_signature(log_cert));
+    TEST("compute_log_id_std(rsa3072 cert) == SHA-256(SPKI)",
+         compute_log_id_std(log_cert) == log_id);
+}
+
 int main() {
     test_base64();
     test_merkle_tree();
@@ -622,6 +681,7 @@ int main() {
     test_full_flow();
     test_std_flow();
     test_rsa_flow();
+    test_rsa3072_flow();
     std::printf("\n%d passed, %d failed\n", pass, fail);
     return fail == 0 ? 0 : 1;
 }

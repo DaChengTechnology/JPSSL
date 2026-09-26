@@ -1045,6 +1045,27 @@ static int test_rsa() {
         std::printf("  4096-bit modpow (e=65537): %.2f ms\n",duration<double,std::milli>(t1-t0).count());
     }
 
+    // 5. 3072-bit 基础验证
+    {
+        rsa3072_bignum n3072=rsa3072_bignum::from_uint64(323);
+        rsa3072_bignum e3072=rsa3072_bignum::from_uint64(7);
+        rsa3072_bignum d3072=rsa3072_bignum::from_uint64(247);
+        rsa3072_bignum m3072=rsa3072_bignum::from_uint64(42);
+        rsa3072_bignum c3072,r3072;
+        bn_modpow(c3072,m3072,e3072,n3072);
+        bn_modpow(r3072,c3072,d3072,n3072);
+        if(!(r3072==m3072)){std::printf("  FAIL: 3072 modpow\n");return 1;}
+        std::printf("  3072-bit modpow round-trip (n=323): PASS\n");
+
+        rsa3072_bignum base=rsa3072_bignum::from_uint64(12345);
+        rsa3072_bignum exp=rsa3072_bignum::from_uint64(65537);
+        rsa3072_bignum mod;for(int i=0;i<48;++i)mod.d[i]=~0ULL;mod.d[47]=0x7FFFFFFFFFFFFFFFULL;
+        auto t0=high_resolution_clock::now();rsa3072_bignum res;
+        bn_modpow(res,base,exp,mod);
+        auto t1=high_resolution_clock::now();
+        std::printf("  3072-bit modpow (e=65537): %.2f ms\n",duration<double,std::milli>(t1-t0).count());
+    }
+
     std::printf("  PASS\n\n");
     return 0;
 }
@@ -1132,6 +1153,40 @@ static int test_batch_rsa() {
         }
     }
     if (failures == 0) std::printf("  4096 batch modpow (x4): PASS\n");
+
+    // 测试 3072-bit batch
+    rsa3072_bignum mod3072, exp3072;
+    for (int i = 0; i < 48; ++i) {
+        mod3072.d[i] = ((uint64_t)rand() << 32) | rand();
+        exp3072.d[i] = ((uint64_t)rand() << 32) | rand();
+    }
+    mod3072.d[0] |= 1;
+    mod3072.d[47] |= (1ULL << 63);
+    exp3072.d[0] |= 1;
+
+    auto mctx3072 = rsa3072_mont_init(mod3072);
+    rsa3072_bignum base3072 = rsa3072_bignum::from_uint64(12345);
+    rsa3072_bignum expected3072;
+    rsa3072_mont_modpow(expected3072, base3072, exp3072, mctx3072, mod3072);
+
+    std::vector<uint8_t> bases3072(4 * 384);
+    std::vector<uint8_t> results3072(4 * 384);
+    for (int i = 0; i < 4; ++i) {
+        base3072.to_bytes(bases3072.data() + i * 384);
+    }
+
+    rsa_batch_decrypt_dispatch(mod3072.d, exp3072.d,
+        mctx3072.R2_mod_m.d, mctx3072.R_mod_m.d, mctx3072.m_prime,
+        bases3072.data(), results3072.data(), 4, 48, 3072);
+
+    for (int i = 0; i < 4; ++i) {
+        rsa3072_bignum got3072 = rsa3072_bignum::from_bytes(results3072.data() + i * 384);
+        if (!(got3072 == expected3072)) {
+            std::printf("  FAIL: 3072 batch modpow result %d mismatch\n", i);
+            ++failures;
+        }
+    }
+    if (failures == 0) std::printf("  3072 batch modpow (x4): PASS\n");
 
     if (failures == 0) std::printf("  PASS\n\n");
     return failures;

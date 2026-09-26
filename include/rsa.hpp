@@ -1,6 +1,6 @@
 #pragma once
 /**
- * rsa.hpp — RSA 公钥加密（2048-bit + 4096-bit 完整支持）
+ * rsa.hpp — RSA 公钥加密（2048 / 3072 / 4096-bit 完整支持）
  */
 #include <cstddef>
 #include <cstdint>
@@ -15,6 +15,7 @@ void secure_rand_bytes(uint8_t* out, size_t len);
 
 inline constexpr size_t RSA_2048_BITS=2048, RSA_2048_WORDS=32, RSA_2048_BYTES=256;
 inline constexpr size_t RSA_4096_BITS=4096, RSA_4096_WORDS=64, RSA_4096_BYTES=512;
+inline constexpr size_t RSA_3072_BITS=3072, RSA_3072_WORDS=48, RSA_3072_BYTES=384;
 inline constexpr size_t RSA_1024_WORDS=16, RSA_1024_LIMBS=32;  // CRT 用 (p/q ≈ 1024 bit)
 
 // ── 大整数（2048-bit） ────────────────────────────────────────────────
@@ -39,6 +40,18 @@ struct alignas(64) rsa4096_bignum { uint64_t d[64];
     static rsa4096_bignum from_bytes(const uint8_t*, size_t len=512);
     void to_bytes(uint8_t*) const;
     static rsa4096_bignum random_odd();
+};
+
+// ── 3072-bit 类型 ─────────────────────────────────────────────────────
+struct alignas(64) rsa3072_bignum { uint64_t d[48];
+    rsa3072_bignum();
+    void zero(); bool is_zero() const; bool is_one() const; int bit_length() const;
+    bool operator==(const rsa3072_bignum&) const; bool operator<(const rsa3072_bignum&) const;
+    bool bit(int) const; void set_bit(int);
+    static rsa3072_bignum from_uint64(uint64_t);
+    static rsa3072_bignum from_bytes(const uint8_t*, size_t len=384);
+    void to_bytes(uint8_t*) const;
+    static rsa3072_bignum random_odd();
 };
 
 // ── 运算（2048-bit） ──────────────────────────────────────────────────
@@ -67,6 +80,19 @@ bool bn_is_prime(const rsa4096_bignum&,int=5);
 bool bn_is_prime_sieved(const rsa4096_bignum&,int=5);
 void bn_modinv(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&);
 
+// ── 运算（3072-bit 重载） ─────────────────────────────────────────────
+void bn_add(rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&);
+void bn_sub(rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&);
+void bn_mul(rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&);
+void bn_divmod(rsa3072_bignum&,rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&);
+void bn_mod(rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&);
+void bn_modpow(rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&);
+void bn_rshift(rsa3072_bignum&,const rsa3072_bignum&,int);
+void bn_lshift(rsa3072_bignum&,const rsa3072_bignum&,int);
+bool bn_is_prime(const rsa3072_bignum&,int=5);
+bool bn_is_prime_sieved(const rsa3072_bignum&,int=5);
+void bn_modinv(rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&);
+
 // ── RSA 密钥 ──────────────────────────────────────────────────────────
 struct rsa_public_key { rsa_bignum n,e; };
 // CRT 参数由 rsa_keygen 生成 (供 rsa_decrypt 的 CRT 快速路径);
@@ -79,6 +105,11 @@ struct rsa4096_public_key { rsa4096_bignum n,e; };
 struct rsa4096_private_key {
     rsa4096_bignum n, d, e;
     rsa4096_bignum p, q, dP, dQ, qInv;
+};
+struct rsa3072_public_key { rsa3072_bignum n,e; };
+struct rsa3072_private_key {
+    rsa3072_bignum n, d, e;
+    rsa3072_bignum p, q, dP, dQ, qInv;
 };
 
 /// @brief CRT 私钥 (RFC 8017 §3.2 RSAPrivateKey)
@@ -94,6 +125,12 @@ struct rsa4096_crt_key {
     rsa4096_bignum dP, dQ;
     rsa4096_bignum qInv;
 };
+struct rsa3072_crt_key {
+    rsa3072_bignum n, e, d;
+    rsa3072_bignum p, q;
+    rsa3072_bignum dP, dQ;
+    rsa3072_bignum qInv;
+};
 
 bool rsa_keygen(rsa_public_key&,rsa_private_key&);
 void rsa_encrypt(const rsa_public_key&,std::span<const uint8_t>,uint8_t*);
@@ -103,9 +140,14 @@ bool rsa4096_keygen(rsa4096_public_key&,rsa4096_private_key&);
 void rsa4096_encrypt(const rsa4096_public_key&,std::span<const uint8_t>,uint8_t*);
 bool rsa4096_decrypt(const rsa4096_private_key&,const uint8_t*,std::vector<uint8_t>&);
 
+bool rsa3072_keygen(rsa3072_public_key&,rsa3072_private_key&);
+void rsa3072_encrypt(const rsa3072_public_key&,std::span<const uint8_t>,uint8_t*);
+bool rsa3072_decrypt(const rsa3072_private_key&,const uint8_t*,std::vector<uint8_t>&);
+
 // ── Montgomery 上下文 ─────────────────────────────────────────────────
 struct mont_ctx { rsa_bignum R_mod_m, R2_mod_m; uint64_t m_prime; };
 struct mont_ctx4096 { rsa4096_bignum R_mod_m, R2_mod_m; uint64_t m_prime; };
+struct mont_ctx3072 { rsa3072_bignum R_mod_m, R2_mod_m; uint64_t m_prime; };
 
 mont_ctx rsa_mont_init(const rsa_bignum&);
 mont_ctx4096 rsa4096_mont_init(const rsa4096_bignum&);
@@ -115,6 +157,7 @@ mont_ctx4096 rsa4096_mont_init_mp(const rsa4096_bignum&);
 /// 半尺寸模幂的预计算上下文 (R_half/R2_half 按模数缓存, m_prime)
 struct mont_half_ctx { rsa_bignum R_half, R2_half; uint64_t m_prime; };
 struct mont_half_ctx4096 { rsa4096_bignum R_half, R2_half; uint64_t m_prime; };
+struct mont_half_ctx3072 { rsa3072_bignum R_half, R2_half; uint64_t m_prime; };
 mont_half_ctx rsa_mont_half_ctx(const rsa_bignum&);
 mont_half_ctx4096 rsa4096_mont_half_ctx(const rsa4096_bignum&);
 /// 半尺寸 Montgomery 乘 (p/q 模幂专用, CRT 合并用)
@@ -128,6 +171,16 @@ void rsa_mont_modpow_win(rsa_bignum&,const rsa_bignum&,const rsa_bignum&,const m
 void rsa4096_mont_modpow(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&,const mont_ctx4096&,const rsa4096_bignum&);
 void rsa4096_mont_modpow_half(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&,const mont_ctx4096&,const rsa4096_bignum&);
 void rsa4096_mont_modpow_win(rsa4096_bignum&,const rsa4096_bignum&,const rsa4096_bignum&,const mont_ctx4096&,const rsa4096_bignum&);
+
+// ── 3072-bit Montgomery (K=48): 与 4096 档同形; 无手写汇编快速路径,
+//    rsa_body.inc 的 mont_mul_ 对 K=48 自动走标量 CIOS ─────────────────
+mont_ctx3072 rsa3072_mont_init(const rsa3072_bignum&);
+mont_ctx3072 rsa3072_mont_init_mp(const rsa3072_bignum&);
+mont_half_ctx3072 rsa3072_mont_half_ctx(const rsa3072_bignum&);
+void rsa3072_mont_mul_half(rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&,uint64_t);
+void rsa3072_mont_modpow(rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&,const mont_ctx3072&,const rsa3072_bignum&);
+void rsa3072_mont_modpow_half(rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&,const mont_ctx3072&,const rsa3072_bignum&);
+void rsa3072_mont_modpow_win(rsa3072_bignum&,const rsa3072_bignum&,const rsa3072_bignum&,const mont_ctx3072&,const rsa3072_bignum&);
 
 // ── 批量 CPU 解密（AVX2/AVX-512 加速）─────────────────────────────────
 /// 批量 RSA-2048 解密：使用同一私钥解密 count 个密文
@@ -143,6 +196,10 @@ size_t rsa4096_batch_decrypt(const rsa4096_private_key&,const uint8_t* cts,uint8
 void rsa_batch_modpow(const rsa_bignum& base,const rsa_bignum& exp,const mont_ctx& mctx,const uint8_t* bases,uint8_t* results,size_t count);
 void rsa4096_batch_modpow(const rsa4096_bignum& mod,const rsa4096_bignum& exp,const mont_ctx4096& mctx,const uint8_t* bases,uint8_t* results,size_t count);
 
+/// 批量 RSA-3072 解密 / 批量模幂 (K=48 无 SIMD 内核, 走标量 CIOS)
+size_t rsa3072_batch_decrypt(const rsa3072_private_key&,const uint8_t* cts,uint8_t* pts,size_t count);
+void rsa3072_batch_modpow(const rsa3072_bignum& mod,const rsa3072_bignum& exp,const mont_ctx3072& mctx,const uint8_t* bases,uint8_t* results,size_t count);
+
 #ifdef JP_MUSA
 // ── GPU ───────────────────────────────────────────────────────────────
 struct musa_rsa_pool;
@@ -151,6 +208,8 @@ void musa_rsa_pool_destroy(musa_rsa_pool*);
 void musa_rsa_batch_decrypt(musa_rsa_pool*,const uint8_t*,uint8_t*,size_t);
 void musa_rsa_batch_modpow(const rsa_bignum&,const rsa_bignum&,const mont_ctx&,const uint8_t*,uint8_t*,size_t);
 void musa4096_rsa_batch_modpow(const rsa4096_bignum&,const rsa4096_bignum&,const mont_ctx4096&,const uint8_t*,uint8_t*,size_t);
+/// RSA-3072 批量模幂: MUSA 无 3072 kernel, 本函数显式走 CPU 实现
+void musa3072_rsa_batch_modpow(const rsa3072_bignum&,const rsa3072_bignum&,const mont_ctx3072&,const uint8_t*,uint8_t*,size_t);
 #endif
 
 // ───────────────────────────────────────────────────────────────────────
@@ -225,4 +284,49 @@ bool rsassa_pkcs1v15_sign(const rsa_crt_key&, const uint8_t* msg, size_t msgLen,
 bool rsassa_pkcs1v15_verify(const rsa_public_key&, const uint8_t* msg, size_t msgLen,
                             const uint8_t* digestPrefix, size_t prefixLen,
                             const uint8_t sig[256]);
+
+// ───────────────────────────────────────────────────────────────────────
+//  RSA-3072 (K=48) 镜像声明: 与 2048/4096 档同形, 命名把 4096 换成 3072
+//  (OAEP / PKCS1-v1_5 原本只有 2048 版本, 其 3072 版本按同一逻辑
+//   以 384 字节模长镜像, 故以 3072 后缀区分)
+// ───────────────────────────────────────────────────────────────────────
+
+/// §4.1/4.2  I2OSP / OS2IP (3072)
+bool I2OSP(const rsa3072_bignum& x, uint8_t* out, size_t xLen);
+rsa3072_bignum OS2IP3072(const uint8_t*, size_t);
+
+/// §5  RSA 原语 (3072)
+void RSAEP3072(const rsa3072_public_key&, const rsa3072_bignum& m, rsa3072_bignum& c);
+void RSADP3072(const rsa3072_crt_key&, const rsa3072_bignum& c, rsa3072_bignum& m);
+void RSASP13072(const rsa3072_crt_key&, const rsa3072_bignum& m, rsa3072_bignum& s);
+void RSAVP13072(const rsa3072_public_key&, const rsa3072_bignum& s, rsa3072_bignum& m);
+
+/// §6  CRT 参数计算 + keygen (强制 n 位宽 3072 + CRT 输出)
+bool rsa3072_keygen_crt(rsa3072_public_key&, rsa3072_crt_key&);
+void compute_crt_params3072(const rsa3072_bignum& p, const rsa3072_bignum& q,
+                            const rsa3072_bignum& d,
+                            rsa3072_bignum& dP, rsa3072_bignum& dQ,
+                            rsa3072_bignum& qInv);
+bool rsa3072_crt_decrypt(const rsa3072_crt_key&, const uint8_t* ct, std::vector<uint8_t>& pt);
+
+/// §7.1  RSAES-OAEP (SHA-256, k = 384)
+bool rsaes_oaep_encrypt3072(const rsa3072_public_key&, std::span<const uint8_t> msg,
+                            const uint8_t* label, size_t labelLen, uint8_t ct[384]);
+bool rsaes_oaep_decrypt3072(const rsa3072_crt_key&, const uint8_t ct[384],
+                            const uint8_t* label, size_t labelLen,
+                            std::vector<uint8_t>& msg);
+
+/// §8.1  RSASSA-PSS (RSA-3072 × SHA-256/384/512; saltLen=0 → saltLen=hLen)
+bool rsassa_pss_sign3072(const rsa3072_crt_key&, const uint8_t* msg, size_t msgLen,
+                         uint8_t sig[384], size_t saltLen=0, PssHash hash=PssHash::SHA256);
+bool rsassa_pss_verify3072(const rsa3072_public_key&, const uint8_t* msg, size_t msgLen,
+                           const uint8_t sig[384], size_t saltLen=0, PssHash hash=PssHash::SHA256);
+
+/// §8.2  RSASSA-PKCS1-v1_5 签名/验证 (RSA-3072)
+bool rsassa_pkcs1v15_sign3072(const rsa3072_crt_key&, const uint8_t* msg, size_t msgLen,
+                              const uint8_t* digestPrefix, size_t prefixLen,
+                              uint8_t sig[384]);
+bool rsassa_pkcs1v15_verify3072(const rsa3072_public_key&, const uint8_t* msg, size_t msgLen,
+                                const uint8_t* digestPrefix, size_t prefixLen,
+                                const uint8_t sig[384]);
 }

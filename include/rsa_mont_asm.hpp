@@ -10,7 +10,7 @@
  *   Windows (MSVC)     : _mulx_u64/_addcarryx_u64 intrinsics
  *                        (需 /arch:AVX2, 由 CMake 按文件启用)
  *
- * 其他 K 值自动 fallback 到 rsa_body.inc 中的标量 C 实现。
+ * 其他 K 值 (含 RSA-3072 的 K=48 / HK=24) 自动 fallback 到 rsa_body.inc 中的标量 C 实现。
  */
 
 #include <cstdint>
@@ -26,7 +26,7 @@ namespace jpssl {
  * @param b   输入, K 个 uint64_t
  * @param m   模数, K 个 uint64_t (奇数)
  * @param mp  预计算: -m[0]^{-1} mod 2^64
- * @param K   limb 数 (32 = 2048-bit, 64 = 4096-bit)
+ * @param K   limb 数 (32 = 2048-bit, 64 = 4096-bit; 48 = 3072-bit 走标量 CIOS)
  *
  * 约束: m 必须为奇数; K ∈ {32, 64} 时走汇编快速路径,
  *       其他值由调用方 fallback 到标量 CIOS。
@@ -47,7 +47,7 @@ void mont_mul_asm(uint64_t* r,
  * @param b   输入, K 个 uint64_t (低 HK 位有效, 高位必须为 0)
  * @param m   模数 p 或 q, K 个 uint64_t (低 HK 位有效, 奇数)
  * @param mp  预计算: -m[0]^{-1} mod 2^64
- * @param HK  limb 数 (16 = 1024-bit, 32 = 2048-bit)
+ * @param HK  limb 数 (16 = 1024-bit, 32 = 2048-bit; 24 = 3072 档半宽走标量 CIOS)
  *
  * 约束: m 必须为奇数; HK ∈ {16, 32} 时走汇编快速路径,
  *       其他值由调用方 fallback 到 rsa_body.inc 标量 CIOS。

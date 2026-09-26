@@ -57,6 +57,19 @@ bool I2OSP(const rsa4096_bignum& x, uint8_t* out, size_t xLen) {
     return true;
 }
 
+bool I2OSP(const rsa3072_bignum& x, uint8_t* out, size_t xLen) {
+    uint8_t tmp[384] = {};
+    x.to_bytes(tmp);
+    size_t leading = 0;
+    while (leading < RSA_3072_BYTES && tmp[leading] == 0) ++leading;
+    size_t actual = RSA_3072_BYTES - leading;
+    if (actual > xLen) return false;
+    size_t pad = xLen - actual;
+    memset(out, 0, pad);
+    memcpy(out + pad, tmp + leading, actual);
+    return true;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  §4.2  OS2IP — Octet-String-to-Integer
 // ═══════════════════════════════════════════════════════════════════════
@@ -67,6 +80,10 @@ rsa_bignum OS2IP2048(const uint8_t* X, size_t xLen) {
 
 rsa4096_bignum OS2IP4096(const uint8_t* X, size_t xLen) {
     return rsa4096_bignum::from_bytes(X, xLen);
+}
+
+rsa3072_bignum OS2IP3072(const uint8_t* X, size_t xLen) {
+    return rsa3072_bignum::from_bytes(X, xLen);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -176,6 +193,13 @@ void RSAEP4096(const rsa4096_public_key& pub, const rsa4096_bignum& m,
     else                          rsa4096_mont_modpow(c, m, pub.e, mctx, pub.n);
 }
 
+void RSAEP3072(const rsa3072_public_key& pub, const rsa3072_bignum& m,
+               rsa3072_bignum& c) {
+    auto mctx = rsa3072_mont_init(pub.n);
+    if (pub.e.bit_length() >= 64) rsa3072_mont_modpow_win(c, m, pub.e, mctx, pub.n);
+    else                          rsa3072_mont_modpow(c, m, pub.e, mctx, pub.n);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  §5.2  RSADP — RSA Decryption Primitive (CRT 版本)
 //  输入: CRT private key, ciphertext representative c
@@ -277,6 +301,52 @@ void RSADP4096(const rsa4096_crt_key& k, const rsa4096_bignum& c,
     bn_add(m, m2, t);
 }
 
+void RSADP3072(const rsa3072_crt_key& k, const rsa3072_bignum& c,
+               rsa3072_bignum& m) {
+    auto mctx_p = rsa3072_mont_init_mp(k.p);
+    rsa3072_bignum m1, m2;
+    auto mctx_q = rsa3072_mont_init_mp(k.q);
+#ifdef _OPENMP
+    // CRT 两路模幂完全独立 → OpenMP 双路并行
+    if (omp_in_parallel()) {
+        rsa3072_mont_modpow_half(m1, c, k.dP, mctx_p, k.p);
+        rsa3072_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q);
+    } else {
+#pragma omp parallel sections num_threads(2)
+    {
+#pragma omp section
+    { rsa3072_mont_modpow_half(m1, c, k.dP, mctx_p, k.p); }
+#pragma omp section
+    { rsa3072_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q); }
+    }
+    }
+#else
+    rsa3072_mont_modpow_half(m1, c, k.dP, mctx_p, k.p);
+    rsa3072_mont_modpow_half(m2, c, k.dQ, mctx_q, k.q);
+#endif
+    // CRT 合并: m = m2 + q * ((m1 - m2) * qInv mod p)
+    // 注意: m2 < q 但 q 可能 > p, 需先归约 m2 mod p 再参与 (m1 - m2) 运算
+    // qInv 部分用半宽 Montgomery 乘 (qInv*R 一次预转 + 一次乘), 替代 3072/1536 除法
+    auto hc_p = rsa3072_mont_half_ctx(k.p);
+    rsa3072_bignum m2p;
+    if (m2 < k.p) m2p = m2; else bn_mod(m2p, m2, k.p);
+    rsa3072_bignum h;
+    if (m1 < m2p) {
+        rsa3072_bignum tmp;
+        bn_sub(tmp, k.p, m2p);
+        bn_add(h, m1, tmp);
+    } else {
+        bn_sub(h, m1, m2p);
+    }
+    rsa3072_bignum qInv_m;
+    rsa3072_mont_mul_half(qInv_m, k.qInv, hc_p.R2_half, k.p, hc_p.m_prime);
+    rsa3072_bignum h2;
+    rsa3072_mont_mul_half(h2, h, qInv_m, k.p, hc_p.m_prime);
+    rsa3072_bignum t;
+    bn_mul(t, k.q, h2);
+    bn_add(m, m2, t);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  §5.3  RSASP1 — RSA Signature Primitive
 //  输入: CRT private key, message representative m
@@ -292,6 +362,11 @@ void RSASP14096(const rsa4096_crt_key& k, const rsa4096_bignum& m,
     RSADP4096(k, m, s);
 }
 
+void RSASP13072(const rsa3072_crt_key& k, const rsa3072_bignum& m,
+                rsa3072_bignum& s) {
+    RSADP3072(k, m, s);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  §5.4  RSAVP1 — RSA Verification Primitive
 //  输入: public key (n, e), signature representative s
@@ -305,6 +380,11 @@ void RSAVP1(const rsa_public_key& pub, const rsa_bignum& s, rsa_bignum& m) {
 void RSAVP14096(const rsa4096_public_key& pub, const rsa4096_bignum& s,
                 rsa4096_bignum& m) {
     RSAEP4096(pub, s, m);
+}
+
+void RSAVP13072(const rsa3072_public_key& pub, const rsa3072_bignum& s,
+                rsa3072_bignum& m) {
+    RSAEP3072(pub, s, m);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -342,6 +422,22 @@ void compute_crt_params4096(const rsa4096_bignum& p,
       mont_ctx4096 mcp = rsa4096_mont_init(p); rsa4096_mont_modpow_half(qInv, q, p2, mcp, p); }
 }
 
+void compute_crt_params3072(const rsa3072_bignum& p,
+                                    const rsa3072_bignum& q,
+                                    const rsa3072_bignum& d,
+                                    rsa3072_bignum& dP,
+                                    rsa3072_bignum& dQ,
+                                    rsa3072_bignum& qInv) {
+    rsa3072_bignum p1, q1;
+    bn_sub(p1, p, rsa3072_bignum::from_uint64(1));
+    bn_sub(q1, q, rsa3072_bignum::from_uint64(1));
+    bn_mod(dP, d, p1);
+    bn_mod(dQ, d, q1);
+    // qInv = q^{-1} mod p: 费马小定理 q^{p-2} mod p (半宽模幂, 比除法欧几里得快)
+    { rsa3072_bignum p2; bn_sub(p2, p, rsa3072_bignum::from_uint64(2));
+      mont_ctx3072 mcp = rsa3072_mont_init(p); rsa3072_mont_modpow_half(qInv, q, p2, mcp, p); }
+}
+
 void rsa_fill_crt(const rsa_private_key& prv, rsa_crt_key& crt) {
     crt.n = prv.n; crt.e = prv.e; crt.d = prv.d;
     // p, q 需要从外部提供 (keygen 时已知)
@@ -365,6 +461,15 @@ bool rsa4096_crt_decrypt(const rsa4096_crt_key& k, const uint8_t* ct,
     prv.n = k.n; prv.d = k.d; prv.e = k.e;
     prv.p = k.p; prv.q = k.q; prv.dP = k.dP; prv.dQ = k.dQ; prv.qInv = k.qInv;
     return rsa4096_decrypt(prv, ct, pt);
+}
+
+bool rsa3072_crt_decrypt(const rsa3072_crt_key& k, const uint8_t* ct,
+                         std::vector<uint8_t>& pt) {
+    // 统一走 dec_fn (rsa3072_decrypt)
+    rsa3072_private_key prv;
+    prv.n = k.n; prv.d = k.d; prv.e = k.e;
+    prv.p = k.p; prv.q = k.q; prv.dP = k.dP; prv.dQ = k.dQ; prv.qInv = k.qInv;
+    return rsa3072_decrypt(prv, ct, pt);
 }
 
 } // namespace jpssl

@@ -1,5 +1,5 @@
 // rsa_pss.cpp - RFC 8017 搂8.1  RSASSA-PSS 签名/验证
-//   支持 RSA-2048 / RSA-4096, SHA-256 / SHA-384 / SHA-512,
+//   支持 RSA-2048 / RSA-3072 / RSA-4096, SHA-256 / SHA-384 / SHA-512,
 //   saltLen 默认 = hLen (RFC 8446 / TLS 1.3 CertificateVerify 要求)
 
 #include "rsa.hpp"
@@ -217,6 +217,55 @@ bool rsassa_pss_verify4096(const rsa4096_public_key& pub, const uint8_t* msg, si
     uint8_t mHash[64];
     if (!pss_hash(hash, msg, msgLen, mHash)) return false;
     return emsa_pss_verify(mHash, hLen, 4095, saltLen, hash, EM, 512);
+}
+
+// ---- 8.1.1  RSASSA-PSS 签名 (RSA-3072) ----
+
+bool rsassa_pss_sign3072(const rsa3072_crt_key& key, const uint8_t* msg, size_t msgLen,
+                         uint8_t sig[384], size_t saltLen, PssHash hash) {
+    size_t hLen = pss_hash_len(hash);
+    if (hLen == 0) return false;
+    if (saltLen == 0) saltLen = hLen;
+    uint8_t mHash[64];
+    if (!pss_hash(hash, msg, msgLen, mHash)) return false;
+    uint8_t EM[384];
+    if (!emsa_pss_encode(mHash, hLen, 3071, saltLen, hash, EM, 384)) return false;
+
+    // 12-13. s = RSASP1(key, OS2IP(EM)); CRT 参数缺失 (PEM 仅 n/d/e) 时回退全模幂
+    rsa3072_bignum embn = rsa3072_bignum::from_bytes(EM, 384);
+    rsa3072_bignum sbn;
+    if (key.p.is_zero() || key.q.is_zero()) {
+        bn_modpow(sbn, embn, key.d, key.n);
+    } else {
+        RSASP13072(key, embn, sbn);
+    }
+    sbn.to_bytes(sig);
+    return true;
+}
+
+// ---- 8.1.2  RSASSA-PSS 验证 (RSA-3072) ----
+
+bool rsassa_pss_verify3072(const rsa3072_public_key& pub, const uint8_t* msg, size_t msgLen,
+                           const uint8_t sig[384], size_t saltLen, PssHash hash) {
+    size_t hLen = pss_hash_len(hash);
+    if (hLen == 0) return false;
+    if (saltLen == 0) saltLen = hLen;
+
+    // 1-3. s = OS2IP(sig), 要求 s < n
+    rsa3072_bignum sbn = rsa3072_bignum::from_bytes(sig, 384);
+    if (!(sbn < pub.n)) return false;
+
+    // 4. m = RSAVP1(pub, s)
+    rsa3072_bignum mbn;
+    RSAVP13072(pub, sbn, mbn);
+
+    // 5. EM = I2OSP(m, emLen)
+    uint8_t EM[384];
+    mbn.to_bytes(EM);
+
+    uint8_t mHash[64];
+    if (!pss_hash(hash, msg, msgLen, mHash)) return false;
+    return emsa_pss_verify(mHash, hLen, 3071, saltLen, hash, EM, 384);
 }
 
 } // namespace jpssl

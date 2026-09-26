@@ -107,6 +107,8 @@ void batch_mont_mul_avx512(uint64_t* r, const uint64_t* a, const uint64_t* b,
     delete[] t;
 }
 
+// 说明: K 为运行时参数, 但 rsa_batch_decrypt_dispatch 因已知越界写缺陷强制走标量
+// 路径 (见该文件注释), 因此本内核目前不被调用; RSA-3072 (K=48) 同样不经由 AVX-512 内核。
 void batch_modpow_avx512(uint64_t* r, const uint64_t* bases,
                          const uint64_t* exp, const uint64_t* mod,
                          const uint64_t* R2, const uint64_t* R_mod_m,

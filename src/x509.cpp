@@ -24,6 +24,23 @@ namespace {
 inline void append(std::vector<uint8_t>& dst, const std::vector<uint8_t>& src) {
     dst.insert(dst.end(), src.begin(), src.end());
 }
+
+// RSA 档位 ← 模数字节长度（RFC 8017 §3.1：2048 / 3072 / 4096）
+inline KeyType rsa_key_type_from_mod_len(size_t mod_len) {
+    if (mod_len <= 256) return KeyType::RSA_2048;
+    if (mod_len <= 384) return KeyType::RSA_3072;
+    return KeyType::RSA_4096;
+}
+// RSA 档位 → 模数 / 签名字节长度
+inline size_t rsa_mod_bytes(KeyType kt) {
+    if (kt == KeyType::RSA_2048) return 256;
+    if (kt == KeyType::RSA_3072) return 384;
+    return 512;
+}
+// PKCS#1 v1.5 DigestInfo 前缀（RFC 8017 §9.2）
+const uint8_t DI_SHA256[] = {0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20};
+const uint8_t DI_SHA384[] = {0x30,0x41,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x02,0x05,0x00,0x04,0x30};
+const uint8_t DI_SHA512[] = {0x30,0x51,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x03,0x05,0x00,0x04,0x40};
 } // anonymous
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -127,12 +144,55 @@ std::vector<uint8_t> encode_name(const DistinguishedName& dn) {
 
 // ── AlgorithmIdentifier ───────────────────────────────────────────────────
 std::vector<uint8_t> encode_sig_algo(KeyType kt) {
+    return encode_sig_algo(kt, 32, false);
+}
+
+// mgf1 (1.2.840.113549.1.1.8)：RSASSA-PSS 的 maskGenAlgorithm（RFC 4055 §2.1）
+inline const uint8_t OID_MGF1[] = {0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x08};
+
+// hash_len: 32/48/64 → SHA-256/384/512（仅 RSA 家族使用）
+// pss: RSA 家族下输出 RSASSA-PSS 及 RFC 4055 §3.1 的 PSS 参数
+std::vector<uint8_t> encode_sig_algo(KeyType kt, int hash_len, bool pss) {
     std::vector<uint8_t> inner;
     switch (kt) {
-        case KeyType::RSA_2048: case KeyType::RSA_4096:
-            append(inner, encode_oid(OID_SHA256_WITH_RSA, sizeof(OID_SHA256_WITH_RSA)));
-            append(inner, encode_null());
+        case KeyType::RSA_2048: case KeyType::RSA_3072: case KeyType::RSA_4096: {
+            if (!pss) {
+                if (hash_len == 48)
+                    append(inner, encode_oid(OID_SHA384_WITH_RSA, sizeof(OID_SHA384_WITH_RSA)));
+                else if (hash_len == 64)
+                    append(inner, encode_oid(OID_SHA512_WITH_RSA, sizeof(OID_SHA512_WITH_RSA)));
+                else
+                    append(inner, encode_oid(OID_SHA256_WITH_RSA, sizeof(OID_SHA256_WITH_RSA)));
+                append(inner, encode_null());
+                break;
+            }
+            // RSASSA-PSS-params ::= SEQUENCE {
+            //     hashAlgorithm    [0] AlgorithmIdentifier DEFAULT sha1,
+            //     maskGenAlgorithm [1] AlgorithmIdentifier DEFAULT mgf1SHA1,
+            //     saltLength       [2] INTEGER             DEFAULT 20 }
+            const uint8_t* hash_oid = OID_SHA256;
+            size_t hash_oid_len = sizeof(OID_SHA256);
+            if (hash_len == 48) { hash_oid = OID_SHA384; hash_oid_len = sizeof(OID_SHA384); }
+            else if (hash_len == 64) { hash_oid = OID_SHA512; hash_oid_len = sizeof(OID_SHA512); }
+            append(inner, encode_oid(OID_RSASSA_PSS, sizeof(OID_RSASSA_PSS)));
+            std::vector<uint8_t> hash_alg;
+            append(hash_alg, encode_oid(hash_oid, hash_oid_len));
+            append(hash_alg, encode_null());
+            std::vector<uint8_t> mgf_hash;
+            append(mgf_hash, encode_oid(hash_oid, hash_oid_len));
+            append(mgf_hash, encode_null());
+            std::vector<uint8_t> mgf_alg;
+            append(mgf_alg, encode_oid(OID_MGF1, sizeof(OID_MGF1)));
+            append(mgf_alg, encode_sequence(mgf_hash));
+            std::vector<uint8_t> salt;
+            salt.push_back((uint8_t)hash_len);
+            std::vector<uint8_t> params;
+            append(params, encode_context(ASN1Tag::CONTEXT0, encode_sequence(hash_alg)));
+            append(params, encode_context(ASN1Tag::CONTEXT1, encode_sequence(mgf_alg)));
+            append(params, encode_context(ASN1Tag::CONTEXT2, encode_integer(salt)));
+            append(inner, encode_sequence(params));
             break;
+        }
         case KeyType::Ed25519:
             append(inner, encode_oid(OID_ED25519, sizeof(OID_ED25519)));
             break;
@@ -159,7 +219,7 @@ std::vector<uint8_t> encode_sig_algo(KeyType kt) {
 std::vector<uint8_t> encode_spki(KeyType kt, const uint8_t* raw_key, size_t raw_key_len) {
     std::vector<uint8_t> alg_id_inner;
     switch (kt) {
-        case KeyType::RSA_2048: case KeyType::RSA_4096:
+        case KeyType::RSA_2048: case KeyType::RSA_3072: case KeyType::RSA_4096:
             append(alg_id_inner, encode_oid(OID_RSA_ENCRYPTION, sizeof(OID_RSA_ENCRYPTION)));
             append(alg_id_inner, encode_null());
             break;
@@ -191,7 +251,7 @@ std::vector<uint8_t> encode_spki(KeyType kt, const uint8_t* raw_key, size_t raw_
     // Public key
     std::vector<uint8_t> pub_der;
     switch (kt) {
-        case KeyType::RSA_2048: case KeyType::RSA_4096: {
+        case KeyType::RSA_2048: case KeyType::RSA_3072: case KeyType::RSA_4096: {
             size_t n_len = raw_key_len - 3;
             std::vector<uint8_t> rsa_seq_body;
             append(rsa_seq_body, encode_integer(std::vector<uint8_t>(raw_key, raw_key + n_len)));
@@ -432,7 +492,7 @@ std::vector<uint8_t> x509_cert::to_der() const {
 
     // serialNumber, signature, issuer
     append(tbs, encode_integer(serial_number));
-    append(tbs, encode_sig_algo(sign_key_type));
+    append(tbs, encode_sig_algo(sign_key_type, sig_hash_len, sig_is_pss));
     append(tbs, encode_name(issuer));
 
     // validity
@@ -454,7 +514,7 @@ std::vector<uint8_t> x509_cert::to_der() const {
     // Certificate: SEQUENCE { tbs, sigAlg, sigValue }
     std::vector<uint8_t> body;
     append(body, encode_sequence(tbs));
-    append(body, encode_sig_algo(sign_key_type));
+    append(body, encode_sig_algo(sign_key_type, sig_hash_len, sig_is_pss));
     append(body, encode_bit_string(signature.data(), signature.size(), 0));
 
     return encode_sequence(body);
@@ -585,7 +645,8 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
             cert.public_key.erase(cert.public_key.begin());
 
         // RSA: decode RSAPublicKey SEQUENCE back to [n || e]
-        if (cert.key_type == KeyType::RSA_2048 || cert.key_type == KeyType::RSA_4096) {
+        if (cert.key_type == KeyType::RSA_2048 || cert.key_type == KeyType::RSA_3072 ||
+            cert.key_type == KeyType::RSA_4096) {
             size_t rsaoff = 0;
             auto rsa_seq = decode_tlv2(cert.public_key.data(), cert.public_key.size(), rsaoff);
             if (rsa_seq && rsa_seq->tag == ASN1Tag::SEQUENCE) {
@@ -600,11 +661,12 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
                     size_t ms = (!m.empty() && m[0] == 0x00) ? 1 : 0;
                     raw.insert(raw.end(), m.begin() + ms, m.end());
                     append(raw, exp_tlv->value);
+                    // 按模数长度判定 RSA 密钥位数（2048 / 3072 / 4096）
+                    size_t mod_len = m.size() - ms;
+                    // 按模数字节长度分档：<=256 → 2048、<=384 → 3072、否则 4096
+                    // （3072 位中间 CA 模数为 384 字节，误判为 4096 会导致验签错位）
+                    cert.key_type = rsa_key_type_from_mod_len(mod_len);
                     cert.public_key = std::move(raw);
-                    // RSA 模数位宽判定密钥类型：DER INTEGER 前导 0x00 已剥离，
-                    // 模数 > 256 字节（2048 bit）即 RSA-4096（RFC 8017 §3.1）
-                    cert.key_type = (m.size() - ms <= RSA_2048_BYTES)
-                                      ? KeyType::RSA_2048 : KeyType::RSA_4096;
                 }
             }
         }
@@ -686,10 +748,20 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
         auto params = decode_tlv2(sig_alg_tlv->value.data(),
                                   sig_alg_tlv->value.size(), po);
         if (!params || params->tag != (ASN1Tag)0x30) return 32;
+        // RFC 4055 §3.1: RSASSA-PSS-params {
+        //     hashAlgorithm [0] AlgorithmIdentifier DEFAULT sha1, ... }
+        // [0] 为显式标签，其 value 才是 AlgorithmIdentifier（SEQUENCE）；
+        // 同时兼容省略 [0] 包装（SEQUENCE { SEQUENCE { OID } }）的写法。
         size_t ho = 0;
         auto hash_seq =
             decode_tlv2(params->value.data(), params->value.size(), ho);
-        if (!hash_seq || hash_seq->tag != (ASN1Tag)0x30) return 32;
+        if (!hash_seq) return 32;
+        if (hash_seq->tag == ASN1Tag::CONTEXT0) {
+            size_t ao = 0;
+            hash_seq = decode_tlv2(hash_seq->value.data(), hash_seq->value.size(), ao);
+            if (!hash_seq) return 32;
+        }
+        if (hash_seq->tag != (ASN1Tag)0x30) return 32;
         size_t oo = 0;
         auto hoid = decode_tlv2(hash_seq->value.data(),
                                 hash_seq->value.size(), oo);
@@ -705,12 +777,17 @@ std::optional<x509_cert> x509_cert::from_der(const uint8_t* data, size_t len) {
         auto sa_oid_tlv = decode_tlv2(sig_alg_tlv->value.data(), sig_alg_tlv->value.size(), saoff);
         if (sa_oid_tlv) {
             auto sa_oid = tlv_to_oid(*sa_oid_tlv);
-            if (oid_equal(sa_oid, OID_SHA256_WITH_RSA, sizeof(OID_SHA256_WITH_RSA))) cert.sign_key_type = KeyType::RSA_2048;
-            else if (oid_equal(sa_oid, OID_SHA384_WITH_RSA, sizeof(OID_SHA384_WITH_RSA))) {
-                cert.sign_key_type = KeyType::RSA_4096;
+            // RSA 家族（PKCS#1 v1.5 / PSS）统一标记为 RSA_2048：
+            // sign_key_type 只表示“签名算法族 + 哈希”，键长由 key_type /
+            // 实际模数字节数决定；sha384/sha512WithRSA 不得映射为 RSA_4096。
+            if (oid_equal(sa_oid, OID_SHA256_WITH_RSA, sizeof(OID_SHA256_WITH_RSA))) {
+                cert.sign_key_type = KeyType::RSA_2048;
+                cert.sig_hash_len = 32;
+            } else if (oid_equal(sa_oid, OID_SHA384_WITH_RSA, sizeof(OID_SHA384_WITH_RSA))) {
+                cert.sign_key_type = KeyType::RSA_2048;
                 cert.sig_hash_len = 48;
             } else if (oid_equal(sa_oid, OID_SHA512_WITH_RSA, sizeof(OID_SHA512_WITH_RSA))) {
-                cert.sign_key_type = KeyType::RSA_4096;
+                cert.sign_key_type = KeyType::RSA_2048;
                 cert.sig_hash_len = 64;
             }
             else if (oid_equal(sa_oid, OID_RSASSA_PSS, sizeof(OID_RSASSA_PSS))) {
@@ -860,45 +937,36 @@ bool x509_cert::verify_signature(const x509_cert& issuer) const {
     }
 
     switch (sign_key_type) {
-        case KeyType::RSA_2048: case KeyType::RSA_4096: {
+        case KeyType::RSA_2048: case KeyType::RSA_3072: case KeyType::RSA_4096: {
             // 按证书签名算法选择哈希（RFC 8017 PKCS#1 v1.5）：
             // 默认 SHA-256；from_der 对 sha384/sha512WithRSAEncryption 设置
             // sig_hash_len=48/64（与 PSS 分支共用该字段）。
             uint8_t hash[64];
             size_t hash_len = 32;
-            const uint8_t* di = nullptr;
-            size_t di_len = 0;
+            const uint8_t* di = DI_SHA256;
+            size_t di_len = sizeof(DI_SHA256);
             if (sig_hash_len == 48) {
                 sha384(tbs_data, tbs_len, hash);
-                static const uint8_t SHA384_DI[] = {
-                    0x30,0x41,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,
-                    0x65,0x03,0x04,0x02,0x02,0x05,0x00,0x04,0x30};
-                di = SHA384_DI;
-                di_len = sizeof(SHA384_DI);
+                di = DI_SHA384;
+                di_len = sizeof(DI_SHA384);
                 hash_len = 48;
             } else if (sig_hash_len == 64) {
                 sha512(tbs_data, tbs_len, hash);
-                static const uint8_t SHA512_DI[] = {
-                    0x30,0x51,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,
-                    0x65,0x03,0x04,0x02,0x03,0x05,0x00,0x04,0x40};
-                di = SHA512_DI;
-                di_len = sizeof(SHA512_DI);
+                di = DI_SHA512;
+                di_len = sizeof(DI_SHA512);
                 hash_len = 64;
             } else {
                 sha256_ctx ctx;
                 sha256_init(&ctx);
                 sha256_update(&ctx, tbs_data, tbs_len);
                 sha256_final(&ctx, hash);
-                static const uint8_t SHA256_DI[] = {
-                    0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,
-                    0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20};
-                di = SHA256_DI;
-                di_len = sizeof(SHA256_DI);
             }
+            // 模长取**实际值**：public_key = n || e（e 固定 3 字节 0x010001），
+            // 不按密钥档位猜测长度——3072 位为 384 字节，按 512 字节读取会整体错位。
             const size_t k = issuer.public_key.size() > 3
                                  ? issuer.public_key.size() - 3
                                  : 0;
-            if (k != 256 && k != 512) return false;
+            if (k != 256 && k != 384 && k != 512) return false;
             if (signature.size() < k) return false;
             if (sig_is_pss) {
                 PssHash ph = PssHash::SHA256;
@@ -911,13 +979,20 @@ bool x509_cert::verify_signature(const x509_cert& issuer) const {
                     return rsassa_pss_verify(pub, tbs_data, tbs_len,
                                              signature.data(), 0, ph);
                 }
+                if (k == 384) {
+                    rsa3072_public_key pub;
+                    pub.n = rsa3072_bignum::from_bytes(issuer.public_key.data(), 384);
+                    pub.e = rsa3072_bignum::from_uint64(65537);
+                    return rsassa_pss_verify3072(pub, tbs_data, tbs_len,
+                                                 signature.data(), 0, ph);
+                }
                 rsa4096_public_key pub;
                 pub.n = rsa4096_bignum::from_bytes(issuer.public_key.data(), 512);
                 pub.e = rsa4096_bignum::from_uint64(65537);
                 return rsassa_pss_verify4096(pub, tbs_data, tbs_len,
                                              signature.data(), 0, ph);
             }
-            // RSASSA-PKCS1-v1_5（2048/4096）
+            // RSASSA-PKCS1-v1_5（2048 / 3072 / 4096）
             auto pkcs1_check = [&](const uint8_t* dec, size_t kk) {
                 if (dec[0] != 0x00 || dec[1] != 0x01) return false;
                 size_t pos = 2;
@@ -935,6 +1010,15 @@ bool x509_cert::verify_signature(const x509_cert& issuer) const {
                 rsa_bignum decrypted; bn_modpow(decrypted, sig_bn, e, n);
                 uint8_t dec[256] = {}; decrypted.to_bytes(dec);
                 return pkcs1_check(dec, 256);
+            }
+            if (k == 384) {
+                // RSA-3072：384 字节模数/签名（此前误按 512 字节读取导致链验证失败）
+                rsa3072_bignum n = rsa3072_bignum::from_bytes(issuer.public_key.data(), 384);
+                rsa3072_bignum e = rsa3072_bignum::from_uint64(65537);
+                rsa3072_bignum sig_bn = rsa3072_bignum::from_bytes(signature.data(), 384);
+                rsa3072_bignum decrypted; bn_modpow(decrypted, sig_bn, e, n);
+                uint8_t dec[384] = {}; decrypted.to_bytes(dec);
+                return pkcs1_check(dec, 384);
             }
             rsa4096_bignum n = rsa4096_bignum::from_bytes(issuer.public_key.data(), 512);
             rsa4096_bignum e = rsa4096_bignum::from_uint64(65537);
@@ -988,7 +1072,9 @@ bool x509_cert::verify_signature(const x509_cert& issuer) const {
 // ═══════════════════════════════════════════════════════════════════════
 x509_cert x509_builder::build_and_sign(KeyType sign_key_type,
                                         const uint8_t* sign_priv_data,
-                                        size_t sign_priv_len) {
+                                        size_t sign_priv_len,
+                                        const uint8_t* sign_modulus,
+                                        size_t sign_modulus_len) {
     cert.sign_key_type = sign_key_type;
     cert.signature.clear();
 
@@ -1003,44 +1089,93 @@ x509_cert x509_builder::build_and_sign(KeyType sign_key_type,
     const uint8_t* tbs_data = cert_tlv->value.data();
     size_t tbs_len = inner_off;
 
-    // 签名缓冲：RSA-4096 签名为 512 字节（ECDSA/SM2 DER 签名更短），
-    // 按最大签名长度预留，避免 RSA-4096 自签名证书发生栈溢出
     uint8_t sig_buf[512]; size_t sig_len = 0;
 
     switch (sign_key_type) {
-        case KeyType::RSA_2048: case KeyType::RSA_4096: {
-            uint8_t hash[32];
-            sha256_ctx ctx; sha256_init(&ctx); sha256_update(&ctx, tbs_data, tbs_len); sha256_final(&ctx, hash);
-            static const uint8_t SHA256_DI[] = {0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20};
-            size_t di_len = sizeof(SHA256_DI);
-            // 模数长度由证书公钥决定（RSA-2048 → 256 字节，RSA-4096 → 512 字节）：
-            // PKCS#1 v1.5 填充与模幂均按 k 字节进行，避免 RSA-4096 写穿 256 字节缓冲
-            size_t k = cert.public_key.size() > 3 ? cert.public_key.size() - 3 : 0;
-            if (k != RSA_2048_BYTES && k != RSA_4096_BYTES) break;
-            if (sign_priv_len > k) break;
-            size_t pad_len = k - 3 - di_len - 32;
-            if (pad_len == 0) break;
-            uint8_t padded[RSA_4096_BYTES];
-            memset(padded, 0, k);
-            padded[0] = 0x00; padded[1] = 0x01;
-            memset(padded + 2, 0xFF, pad_len);
-            padded[2 + pad_len] = 0x00;
-            memcpy(padded + 2 + pad_len + 1, SHA256_DI, di_len);
-            memcpy(padded + 2 + pad_len + 1 + di_len, hash, 32);
-            if (k == RSA_2048_BYTES) {
-                rsa_bignum m = rsa_bignum::from_bytes(padded, k);
-                rsa_bignum d = rsa_bignum::from_bytes(sign_priv_data, sign_priv_len);
-                rsa_bignum n = rsa_bignum::from_bytes(cert.public_key.data(), k);
-                rsa_bignum s; bn_modpow(s, m, d, n);
-                s.to_bytes(sig_buf);
+        case KeyType::RSA_2048: case KeyType::RSA_3072: case KeyType::RSA_4096: {
+            // 密钥档位 → 模数 / 签名字节数（256 / 384 / 512）
+            const size_t k = rsa_mod_bytes(sign_key_type);
+            // 签名者模数：CA 签发他人证书时必须显式传入 sign_modulus（n 的原始
+            // 大端字节，长度 == k）；缺省回退 cert.public_key（自签名，n || e）。
+            const uint8_t* mod = nullptr;
+            if (sign_modulus && sign_modulus_len == k)
+                mod = sign_modulus;
+            else if (cert.public_key.size() == k + 3)
+                mod = cert.public_key.data();
+            else
+                return cert;  // 模数缺失或与档位不符：返回未签名证书
+            // 哈希：cert.sig_hash_len → SHA-256(32) / SHA-384(48) / SHA-512(64)
+            uint8_t hash[64];
+            size_t hash_len = 32;
+            const uint8_t* di = DI_SHA256;
+            size_t di_len = sizeof(DI_SHA256);
+            if (cert.sig_hash_len == 48) {
+                sha384(tbs_data, tbs_len, hash);
+                di = DI_SHA384; di_len = sizeof(DI_SHA384); hash_len = 48;
+            } else if (cert.sig_hash_len == 64) {
+                sha512(tbs_data, tbs_len, hash);
+                di = DI_SHA512; di_len = sizeof(DI_SHA512); hash_len = 64;
             } else {
-                rsa4096_bignum m = rsa4096_bignum::from_bytes(padded, k);
-                rsa4096_bignum d = rsa4096_bignum::from_bytes(sign_priv_data, sign_priv_len);
-                rsa4096_bignum n = rsa4096_bignum::from_bytes(cert.public_key.data(), k);
-                rsa4096_bignum s; bn_modpow(s, m, d, n);
-                s.to_bytes(sig_buf);
+                sha256_ctx ctx; sha256_init(&ctx);
+                sha256_update(&ctx, tbs_data, tbs_len); sha256_final(&ctx, hash);
             }
-            sig_len = k;
+            if (cert.sig_is_pss) {
+                // RSA-PSS（RFC 8017 §8.1）：p/q 为空 → RSASP1 内部回退全模幂
+                PssHash ph = PssHash::SHA256;
+                if (hash_len == 48) ph = PssHash::SHA384;
+                else if (hash_len == 64) ph = PssHash::SHA512;
+                if (k == 256) {
+                    rsa_crt_key key;
+                    key.n = rsa_bignum::from_bytes(mod, 256);
+                    key.e = rsa_bignum::from_uint64(65537);
+                    key.d = rsa_bignum::from_bytes(sign_priv_data, sign_priv_len);
+                    if (!rsassa_pss_sign(key, tbs_data, tbs_len, sig_buf, 0, ph)) return cert;
+                    sig_len = 256;
+                    break;
+                }
+                if (k == 384) {
+                    rsa3072_crt_key key;
+                    key.n = rsa3072_bignum::from_bytes(mod, 384);
+                    key.e = rsa3072_bignum::from_uint64(65537);
+                    key.d = rsa3072_bignum::from_bytes(sign_priv_data, sign_priv_len);
+                    if (!rsassa_pss_sign3072(key, tbs_data, tbs_len, sig_buf, 0, ph)) return cert;
+                    sig_len = 384;
+                    break;
+                }
+                // RSA-4096 PSS：rsassa_pss_sign4096 只走 CRT 路径（无 n/d/e 全模幂
+                // 回退，2048/3072 的 rsassa_pss_sign(_3072) 才有），本接口只能提供
+                // n/d/e → 返回未签名证书（调用方可用 CRT 私钥自行签名后回填）。
+                return cert;
+            }
+            // RSASSA-PKCS1-v1_5：EM = 0x00 || 0x01 || PS(0xFF...) || 0x00 || DigestInfo
+            size_t pad_len = k - 3 - di_len - hash_len;
+            uint8_t em[512];
+            em[0] = 0x00; em[1] = 0x01;
+            memset(em + 2, 0xFF, pad_len);
+            em[2 + pad_len] = 0x00;
+            memcpy(em + 2 + pad_len + 1, di, di_len);
+            memcpy(em + 2 + pad_len + 1 + di_len, hash, hash_len);
+            if (k == 256) {
+                rsa_bignum m = rsa_bignum::from_bytes(em, 256);
+                rsa_bignum d = rsa_bignum::from_bytes(sign_priv_data, sign_priv_len);
+                rsa_bignum n = rsa_bignum::from_bytes(mod, 256);
+                rsa_bignum s; bn_modpow(s, m, d, n);
+                s.to_bytes(sig_buf); sig_len = 256;
+                break;
+            }
+            if (k == 384) {
+                rsa3072_bignum m = rsa3072_bignum::from_bytes(em, 384);
+                rsa3072_bignum d = rsa3072_bignum::from_bytes(sign_priv_data, sign_priv_len);
+                rsa3072_bignum n = rsa3072_bignum::from_bytes(mod, 384);
+                rsa3072_bignum s; bn_modpow(s, m, d, n);
+                s.to_bytes(sig_buf); sig_len = 384;
+                break;
+            }
+            rsa4096_bignum m = rsa4096_bignum::from_bytes(em, 512);
+            rsa4096_bignum d = rsa4096_bignum::from_bytes(sign_priv_data, sign_priv_len);
+            rsa4096_bignum n = rsa4096_bignum::from_bytes(mod, 512);
+            rsa4096_bignum s; bn_modpow(s, m, d, n);
+            s.to_bytes(sig_buf); sig_len = 512;
             break;
         }
         case KeyType::Ed25519:
@@ -1105,6 +1240,59 @@ verify_result x509_verify_chain(const std::vector<x509_cert>& chain, uint64_t no
         }
     }
     r.success = true;
+    return r;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  带信任锚的链验证（支持交叉签根）
+// ═══════════════════════════════════════════════════════════════════════
+namespace {
+// 证书身份比较（RFC 5280 §7.1：serial 标识证书；另比 issuer/subject 与公钥，
+// 使锚点匹配不受重编码差异（扩展顺序、DN 字符串类型等）影响）
+bool same_cert_identity(const x509_cert& a, const x509_cert& b) {
+    if (a.serial_number != b.serial_number) return false;
+    if (a.public_key != b.public_key) return false;
+    if (der::encode_name(a.subject) != der::encode_name(b.subject)) return false;
+    return der::encode_name(a.issuer) == der::encode_name(b.issuer);
+}
+} // anonymous
+
+verify_result x509_verify_chain_anchored(const std::vector<x509_cert>& chain,
+                                        const std::vector<x509_cert>& anchors,
+                                        uint64_t now_unix) {
+    verify_result r;
+    if (chain.empty()) { r.error = "empty chain"; return r; }
+    if (now_unix == 0) now_unix = (uint64_t)time(nullptr);
+
+    // 链内逐跳验签（链尾及以上由信任锚决定，不做自签名校验）
+    for (size_t i = 0; i < chain.size(); ++i) {
+        if (!chain[i].is_valid_at(now_unix)) { r.error = "expired"; return r; }
+        if (i + 1 < chain.size() && !chain[i].verify_signature(chain[i + 1])) {
+            r.error = "sig fail";
+            return r;
+        }
+    }
+    if (!chain.back().is_ca()) { r.error = "root not CA"; return r; }
+
+    if (anchors.empty()) {
+        // 无显式锚点：链尾必须自签名（等价 x509_verify_chain）
+        if (!chain.back().verify_signature(chain.back())) {
+            r.error = "root self-sig fail";
+            return r;
+        }
+        r.success = true;
+        return r;
+    }
+    // RFC 5280 §6.1.1(d)：信任锚证书本身不属于验证路径，其自签名不做校验，
+    // 因此交叉签根（由外部 CA 签发）也可以作为锚点；此处要求链尾与某个锚点一致。
+    const auto tail_der = chain.back().to_der();
+    for (const auto& a : anchors) {
+        if (a.to_der() == tail_der || same_cert_identity(a, chain.back())) {
+            r.success = true;
+            return r;
+        }
+    }
+    r.error = "chain not anchored";
     return r;
 }
 
@@ -1361,9 +1549,9 @@ std::optional<private_key> parse_pkcs1_rsa(const std::vector<uint8_t>& der) {
     if (idx < 4 || n.empty() || e.empty() || d.empty()) return std::nullopt;
 
     private_key key;
-    key.key_type = (n.size() <= 256) ? KeyType::RSA_2048 : KeyType::RSA_4096;
-    // d 固定 256/512 字节
-    size_t dsz = (key.key_type == KeyType::RSA_2048) ? 256 : 512;
+    key.key_type = rsa_key_type_from_mod_len(n.size());
+    // d 固定 256/384/512 字节
+    size_t dsz = rsa_mod_bytes(key.key_type);
     key.priv.assign(dsz, 0);
     if (d.size() <= dsz) memcpy(key.priv.data() + dsz - d.size(), d.data(), d.size());
     else return std::nullopt;
@@ -1659,27 +1847,25 @@ std::optional<csr> csr::from_der(const uint8_t* data, size_t len) {
              out.key_type == KeyType::ECDSA_P521 || out.key_type == KeyType::SM2)
             && !out.public_key.empty() && out.public_key[0] == 0x04)
             out.public_key.erase(out.public_key.begin());
-        // RSA: 还原为 [n||e]
-        if (out.key_type == KeyType::RSA_2048 || out.key_type == KeyType::RSA_4096) {
+        // RSA: 还原为 [n||e]，并按实际模长分档（2048 / 3072 / 4096）
+        if (out.key_type == KeyType::RSA_2048 || out.key_type == KeyType::RSA_3072 ||
+            out.key_type == KeyType::RSA_4096) {
             size_t rsaoff = 0;
             auto rsa_seq = decode_tlv2(out.public_key.data(), out.public_key.size(), rsaoff);
             if (rsa_seq && rsa_seq->tag == ASN1Tag::SEQUENCE) {
-                // rsa_seq->value 是新 buffer，内部偏移必须从 0 重新开始
-                // （不能复用 rsaoff，此时它指向 public_key 中 SEQUENCE 之后）
-                size_t inner_off = 0;
-                auto mod_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), inner_off);
-                auto exp_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), inner_off);
+                // 注意：rsa_seq->value 是新 buffer，offset 必须从 0 重新开始，
+                // 不能复用解析外层 SEQUENCE 后的 rsaoff（此时指向 public_key 末尾）
+                size_t inner = 0;
+                auto mod_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), inner);
+                auto exp_tlv = decode_tlv2(rsa_seq->value.data(), rsa_seq->value.size(), inner);
                 if (mod_tlv && exp_tlv && mod_tlv->tag == ASN1Tag::INTEGER && exp_tlv->tag == ASN1Tag::INTEGER) {
                     std::vector<uint8_t> raw;
                     const auto& m = mod_tlv->value;
                     size_t ms = (!m.empty() && m[0] == 0x00) ? 1 : 0;
                     raw.insert(raw.end(), m.begin() + ms, m.end());
                     append(raw, exp_tlv->value);
+                    out.key_type = rsa_key_type_from_mod_len(m.size() - ms);
                     out.public_key = std::move(raw);
-                    // RSA 模数位宽判定密钥类型：DER INTEGER 前导 0x00 已剥离，
-                    // 模数 > 256 字节（2048 bit）即 RSA-4096（RFC 8017 §3.1）
-                    out.key_type = (m.size() - ms <= RSA_2048_BYTES)
-                                      ? KeyType::RSA_2048 : KeyType::RSA_4096;
                 }
             }
         }
@@ -1692,8 +1878,10 @@ std::optional<csr> csr::from_der(const uint8_t* data, size_t len) {
         auto sa_oid_tlv = decode_tlv2(sig_alg_tlv->value.data(), sig_alg_tlv->value.size(), saoff);
         if (sa_oid_tlv) {
             auto sa_oid = tlv_to_oid(*sa_oid_tlv);
+            // RSA 家族统一标记为 RSA_2048（键长由 key_type / 实际模数字节数决定）
             if (oid_equal(sa_oid, OID_SHA256_WITH_RSA, sizeof(OID_SHA256_WITH_RSA))) out.sign_key_type = KeyType::RSA_2048;
-            else if (oid_equal(sa_oid, OID_SHA384_WITH_RSA, sizeof(OID_SHA384_WITH_RSA))) out.sign_key_type = KeyType::RSA_4096;
+            else if (oid_equal(sa_oid, OID_SHA384_WITH_RSA, sizeof(OID_SHA384_WITH_RSA))) out.sign_key_type = KeyType::RSA_2048;
+            else if (oid_equal(sa_oid, OID_SHA512_WITH_RSA, sizeof(OID_SHA512_WITH_RSA))) out.sign_key_type = KeyType::RSA_2048;
             else if (oid_equal(sa_oid, OID_RSASSA_PSS, sizeof(OID_RSASSA_PSS))) {
                 out.sign_key_type = KeyType::RSA_2048;
             }

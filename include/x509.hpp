@@ -97,6 +97,7 @@ inline const uint8_t OID_C[]                    = {0x55,0x04,0x06};             
 // ═══════════════════════════════════════════════════════════════════════
 enum class KeyType : uint8_t {
     RSA_2048,
+    RSA_3072,   // 3072-bit RSA（TLS 中间 CA 常用档位）
     RSA_4096,
     Ed25519,
     Ed448,
@@ -190,11 +191,13 @@ struct x509_cert {
     std::vector<RawExtension> raw_extensions;  // extensions not modeled above
 
     // Signature
+    // sign_key_type: 签名算法族 + 哈希（RSA 家族统一为 RSA_2048；**键长由
+    // key_type / 实际模数字节数决定**，不用本字段区分 2048/3072/4096）
     KeyType sign_key_type = KeyType::Ed25519;
     std::vector<uint8_t> signature;      // raw signature bytes
     std::vector<uint8_t> tbs_raw;        // raw TBS bytes (for verification, set by from_der)
     bool sig_is_pss = false;             // signatureAlgorithm = RSASSA-PSS
-    int sig_hash_len = 32;               // PSS 哈希长度（32/48/64）
+    int sig_hash_len = 32;               // 签名哈希长度（32/48/64 = SHA-256/384/512）
 
     // ── 辅助方法 ────────────────────────────────────────────────────────
     /// 从 DER 编码的证书解析
@@ -322,11 +325,17 @@ struct x509_builder {
     }
 
     /// 构建并签发证书 (self-signed if issuer_key == sign_key)
-    /// sign_key_type: 签名算法对应密钥类型
-    /// sign_priv_data: 签名私钥 raw bytes
+    /// sign_key_type: 签名算法对应密钥类型（RSA_2048 / RSA_3072 / RSA_4096 / ...），
+    ///                RSA 签名字节数由该档位决定（256 / 384 / 512）
+    /// sign_priv_data: 签名私钥 raw bytes（RSA 为 d，大端右对齐到档位字节数）
     /// sign_priv_len: 私钥长度
+    /// sign_modulus / sign_modulus_len: RSA 签名者模数 n 的原始大端字节（长度须等于
+    ///                档位字节数；CA 签发他人证书时必传，缺省回退 cert.public_key 自签名）
+    /// cert.sig_is_pss / cert.sig_hash_len: RSA 签名方案与哈希（默认 PKCS#1 v1.5 + SHA-256）
     x509_cert build_and_sign(KeyType sign_key_type,
-                             const uint8_t* sign_priv_data, size_t sign_priv_len);
+                             const uint8_t* sign_priv_data, size_t sign_priv_len,
+                             const uint8_t* sign_modulus = nullptr,
+                             size_t sign_modulus_len = 0);
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -341,6 +350,14 @@ struct verify_result {
 /// root 必须是自签名且 CA=true
 verify_result x509_verify_chain(const std::vector<x509_cert>& chain,
                                 uint64_t now_unix = 0);
+
+/// 验证证书链，链尾证书视为信任锚（RFC 5280 §6.1.1(d)：锚点证书不在验证路径内，
+/// 其自签名不做校验，因此**交叉签根**也可作为锚点）。
+/// chain: leaf -> intermediate... -> anchor（锚点证书须包含在链尾）
+/// anchors: 信任锚集合（非空时链尾必须与其中之一一致；为空时退化为要求链尾自签名）
+verify_result x509_verify_chain_anchored(const std::vector<x509_cert>& chain,
+                                        const std::vector<x509_cert>& anchors,
+                                        uint64_t now_unix = 0);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  DER 低层 API (内部使用)
@@ -381,6 +398,11 @@ std::vector<uint8_t> encode_spki(KeyType key_type, const uint8_t* raw_key, size_
 
 /// AlgorithmIdentifier 编码
 std::vector<uint8_t> encode_sig_algo(KeyType key_type);
+
+/// AlgorithmIdentifier 编码（RSA 家族指定哈希与方案）
+/// hash_len: 32/48/64 → SHA-256/384/512；pss=true 时输出 RSASSA-PSS 及 PSS 参数
+/// （RFC 4055 §3.1，含 MGF1 与 saltLength）
+std::vector<uint8_t> encode_sig_algo(KeyType key_type, int hash_len, bool pss = false);
 
 /// Extensions 编码
 std::vector<uint8_t> encode_extensions(const x509_cert& cert);
