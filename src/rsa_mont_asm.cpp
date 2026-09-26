@@ -2,6 +2,10 @@
  * rsa_mont_asm.cpp — x86-64 汇编优化的 CIOS Montgomery 乘法
  *
  * 利用 MULX (BMI2) + 手写进位链加速 RSA-2048/4096 核心热点。
+ *
+ * 覆盖范围: K=32 (RSA-2048) 与 K=64 (RSA-4096), 半尺寸路径覆盖 HK=16/32。
+ * RSA-3072 (K=48, HK=24) 没有汇编实现: rsa_body.inc 的 mont_mul_/mont_mul_half_
+ * 在 K==48 时不进入汇编分支 (见该处 #if), 自动使用标量 CIOS。
  * GCC/Clang: 内联汇编; MSVC: _mulx_u64/_addcarryx_u64 intrinsics。
  * 两者生成的指令序列等价 (MULX + ADCX/ADOX 双进位链)。
  *
@@ -632,7 +636,7 @@ void mont_mul_asm(uint64_t* r,
         return;
     }
 #endif
-    // K 值不支持 → 调用方 fallback 到 rsa_body.inc 标量 CIOS
+    // K 值不支持 (含 K=48 / RSA-3072) → 调用方 fallback 到 rsa_body.inc 标量 CIOS
     // (调用方应在调用前检查 mont_mul_asm_available() 和 K 值)
     (void)r; (void)a; (void)b; (void)m; (void)mp; (void)K;
 }

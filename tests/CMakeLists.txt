@@ -342,6 +342,17 @@ target_include_directories(test_rsa_pss PRIVATE ${INCLUDE_DIR})
 target_link_libraries(test_rsa_pss PRIVATE jpssl_cpu OpenSSL::Crypto)
 endif()
 
+# ── RSA-3072 (第三档 K=48) 单元测试 ──
+#   bignum 边界 + keygen(含 CRT) + PKCS#1 v1.5 + PSS + OAEP + 批量接口;
+#   OpenSSL 可用时额外启用 RSA-3072 互操作交叉验证
+add_executable(test_rsa3072 test_rsa3072.cpp)
+target_include_directories(test_rsa3072 PRIVATE ${INCLUDE_DIR})
+target_link_libraries(test_rsa3072 PRIVATE jpssl_cpu ${MUSA_LIBS})
+if(OpenSSL_FOUND)
+    target_link_libraries(test_rsa3072 PRIVATE OpenSSL::Crypto)
+    target_compile_definitions(test_rsa3072 PRIVATE JP_TEST_HAVE_OPENSSL=1)
+endif()
+
 # ── SM 国密测试 (OpenSSL 对比) ───────────────────────────────────────────
 if(OpenSSL_FOUND)
 add_executable(test_sm test_sm.cpp)
@@ -542,3 +553,4 @@ add_test(NAME test_ed448_batch   COMMAND test_ed448_batch)
 add_test(NAME test_x25519_rfc    COMMAND test_x25519_rfc)
 add_test(NAME test_x448_rfc      COMMAND test_x448_rfc)
 add_test(NAME test_x448_batch    COMMAND test_x448_batch)
+add_test(NAME test_rsa3072       COMMAND test_rsa3072)

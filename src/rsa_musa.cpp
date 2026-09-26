@@ -7,6 +7,10 @@
  *   1. 传入 R_mod_m（R mod n）和 exp_bits（指数有效位）到 GPU 常量内存
  *   2. 异步流支持：H2D → Kernel → D2H 流水线
  *   3. 持久化池复用设备内存 + 事件 + 流
+ *
+ * 覆盖范围: rsa_gpu.mu 只提供 RSA-2048 (K=32) 与 RSA-4096 (K=64) kernel。
+ * RSA-3072 (K=48) 没有 GPU kernel 且不可套用 4096 kernel (limb 数/共享内存布局不同),
+ * 其批量模幂 musa3072_rsa_batch_modpow 在文件尾显式走 CPU (见该处注释)。
  */
 
 #include "rsa.hpp"
@@ -569,6 +573,21 @@ size_t musa4096_crt_batch_decrypt(const rsa4096_crt_key& key,
         ++decrypted;
     }
     return decrypted;
+}
+
+// ---- RSA-3072 批量模幂: 无 GPU kernel, 显式走 CPU ----
+// rsa_gpu.mu 只有 2048-bit (K=32) 与 4096-bit (K=64) 两个 kernel:
+//   · 2048 kernel 固定 32 limb, 3072 需要 48 limb;
+//   · 4096 kernel 固定 64 limb 与 THREADS_PER_BLOCK_4096 的共享内存布局。
+// 3072 无法套用其中任何一个, 故此处显式实现 CPU 版本 (标量 CIOS 批量模幂),
+// 语义与 rsa.cpp 在 #ifndef JP_MUSA 下的 fallback 完全一致, 不做静默降级。
+void musa3072_rsa_batch_modpow(const rsa3072_bignum& mod,
+                               const rsa3072_bignum& exp,
+                               const mont_ctx3072&   mctx,
+                               const uint8_t* bases,
+                               uint8_t* results,
+                               size_t count) {
+    rsa3072_batch_modpow(mod, exp, mctx, bases, results, count);
 }
 
 } // namespace jpssl

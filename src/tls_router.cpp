@@ -302,6 +302,7 @@ uint16_t select_signature_scheme(const std::vector<uint16_t>& peer_list,
 uint16_t x509_key_type_chain_scheme(x509::KeyType kt) {
     switch (kt) {
         case x509::KeyType::RSA_2048:
+        case x509::KeyType::RSA_3072:
         case x509::KeyType::RSA_4096:
             return (uint16_t)SignatureAlgorithm::RSA_PKCS1_SHA256;
         case x509::KeyType::ECDSA_P256:
@@ -573,6 +574,92 @@ static bool rsa_pss_verify4096(const rsa4096_public_key& pub, uint16_t scheme,
     return rsassa_pss_verify4096(pub, data, len, sig, 0, hash);
 }
 
+// RSASSA-PKCS1-v1_5 签名（RSA-3072，384 字节模数）
+static bool rsa3072_pkcs1_sign(const rsa3072_private_key& key, uint16_t scheme,
+                               const uint8_t* data, size_t len, uint8_t* sig, size_t& sig_len) {
+    size_t hl = scheme_hash_len(scheme);
+    size_t di_len = 0;
+    const uint8_t* di = digest_info_for_scheme(scheme, di_len);
+    if (hl == 0 || !di) return false;
+    uint8_t hash[64];
+    if (!hash_scheme(scheme, data, len, hash)) return false;
+    size_t pad_len = 384 - 3 - di_len - hl;
+    if (pad_len == 0) return false;
+    uint8_t padded[384];
+    padded[0] = 0x00; padded[1] = 0x01;
+    memset(padded + 2, 0xFF, pad_len);
+    padded[2 + pad_len] = 0x00;
+    memcpy(padded + 2 + pad_len + 1, di, di_len);
+    memcpy(padded + 2 + pad_len + 1 + di_len, hash, hl);
+    rsa3072_bignum m = rsa3072_bignum::from_bytes(padded, 384);
+    rsa3072_bignum s;
+    if (!key.p.is_zero() && !key.q.is_zero()) {
+        // CRT 快速路径（RSASP1）：与 RSA-4096 分支同形
+        rsa3072_crt_key crt{key.n, key.e, key.d, key.p, key.q, key.dP, key.dQ, key.qInv};
+        RSASP13072(crt, m, s);
+    } else {
+        // CRT 参数缺失（私钥仅含 n/d/e）：回退全模幂 s = m^d mod n
+        bn_modpow(s, m, key.d, key.n);
+    }
+    s.to_bytes(sig);
+    sig_len = 384;
+    return true;
+}
+
+// RSASSA-PSS 签名（RSA-3072，saltLen = hLen，RFC 8446 要求）
+static bool rsa3072_pss_sign(const rsa3072_private_key& key, uint16_t scheme,
+                             const uint8_t* data, size_t len, uint8_t* sig, size_t& sig_len) {
+    PssHash hash;
+    switch (scheme) {
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256: hash = PssHash::SHA256; break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384: hash = PssHash::SHA384; break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: hash = PssHash::SHA512; break;
+        default: return false;
+    }
+    rsa3072_crt_key crt{key.n, key.e, key.d, key.p, key.q, key.dP, key.dQ, key.qInv};
+    if (!rsassa_pss_sign3072(crt, data, len, sig, 0, hash)) return false;
+    sig_len = 384;
+    return true;
+}
+
+// RSASSA-PKCS1-v1_5 验签（RSA-3072）
+static bool rsa3072_pkcs1_verify(const rsa3072_public_key& pub, uint16_t scheme,
+                                 const uint8_t* data, size_t len, const uint8_t* sig, size_t sig_len) {
+    if (sig_len != 384) return false;
+    size_t hl = scheme_hash_len(scheme);
+    size_t di_len = 0;
+    const uint8_t* di = digest_info_for_scheme(scheme, di_len);
+    uint8_t hash[64];
+    if (hl == 0 || !di || !hash_scheme(scheme, data, len, hash)) return false;
+    rsa3072_bignum s = rsa3072_bignum::from_bytes(sig, 384);
+    rsa3072_bignum m;
+    bn_modpow(m, s, pub.e, pub.n);
+    uint8_t padded[384];
+    m.to_bytes(padded);
+    if (padded[0] != 0x00 || padded[1] != 0x01) return false;
+    size_t pos = 2;
+    while (pos < 384 && padded[pos] == 0xFF) ++pos;
+    if (pos >= 384 || padded[pos] != 0x00) return false;
+    ++pos;
+    if (pos + di_len + hl > 384) return false;
+    if (memcmp(padded + pos, di, di_len) != 0) return false;
+    return memcmp(padded + pos + di_len, hash, hl) == 0;
+}
+
+// RSASSA-PSS 验签（RSA-3072）
+static bool rsa3072_pss_verify(const rsa3072_public_key& pub, uint16_t scheme,
+                               const uint8_t* data, size_t len, const uint8_t* sig, size_t sig_len) {
+    if (sig_len != 384) return false;
+    PssHash hash;
+    switch (scheme) {
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA256: hash = PssHash::SHA256; break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA384: hash = PssHash::SHA384; break;
+        case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: hash = PssHash::SHA512; break;
+        default: return false;
+    }
+    return rsassa_pss_verify3072(pub, data, len, sig, 0, hash);
+}
+
 // ══════════════════════════════════════════════════════════════════════�?
 //  证书签名/验证
 // ══════════════════════════════════════════════════════════════════════�?
@@ -798,7 +885,7 @@ const tls_certificate* tls_certificate_manager::get_default_certificate() const 
 // ══════════════════════════════════════════════════════════════════════�?
 SignatureAlgorithm tls_key_type_to_sig_alg(x509::KeyType kt) {
     switch (kt) {
-        case x509::KeyType::RSA_2048: case x509::KeyType::RSA_4096:
+        case x509::KeyType::RSA_2048: case x509::KeyType::RSA_3072: case x509::KeyType::RSA_4096:
             return SignatureAlgorithm::RSA_PKCS1_SHA256;
         case x509::KeyType::Ed25519:  return SignatureAlgorithm::ED25519;
         case x509::KeyType::Ed448:    return SignatureAlgorithm::ED448;
@@ -811,6 +898,25 @@ SignatureAlgorithm tls_key_type_to_sig_alg(x509::KeyType kt) {
 }
 
 namespace {
+
+// x509 KeyType → RSA 位数（0 = 非 RSA）。新增 RSA 档位只需改这里。
+uint16_t rsa_bits_of(x509::KeyType kt) {
+    switch (kt) {
+        case x509::KeyType::RSA_2048: return 2048;
+        case x509::KeyType::RSA_3072: return 3072;
+        case x509::KeyType::RSA_4096: return 4096;
+        default: return 0;
+    }
+}
+
+// RSA 位数 → x509 KeyType（0/未知视为 2048，与历史行为一致）
+x509::KeyType rsa_key_type_of_bits(uint16_t bits) {
+    switch (bits) {
+        case 3072: return x509::KeyType::RSA_3072;
+        case 4096: return x509::KeyType::RSA_4096;
+        default:   return x509::KeyType::RSA_2048;
+    }
+}
 
 // �?x509 公钥 raw bytes 填充 tls_certificate.pub
 bool fill_pub(tls_certificate& out, x509::KeyType kt, const std::vector<uint8_t>& pub) {
@@ -827,6 +933,12 @@ bool fill_pub(tls_certificate& out, x509::KeyType kt, const std::vector<uint8_t>
             out.pub.rsa4096.n = rsa4096_bignum::from_bytes(pub.data(), 512);
             out.pub.rsa4096.e = rsa4096_bignum::from_bytes(pub.data() + 512, 3);
             out.rsa4096 = true;
+            return true;
+        }
+        case x509::KeyType::RSA_3072: {
+            if (pub.size() < 384 + 3) return false;
+            out.pub.rsa3072.n = rsa3072_bignum::from_bytes(pub.data(), 384);
+            out.pub.rsa3072.e = rsa3072_bignum::from_bytes(pub.data() + 384, 3);
             return true;
         }
         case x509::KeyType::Ed25519:
@@ -895,6 +1007,22 @@ bool fill_priv(tls_certificate& out, const x509::private_key& k) {
             copy_crt(out.priv.rsa4096.dQ, k.rsa_dQ, 256);
             copy_crt(out.priv.rsa4096.qInv, k.rsa_qInv, 256);
             out.rsa4096 = true;
+            return true;
+        }
+        case x509::KeyType::RSA_3072: {
+            if (priv.size() < 384 || pub.size() < 384 + 3) return false;
+            out.priv.rsa3072.d = rsa3072_bignum::from_bytes(priv.data(), 384);
+            out.priv.rsa3072.n = rsa3072_bignum::from_bytes(pub.data(), 384);
+            out.priv.rsa3072.e = rsa3072_bignum::from_bytes(pub.data() + 384, 3);
+            // CRT 参数（PKCS#1 完整私钥解析得到；缺失则留空 → 签名回退全模幂）
+            auto copy_crt3072 = [](rsa3072_bignum& dst, const std::vector<uint8_t>& src, size_t sz) {
+                if (src.size() == sz) dst = rsa3072_bignum::from_bytes(src.data(), sz);
+            };
+            copy_crt3072(out.priv.rsa3072.p, k.rsa_p, 192);
+            copy_crt3072(out.priv.rsa3072.q, k.rsa_q, 192);
+            copy_crt3072(out.priv.rsa3072.dP, k.rsa_dP, 192);
+            copy_crt3072(out.priv.rsa3072.dQ, k.rsa_dQ, 192);
+            copy_crt3072(out.priv.rsa3072.qInv, k.rsa_qInv, 192);
             return true;
         }
         case x509::KeyType::Ed25519:
@@ -1045,6 +1173,7 @@ std::unique_ptr<tls_certificate> tls_certificate::from_csr_pem(const std::string
     out->subject_name = csr_common_name(*req);
     // cert_data 留空：握手时�?CSR 主体自动生成自签名证�?
     out->sig_alg = tls_key_type_to_sig_alg(req->key_type);
+    out->rsa_bits = rsa_bits_of(req->key_type);   // RSA 私钥位数（2048/3072/4096）
     if (!fill_pub(*out, req->key_type, req->public_key)) {
         set_err(err, "failed to import CSR public key");
         return nullptr;
@@ -1546,6 +1675,7 @@ std::unique_ptr<tls_certificate> tls_cert_from_x509_leaf(const x509::x509_cert& 
     auto out = jpssl::make_unique<tls_certificate>();
     out->subject_name = leaf.common_name();
     out->sig_alg = tls_key_type_to_sig_alg(leaf.key_type);
+    out->rsa_bits = rsa_bits_of(leaf.key_type);   // 客户端验签按实际位数（2048/3072/4096）
     if (!fill_pub(*out, leaf.key_type, leaf.public_key)) return nullptr;
     return out;
 }
@@ -2448,6 +2578,8 @@ x509::KeyType tls_sig_alg_to_key_type(SignatureAlgorithm sa) {
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
+            // RSA 家族与键长无关：此处只返回 RSA 家族的占位 KeyType；
+            // 实际 2048/3072/4096 由证书 rsa_bits 决定（见 rsa_key_type_of_bits）。
             return KeyType::RSA_2048;
         case SignatureAlgorithm::ED25519: return KeyType::Ed25519;
         case SignatureAlgorithm::ED448: return KeyType::Ed448;
@@ -2473,6 +2605,7 @@ std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint
     switch(k){
         case KeyType::RSA_2048:{uint8_t p[259];cert.pub.rsa.n.to_bytes(p);p[256]=1;p[257]=0;p[258]=1;b.set_key(k,p,259);break;}
         case KeyType::RSA_4096:{uint8_t p[515];cert.pub.rsa4096.n.to_bytes(p);p[512]=1;p[513]=0;p[514]=1;b.set_key(k,p,515);break;}
+        case KeyType::RSA_3072:{uint8_t p[387];cert.pub.rsa3072.n.to_bytes(p);p[384]=1;p[385]=0;p[386]=1;b.set_key(k,p,387);break;}
         case KeyType::Ed25519:b.set_key(k,cert.pub.ed25519,32);break;
         case KeyType::Ed448:b.set_key(k,cert.pub.ed448,57);break;
         case KeyType::ECDSA_P256:b.set_key(k,cert.pub.ecdsa_p256,64);break;
@@ -2485,6 +2618,7 @@ std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint
     switch(k){
         case KeyType::RSA_2048:{uint8_t d[256];cert.priv.rsa.d.to_bytes(d);x=b.build_and_sign(k,d,256);break;}
         case KeyType::RSA_4096:{uint8_t d[512];cert.priv.rsa4096.d.to_bytes(d);x=b.build_and_sign(k,d,512);break;}
+        case KeyType::RSA_3072:{uint8_t d[384];cert.priv.rsa3072.d.to_bytes(d);x=b.build_and_sign(k,d,384);break;}
         case KeyType::Ed25519:x=b.build_and_sign(k,cert.priv.ed25519,64);break;
         case KeyType::Ed448:x=b.build_and_sign(k,cert.priv.ed448,57);break;
         case KeyType::ECDSA_P256:x=b.build_and_sign(k,cert.priv.ecdsa_p256,32);break;

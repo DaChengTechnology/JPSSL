@@ -1142,13 +1142,24 @@ static std::unique_ptr<tls_certificate> cert_from_x509(const x509::x509_cert& le
             if (leaf.public_key.size() < 259) return nullptr;
             out->pub.rsa.n = jpssl::rsa_bignum::from_bytes(leaf.public_key.data(), 256);
             out->pub.rsa.e = jpssl::rsa_bignum::from_bytes(leaf.public_key.data() + 256, 3);
+            out->rsa_bits = 2048;
+            break;
+        case KeyType::RSA_3072:
+            // 3072 位模数 384 字节（public_key = n || 0x010001）；rsa_bits 供
+            // tls_certificate::sign_scheme/verify_scheme 按 2048/3072/4096 分派
+            if (leaf.public_key.size() < 387) return nullptr;
+            out->pub.rsa3072.n = jpssl::rsa3072_bignum::from_bytes(leaf.public_key.data(), 384);
+            out->pub.rsa3072.e = jpssl::rsa3072_bignum::from_bytes(leaf.public_key.data() + 384, 3);
+            out->rsa_bits = 3072;
             break;
         case KeyType::RSA_4096:
-            // RSA-4096 叶子公钥布局与 2048 相同：n（512 字节）|| e（3 字节）
+            // RSA-4096 叶子公钥布局与 2048 / 3072 相同：n（512 字节）|| e（3 字节）。
+            // 同时置上游的装载标记 rsa4096 与按位数分派用的 rsa_bits（两者语义一致）。
             if (leaf.public_key.size() < 515) return nullptr;
             out->rsa4096 = true;
             out->pub.rsa4096.n = jpssl::rsa4096_bignum::from_bytes(leaf.public_key.data(), 512);
             out->pub.rsa4096.e = jpssl::rsa4096_bignum::from_bytes(leaf.public_key.data() + 512, 3);
+            out->rsa_bits = 4096;
             break;
         case KeyType::Ed25519:
             if (leaf.public_key.size() < 32) return nullptr;

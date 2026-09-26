@@ -49,6 +49,36 @@
 
 ### Notes
 - 版本号 1.1.10 → 1.1.11（同步 CMake `project(jpssl VERSION ...)`）。
+## [1.1.13] - 2026-09-27
+
+### Added
+- **RSA-3072 全路径支持**（2048 / 3072 / 4096 三档齐备）：
+  - 核心引擎：`rsa3072_bignum`（K=48）及 `bn_*` 全套运算、Montgomery 上下文与模幂
+    （含 win8 / half 变体）、`rsa3072_keygen(_crt)`、`rsa3072_encrypt/decrypt`，
+    以及 `rsa_schemes` / `rsa_pss` / `rsa_oaep` 中 4096 档 API 的 3072 镜像；
+    `src/rsa.cpp` 新增 K=48 实例化（Montgomery 汇编快速路径只支持 K=32/64，
+    K=48 自动回退 C++ CIOS）；
+  - x509：新增 `KeyType::RSA_3072`；模长分类改为三分支（≤256 / ≤384 / else）；
+    验签按**实际模长**读取公钥与签名；SPKI 编解码与 `sign_key_type` 映射同步修正；
+  - TLS：`rsa_bits = 3072` 全路径（sign / verify、TLS 1.2 premaster 解密、
+    CertificateVerify / ServerKeyExchange、sig_algs 通告列表）；
+  - 外围：CLI（`--bits 3072`）、`cmd/jpssl_cert`、CT、DTLS。
+- 新增 `tests/test_rsa3072.cpp`（keygen / CRT / 加解密 / PKCS1v15 / PSS SHA-256/384/512，
+  含与 OpenSSL 的双向互操作验证）并接入 ctest；`tests/test_x509.cpp` 增加 3072 证书链用例。
+
+### Fixed
+- **服务端证书链含 3072 位 RSA 时 TLS 握手失败**：`x509.cpp` 原先按
+  `mod_len <= 256 ? RSA_2048 : RSA_4096` 分类，3072 位（384 字节）被误判为 4096，
+  验签又固定按 512 字节读取模数与签名 → 证书链验证必然失败；表现为 TLS 1.3
+  `TLS 1.3 server flight incomplete or verification failed`、TLS 1.2
+  `tls12_process_server_flight failed`，上层 `HttpClient` 只报 `connect failed`。
+  实测：天翼云 MaaS 网关（证书链 2048 / 3072 / 4096）修复前 TLS 1.3 与 1.2 均失败，
+  修复后两者握手成功、HTTPS 请求返回上游业务响应。
+
+### Notes
+- 版本号 1.1.12 → 1.1.13（同步 CMake `project(jpssl VERSION ...)`）。
+- 3072 位密钥生成的素数搜索不使用预置素数表兜底（现有表仅 1024 / 2048 位），
+  超预算按更长时限重试；MUSA GPU 批量接口的 3072 走 CPU fallback（显式，不套用 4096 内核）。
 
 ## [1.1.10] - 2026-08-21
 

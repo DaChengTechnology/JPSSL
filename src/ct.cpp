@@ -321,9 +321,10 @@ bool sign_tbs(const std::vector<uint8_t>& tbs, x509::KeyType kt,
             return true;
         }
         case x509::KeyType::RSA_2048:
+        case x509::KeyType::RSA_3072:
         case x509::KeyType::RSA_4096:
-            // RSA signing needs the CA modulus which is not available from the
-            // ca_priv argument alone; SM2/ECDSA/Ed25519/Ed448 are supported.
+            // RSA（2048/3072/4096）签名需要 CA 模数，无法只从 ca_priv 推导；
+            // SM2/ECDSA/Ed25519/Ed448 已支持；RSA 由 x509_builder::build_and_sign 处理。
             return false;
     }
     return false;
@@ -784,7 +785,7 @@ signed_certificate_timestamp issue_sct_rsa(const rsa_crt_key& log_priv,
     uint8_t sig[256];
     if (!rsassa_pkcs1v15_sign(log_priv, data.data(), data.size(),
                               k_sha256_digest_info, sizeof(k_sha256_digest_info), sig))
-        return {}; // RSA-2048 + SHA-256 下不会发生
+        return {}; // RSA-2048(256 字节签名) + SHA-256 下不会发生
     sct.signature.assign(sig, sig + sizeof(sig));
     return sct;
 }
@@ -1072,7 +1073,9 @@ ct_log::ct_log(const rsa_crt_key& log_priv, const rsa_public_key& log_pub,
                clock_fn now_fn)
     : hash_alg_(CtHashAlg::SHA256), sig_alg_(CtSigAlg::RSA),
       rsa_priv_(log_priv), rsa_pub_(log_pub), now_fn_(now_fn) {
-    // LogID = SHA-256(SubjectPublicKeyInfo DER)；RSA-2048 公钥 = n || 0x010001
+    // LogID = SHA-256(SubjectPublicKeyInfo DER)；RSA-2048 公钥 = n || 0x010001。
+    // 本构造仅承载 2048 位日志密钥（rsa_public_key/rsa_crt_key），3072 位日志密钥
+    // 需 ct.hpp 增加 rsa3072_* 重载后在此按 n 宽度（384 字节）编码 SPKI。
     uint8_t p[259];
     log_pub.n.to_bytes(p);
     p[256] = 1;

@@ -153,4 +153,113 @@ bool rsaes_oaep_decrypt(const rsa_crt_key& key, const uint8_t ct[256],
     return true;
 }
 
+
+// ---- 7.1.x  RSAES-OAEP (RSA-3072, k = 384, SHA-256 + MGF1-SHA-256) ----
+// 与 2048 档同形 (同一 EME-OAEP 编码/解码), 差异:
+//   · 模长 384 字节, 消息上限 k - 2*hLen - 2 = 318 字节;
+//   · seed 用 CSPRNG (secure_rand_bytes), 而非 2048 档历史实现的 mt19937;
+//   · 解密前显式校验 c < n。
+
+bool rsaes_oaep_encrypt3072(const rsa3072_public_key& pub, jpssl::span<const uint8_t> msg,
+                            const uint8_t* label, size_t labelLen, uint8_t ct[384]) {
+    constexpr size_t k = RSA_3072_BYTES;   // 384
+    constexpr size_t hLen = 32;            // SHA-256
+
+    // 0. 长度检查 + 空 label 归一化
+    static const uint8_t kEmptyLabel[1] = {0};
+    size_t mLen = msg.size();
+    if (mLen > k - 2*hLen - 2) return false;
+    if (!label) { label = kEmptyLabel; labelLen = 0; }
+
+    // 1. lHash = Hash(L)
+    uint8_t lHash[32];
+    sha256(label, labelLen, lHash);
+
+    // 2. PS = 00...00 (k - mLen - 2*hLen - 2 字节)
+    size_t psLen = k - mLen - 2*hLen - 2;
+
+    // 3. DB = lHash || PS || 01 || msg
+    std::vector<uint8_t> DB(k - hLen - 1);
+    memcpy(DB.data(), lHash, hLen);
+    memset(DB.data() + hLen, 0, psLen);
+    DB[hLen + psLen] = 0x01;
+    memcpy(DB.data() + hLen + psLen + 1, msg.data(), mLen);
+
+    // 4. 随机 seed (CSPRNG)
+    uint8_t seed[32];
+    secure_rand_bytes(seed, sizeof(seed));
+
+    // 5-6. maskedDB = DB ^ MGF1(seed, k - hLen - 1)
+    uint8_t dbMask[k - hLen - 1];
+    mgf1_sha256(seed, sizeof(seed), dbMask, sizeof(dbMask));
+    for (size_t i = 0; i < sizeof(dbMask); ++i) DB[i] ^= dbMask[i];
+
+    // 7-8. maskedSeed = seed ^ MGF1(maskedDB, hLen)
+    uint8_t seedMask[32];
+    mgf1_sha256(DB.data(), sizeof(dbMask), seedMask, sizeof(seedMask));
+
+    // 9. EM = 0x00 || maskedSeed || maskedDB
+    uint8_t EM[RSA_3072_BYTES] = {};
+    for (size_t i = 0; i < sizeof(seed); ++i) EM[1 + i] = (uint8_t)(seed[i] ^ seedMask[i]);
+    memcpy(EM + 1 + sizeof(seed), DB.data(), sizeof(dbMask));
+
+    // 10-12. m = OS2IP(EM); c = RSAEP(pub, m); C = I2OSP(c, k)
+    rsa3072_bignum m = rsa3072_bignum::from_bytes(EM, k);
+    rsa3072_bignum cbn;
+    RSAEP3072(pub, m, cbn);
+    cbn.to_bytes(ct);
+    return true;
+}
+
+bool rsaes_oaep_decrypt3072(const rsa3072_crt_key& key, const uint8_t ct[384],
+                            const uint8_t* label, size_t labelLen,
+                            std::vector<uint8_t>& msg) {
+    constexpr size_t k = RSA_3072_BYTES;
+    constexpr size_t hLen = 32;
+    static const uint8_t kEmptyLabel[1] = {0};
+    if (!label) { label = kEmptyLabel; labelLen = 0; }
+
+    // 2-3. c = OS2IP(ct), 要求 c < n; m = RSADP(key, c)
+    rsa3072_bignum c = rsa3072_bignum::from_bytes(ct, k);
+    if (!(c < key.n)) return false;
+    rsa3072_bignum m;
+    RSADP3072(key, c, m);
+
+    // 4. EM = I2OSP(m, k)
+    uint8_t EM[RSA_3072_BYTES];
+    m.to_bytes(EM);
+
+    // 5. lHash = Hash(L)
+    uint8_t lHash[32];
+    sha256(label, labelLen, lHash);
+
+    // 6-12. EME-OAEP 解码
+    uint8_t maskedSeed[32];
+    memcpy(maskedSeed, EM + 1, sizeof(maskedSeed));
+
+    uint8_t maskedDB[k - 32 - 1];
+    memcpy(maskedDB, EM + 1 + 32, sizeof(maskedDB));
+
+    uint8_t seedMask[32];
+    mgf1_sha256(maskedDB, sizeof(maskedDB), seedMask, sizeof(seedMask));
+
+    uint8_t seed[32];
+    for (size_t i = 0; i < sizeof(seed); ++i) seed[i] = (uint8_t)(maskedSeed[i] ^ seedMask[i]);
+
+    uint8_t dbMask[k - 32 - 1];
+    mgf1_sha256(seed, sizeof(seed), dbMask, sizeof(dbMask));
+
+    uint8_t DB[k - 32 - 1];
+    for (size_t i = 0; i < sizeof(DB); ++i) DB[i] = (uint8_t)(maskedDB[i] ^ dbMask[i]);
+
+    // 验证: lHash 一致 + PS 全零直到 0x01
+    if (memcmp(DB, lHash, hLen) != 0) return false;
+    size_t pos = hLen;
+    while (pos < sizeof(DB) && DB[pos] == 0x00) ++pos;
+    if (pos >= sizeof(DB) || DB[pos] != 0x01) return false;
+    ++pos;
+
+    msg.assign(DB + pos, DB + sizeof(DB));
+    return true;
+}
 } // namespace jpssl
