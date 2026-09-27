@@ -14,6 +14,9 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#if defined(_MSC_VER)
+#include <intrin.h>   // _umul128 / __umulh (MSVC x64)
+#endif
 
 #if defined(JP_TEST_HAVE_OPENSSL)
 #include <openssl/bn.h>
@@ -41,6 +44,42 @@ static const uint8_t P_SHA512[19] = {0x30,0x51,0x30,0x0d,0x06,0x09,0x60,0x86,
                                      0x48,0x01,0x65,0x03,0x04,0x02,0x03,0x05,
                                      0x00,0x04,0x40};
 
+// ── 64x64 取模乘参考实现 ───────────────────────────────────────────────
+// 「已知答案」参考值需要 (a*b) % m（a,b,m < 2^64，m 为奇数模数）。
+// MSVC 不支持 unsigned __int128（error C4235）：x64 上由 _umul128 取乘积低 64 位、
+// __umulh 取高 64 位，拼出 128 位乘积 hi:lo 后再做 128 位二进制长除取模；
+// 其它编译器保留 unsigned __int128。两条路径结果逐位一致，断言强度不变。
+static uint64_t mulmod_u64(uint64_t a, uint64_t b, uint64_t m) {
+    if (m == 0) return 0;   // 调用方只传奇数模数，此处仅防御除零
+#if defined(_MSC_VER)
+  #if defined(_M_X64)
+    // 128 位乘积 hi:lo（两个内建函数是同一 x64 乘法指令的两半）
+    uint64_t hi = 0;
+    uint64_t lo = _umul128(a, b, &hi);
+    hi = __umulh(a, b);                 // 与上行 HighProduct 等价，交叉确认高半
+    // 二进制长除：rem = (hi:lo) % m（m < 2^64，逐位把 lo 移入余数）
+    uint64_t rem = hi % m;
+    for (int i = 63; i >= 0; --i) {
+        // rem = (2*rem + bit) % m；2*rem 可能溢出 64 位，故先比较再相减
+        rem = (rem >= m - rem) ? (rem - (m - rem)) : (rem + rem);
+        if ((lo >> i) & 1u) rem = (rem + 1 == m) ? 0 : (rem + 1);
+    }
+    return rem;
+  #else
+    // Win32/ARM64 等无 _umul128 的目标：加倍-相加乘模（结果一致）
+    a %= m; b %= m;
+    uint64_t r = 0;
+    for (; b; b >>= 1) {
+        if (b & 1u) r = (r >= m - a) ? (r - (m - a)) : (r + a);
+        a = (a >= m - a) ? (a - (m - a)) : (a + a);
+    }
+    return r;
+  #endif
+#else
+    return (uint64_t)((((unsigned __int128)a) * b) % m);
+#endif
+}
+
 // ── 1. bignum 边界 ────────────────────────────────────────────────────
 static void test_bignum() {
     printf("== bignum (K=48) ==\n");
@@ -62,7 +101,7 @@ static void test_bignum() {
     check(I2OSP(x, i2o, RSA_3072_BYTES), "I2OSP(3072 bignum, 384)");
     check(OS2IP3072(i2o, RSA_3072_BYTES) == x, "OS2IP3072(I2OSP(x)) == x");
 
-    // 小样例模幂 + 已知答案: 参考值用 unsigned __int128 独立算出
+    // 小样例模幂 + 已知答案: 参考值用独立的 64x64 取模乘 (mulmod_u64) 算出
     // 注 1: bn_modpow 走 Montgomery 路径, 模数必须为奇数;
     // 注 2: rsa_body.inc 的 compute_2exp_mod_ 对倍增序列恰好命中 floor(m/2) 的
     //       极小奇数模数 (实测 m=101 / m=65537) 存在既有边界问题 (2048/3072/4096
@@ -77,17 +116,17 @@ static void test_bignum() {
         bool all_ok = true;
         for (int i = 0; i < 4; ++i) {
             const uint64_t ms = cases[i][0], xs = cases[i][1], es = cases[i][2];
-            unsigned __int128 acc = 1, bb = xs % ms;
+            uint64_t acc = 1, bb = xs % ms;
             for (uint64_t ee = es; ee; ee >>= 1) {
-                if (ee & 1) acc = (acc * bb) % ms;
-                bb = (bb * bb) % ms;
+                if (ee & 1) acc = mulmod_u64(acc, bb, ms);
+                bb = mulmod_u64(bb, bb, ms);
             }
             rsa3072_bignum rk;
             bn_modpow(rk, rsa3072_bignum::from_uint64(xs), rsa3072_bignum::from_uint64(es),
                       rsa3072_bignum::from_uint64(ms));
-            if (!(rk == rsa3072_bignum::from_uint64((uint64_t)acc))) all_ok = false;
+            if (!(rk == rsa3072_bignum::from_uint64(acc))) all_ok = false;
         }
-        check(all_ok, "bn_modpow 已知答案 x4 (__int128 参考, 20/64-bit 奇数模数)");
+        check(all_ok, "bn_modpow 已知答案 x4 (64x64 取模乘参考, 20/64-bit 奇数模数)");
     }
 
     // 3072-bit 奇数模数: bn_modpow 与 Montgomery 窗口路径一致

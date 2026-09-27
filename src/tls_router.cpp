@@ -572,7 +572,7 @@ static bool rsa_pss_verify4096(const rsa4096_public_key& pub, uint16_t scheme,
 }
 
 // RSASSA-PKCS1-v1_5 签名（RSA-3072，384 字节模数）
-static bool rsa3072_pkcs1_sign(const rsa3072_private_key& key, uint16_t scheme,
+static bool rsa3072_pkcs1_sign(const rsa3072_crt_key& key, uint16_t scheme,
                                const uint8_t* data, size_t len, uint8_t* sig, size_t& sig_len) {
     size_t hl = scheme_hash_len(scheme);
     size_t di_len = 0;
@@ -592,8 +592,7 @@ static bool rsa3072_pkcs1_sign(const rsa3072_private_key& key, uint16_t scheme,
     rsa3072_bignum s;
     if (!key.p.is_zero() && !key.q.is_zero()) {
         // CRT 快速路径（RSASP1）：与 RSA-4096 分支同形
-        rsa3072_crt_key crt{key.n, key.e, key.d, key.p, key.q, key.dP, key.dQ, key.qInv};
-        RSASP13072(crt, m, s);
+        RSASP13072(key, m, s);
     } else {
         // CRT 参数缺失（私钥仅含 n/d/e）：回退全模幂 s = m^d mod n
         bn_modpow(s, m, key.d, key.n);
@@ -604,7 +603,7 @@ static bool rsa3072_pkcs1_sign(const rsa3072_private_key& key, uint16_t scheme,
 }
 
 // RSASSA-PSS 签名（RSA-3072，saltLen = hLen，RFC 8446 要求）
-static bool rsa3072_pss_sign(const rsa3072_private_key& key, uint16_t scheme,
+static bool rsa3072_pss_sign(const rsa3072_crt_key& key, uint16_t scheme,
                              const uint8_t* data, size_t len, uint8_t* sig, size_t& sig_len) {
     PssHash hash;
     switch (scheme) {
@@ -613,8 +612,7 @@ static bool rsa3072_pss_sign(const rsa3072_private_key& key, uint16_t scheme,
         case (uint16_t)SignatureAlgorithm::RSA_PSS_RSAE_SHA512: hash = PssHash::SHA512; break;
         default: return false;
     }
-    rsa3072_crt_key crt{key.n, key.e, key.d, key.p, key.q, key.dP, key.dQ, key.qInv};
-    if (!rsassa_pss_sign3072(crt, data, len, sig, 0, hash)) return false;
+    if (!rsassa_pss_sign3072(key, data, len, sig, 0, hash)) return false;
     sig_len = 384;
     return true;
 }
@@ -655,6 +653,15 @@ static bool rsa3072_pss_verify(const rsa3072_public_key& pub, uint16_t scheme,
         default: return false;
     }
     return rsassa_pss_verify3072(pub, data, len, sig, 0, hash);
+}
+
+// RSA 档位分派：rsa_bits（tls.hpp，装载/生成时置位）是唯一权威来源；
+// rsa4096 布尔标记保留作回退（历史装载路径只置该标记），两者语义一致。
+enum class RsaTier { RSA_2048, RSA_3072, RSA_4096 };
+static RsaTier rsa_tier_of(const tls_certificate& cert) {
+    if (cert.rsa_bits == 3072) return RsaTier::RSA_3072;
+    if (cert.rsa_bits == 4096 || cert.rsa4096) return RsaTier::RSA_4096;
+    return RsaTier::RSA_2048;
 }
 
 // ══════════════════════════════════════════════════════════════════════�?
@@ -758,16 +765,27 @@ bool tls_certificate::sign_scheme(uint16_t scheme, const uint8_t* data, size_t d
         case SignatureAlgorithm::RSA_PKCS1_SHA256:
         case SignatureAlgorithm::RSA_PKCS1_SHA384:
         case SignatureAlgorithm::RSA_PKCS1_SHA512:
-            // RSA-4096 证书（rsa4096=true）使用 union 的 rsa4096 成员与 512 字节模数
-            return rsa4096
-                ? rsa_pkcs1_sign4096(priv.rsa4096, scheme, data, data_len, sig, sig_len)
-                : rsa_pkcs1_sign(priv.rsa, scheme, data, data_len, sig, sig_len);
+            // 按档位选 union 成员：2048 → rsa(256B) / 3072 → rsa3072(384B) / 4096 → rsa4096(512B)
+            switch (rsa_tier_of(*this)) {
+                case RsaTier::RSA_4096:
+                    return rsa_pkcs1_sign4096(priv.rsa4096, scheme, data, data_len, sig, sig_len);
+                case RsaTier::RSA_3072:
+                    return rsa3072_pkcs1_sign(priv.rsa3072, scheme, data, data_len, sig, sig_len);
+                default:
+                    return rsa_pkcs1_sign(priv.rsa, scheme, data, data_len, sig, sig_len);
+            }
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
-            return rsa4096
-                ? rsa_pss_sign4096(priv.rsa4096, scheme, data, data_len, sig, sig_len)
-                : rsa_pss_sign(priv.rsa, scheme, data, data_len, sig, sig_len);
+            // 按档位选 union 成员（同 PKCS1 分支）
+            switch (rsa_tier_of(*this)) {
+                case RsaTier::RSA_4096:
+                    return rsa_pss_sign4096(priv.rsa4096, scheme, data, data_len, sig, sig_len);
+                case RsaTier::RSA_3072:
+                    return rsa3072_pss_sign(priv.rsa3072, scheme, data, data_len, sig, sig_len);
+                default:
+                    return rsa_pss_sign(priv.rsa, scheme, data, data_len, sig, sig_len);
+            }
         default:
             return false;
     }
@@ -815,8 +833,11 @@ bool tls_certificate::verify_scheme(uint16_t scheme, const uint8_t* data, size_t
         case SignatureAlgorithm::RSA_PKCS1_SHA256:
         case SignatureAlgorithm::RSA_PKCS1_SHA384:
         case SignatureAlgorithm::RSA_PKCS1_SHA512: {
-            // RSA-2048 模数 256 字节；RSA-4096 模数 512 字节
-            const size_t k = rsa4096 ? 512 : 256;
+            // RSA 模长：2048 → 256 / 3072 → 384 / 4096 → 512 字节
+            const RsaTier tier = rsa_tier_of(*this);
+            if (tier == RsaTier::RSA_3072)
+                return rsa3072_pkcs1_verify(pub.rsa3072, scheme, data, data_len, sig, sig_len);
+            const size_t k = (tier == RsaTier::RSA_4096) ? 512 : 256;
             if (sig_len != k) return false;
             size_t hl = scheme_hash_len(scheme);
             size_t di_len = 0;
@@ -824,7 +845,7 @@ bool tls_certificate::verify_scheme(uint16_t scheme, const uint8_t* data, size_t
             uint8_t hash[64];
             if (hl == 0 || !di || !hash_scheme(scheme, data, data_len, hash)) return false;
             uint8_t padded[512];
-            if (rsa4096) {
+            if (tier == RsaTier::RSA_4096) {
                 rsa4096_bignum s = rsa4096_bignum::from_bytes(sig, 512);
                 rsa4096_bignum m;
                 bn_modpow(m, s, pub.rsa4096.e, pub.rsa4096.n);
@@ -847,9 +868,14 @@ bool tls_certificate::verify_scheme(uint16_t scheme, const uint8_t* data, size_t
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA256:
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA384:
         case SignatureAlgorithm::RSA_PSS_RSAE_SHA512:
-            return rsa4096
-                ? rsa_pss_verify4096(pub.rsa4096, scheme, data, data_len, sig, sig_len)
-                : rsa_pss_verify(pub.rsa, scheme, data, data_len, sig, sig_len);
+            switch (rsa_tier_of(*this)) {
+                case RsaTier::RSA_4096:
+                    return rsa_pss_verify4096(pub.rsa4096, scheme, data, data_len, sig, sig_len);
+                case RsaTier::RSA_3072:
+                    return rsa3072_pss_verify(pub.rsa3072, scheme, data, data_len, sig, sig_len);
+                default:
+                    return rsa_pss_verify(pub.rsa, scheme, data, data_len, sig, sig_len);
+            }
         default:
             return false;
     }
@@ -2590,9 +2616,14 @@ static x509::KeyType kt(SignatureAlgorithm sa) { return tls_sig_alg_to_key_type(
 
 std::vector<uint8_t> tls_make_x509_self_signed(const tls_certificate& cert, uint32_t days) {
     x509_builder b; auto k = kt(cert.sig_alg);
-    // sig_alg 无法区分 RSA-2048/RSA-4096（同为 RSA_PKCS1_SHA256），
-    // 按装载标记选择正确的密钥类型，否则会按 2048 位模数编码公钥与签名
-    if (cert.rsa4096 && k == KeyType::RSA_2048) k = KeyType::RSA_4096;
+    // sig_alg 无法区分 RSA-2048/3072/4096（同为 RSA_PKCS1_SHA256），按 rsa_bits
+    // （回退 rsa4096 标记）选定档位，否则会按 2048 位模数编码 SPKI 与签名
+    if (k == KeyType::RSA_2048) {
+        if (cert.rsa_bits == 3072 || cert.rsa_bits == 4096)
+            k = rsa_key_type_of_bits(cert.rsa_bits);
+        else if (cert.rsa4096)
+            k = KeyType::RSA_4096;
+    }
     DistinguishedName dn; dn.push_back({std::vector<uint8_t>(OID_CN, OID_CN + 3), cert.subject_name});
     b.set_subject(dn).set_issuer(dn);
     uint8_t ser[8]={}; for(size_t i=0;i<cert.subject_name.size()&&i<8;++i)ser[i]=(uint8_t)cert.subject_name[i];

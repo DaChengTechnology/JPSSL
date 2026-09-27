@@ -410,9 +410,11 @@ bool tls12_make_server_hello_flight(tls_session& s, const uint8_t* client_hello,
                  cert->sig_alg == SignatureAlgorithm::RSA_PSS_RSAE_SHA256 ||
                  cert->sig_alg == SignatureAlgorithm::RSA_PSS_RSAE_SHA384 ||
                  cert->sig_alg == SignatureAlgorithm::RSA_PSS_RSAE_SHA512)) {
-        // RSA 私钥按证书公钥尺寸分派保存：RSA-4096 用 CRT 私钥（供
-        // tls12_process_client_key_exchange 解密 512 字节密文），RSA-2048 保持原行为。
-        if (cert->rsa4096)
+        // RSA 私钥按证书公钥尺寸分派保存：3072/4096 用 CRT 私钥（供
+        // tls12_process_client_key_exchange 解密 384/512 字节密文），RSA-2048 保持原行为。
+        if (cert->rsa_bits == 3072)
+            s.rsa3072_key = std::make_shared<jpssl::rsa3072_crt_key>(cert->priv.rsa3072);
+        else if (cert->rsa4096 || cert->rsa_bits == 4096)
             s.rsa4096_key = std::make_shared<jpssl::rsa4096_crt_key>(cert->priv.rsa4096);
         else
             s.rsa_key = std::make_shared<jpssl::rsa_private_key>(cert->priv.rsa);
@@ -616,13 +618,16 @@ bool tls12_make_server_flight(tls_session& s, const uint8_t* client_hello, size_
     }
 
     // RSA 解密 pre_master_secret（RFC 5246 7.4.7.1）：密文长度为模数字节数，
-    // RSA-4096 证书 512 字节走 rsa4096_crt_decrypt，RSA-2048 保持 rsa_decrypt。
+    // RSA-3072/4096 证书 384/512 字节走 rsa3072/rsa4096_crt_decrypt，RSA-2048 保持 rsa_decrypt。
     if(encrypted_pms && epms_len > 0 && cert && cert->sig_alg == SignatureAlgorithm::RSA_PKCS1_SHA256){
         std::vector<uint8_t> pt;
-        bool dec_ok = cert->rsa4096
-                      ? (epms_len >= 512 &&
-                         rsa4096_crt_decrypt(cert->priv.rsa4096, encrypted_pms, pt))
-                      : rsa_decrypt(cert->priv.rsa, encrypted_pms, pt);
+        bool dec_ok = false;
+        if (cert->rsa_bits == 3072)
+            dec_ok = epms_len >= 384 && rsa3072_crt_decrypt(cert->priv.rsa3072, encrypted_pms, pt);
+        else if (cert->rsa4096 || cert->rsa_bits == 4096)
+            dec_ok = epms_len >= 512 && rsa4096_crt_decrypt(cert->priv.rsa4096, encrypted_pms, pt);
+        else
+            dec_ok = rsa_decrypt(cert->priv.rsa, encrypted_pms, pt);
         if(!dec_ok) return false;
         size_t pms_len = pt.size() < 48 ? pt.size() : 48;
         memcpy(pre_master_secret, pt.data(), pms_len);
@@ -768,13 +773,16 @@ bool tls12_handshake_server(tls_session& s, const uint8_t* client_hello, size_t 
     }
 
     // RSA 解密 pre_master_secret（RFC 5246 7.4.7.1）：密文长度为模数字节数，
-    // RSA-4096 证书 512 字节走 rsa4096_crt_decrypt，RSA-2048 保持 rsa_decrypt。
+    // RSA-3072/4096 证书 384/512 字节走 rsa3072/rsa4096_crt_decrypt，RSA-2048 保持 rsa_decrypt。
     if(encrypted_pms && epms_len > 0 && cert && cert->sig_alg == SignatureAlgorithm::RSA_PKCS1_SHA256){
         std::vector<uint8_t> pt;
-        bool dec_ok = cert->rsa4096
-                      ? (epms_len >= 512 &&
-                         rsa4096_crt_decrypt(cert->priv.rsa4096, encrypted_pms, pt))
-                      : rsa_decrypt(cert->priv.rsa, encrypted_pms, pt);
+        bool dec_ok = false;
+        if (cert->rsa_bits == 3072)
+            dec_ok = epms_len >= 384 && rsa3072_crt_decrypt(cert->priv.rsa3072, encrypted_pms, pt);
+        else if (cert->rsa4096 || cert->rsa_bits == 4096)
+            dec_ok = epms_len >= 512 && rsa4096_crt_decrypt(cert->priv.rsa4096, encrypted_pms, pt);
+        else
+            dec_ok = rsa_decrypt(cert->priv.rsa, encrypted_pms, pt);
         if(!dec_ok) return false;
         size_t pms_len = pt.size() < 48 ? pt.size() : 48;
         memcpy(pre_master_secret, pt.data(), pms_len);
@@ -1013,9 +1021,11 @@ bool tls12_process_client_key_exchange(tls_session& s, const uint8_t* encrypted_
         if (2 + enc_len > epms_len) return false;
         std::vector<uint8_t> pt;
         // 按服务端私钥尺寸分派（tls12_make_server_hello_flight 按证书类型缓存）：
-        // RSA-4096 密文 512 字节走 CRT 解密，RSA-2048 保持 256 字节 rsa_decrypt。
+        // RSA-3072 密文 384 字节 / RSA-4096 密文 512 字节走 CRT 解密，RSA-2048 保持 256 字节 rsa_decrypt。
         bool dec_ok = false;
-        if (s.rsa4096_key && enc_len >= 512)
+        if (s.rsa3072_key && enc_len >= 384)
+            dec_ok = rsa3072_crt_decrypt(*s.rsa3072_key, encrypted_pms + 2, pt);
+        else if (s.rsa4096_key && enc_len >= 512)
             dec_ok = rsa4096_crt_decrypt(*s.rsa4096_key, encrypted_pms + 2, pt);
         else if (s.rsa_key)
             dec_ok = rsa_decrypt(*s.rsa_key, encrypted_pms + 2, pt);

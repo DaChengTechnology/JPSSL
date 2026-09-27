@@ -523,7 +523,18 @@ bool tls12_process_server_flight(tls_session& s, const uint8_t* server_response,
             // RFC 5246 7.4.7.1：EncryptedPreMasterSecret 长度为模数字节数，
             // RSA-4096 证书（server_cert->rsa4096）→ 512 字节密文，
             // ClientKeyExchange 体长 2(长度前缀) + 512 = 514；RSA-2048 保持 256/258。
-            if (server_cert->rsa4096) {
+            // RSA-3072：模数 384 字节 → EncryptedPreMasterSecret 384 字节，体长 2 + 384 = 386
+            if (server_cert->rsa_bits == 3072) {
+                uint8_t encrypted3072[384];
+                rsa3072_encrypt(server_cert->pub.rsa3072,
+                                std::span<const uint8_t>(premaster), encrypted3072);
+                const size_t cke_body_len = 2 + 384;
+                cke.push_back((uint8_t)HandshakeType::CLIENT_KEY_EXCHANGE);
+                cke.push_back((uint8_t)(cke_body_len >> 8));
+                cke.push_back((uint8_t)cke_body_len);
+                cke.push_back(0x01); cke.push_back(0x80);   // 长度前缀 = 384
+                cke.insert(cke.end(), encrypted3072, encrypted3072 + 384);
+            } else if (server_cert->rsa4096 || server_cert->rsa_bits == 4096) {
                 uint8_t encrypted4096[512];
                 rsa4096_encrypt(server_cert->pub.rsa4096,
                                 std::span<const uint8_t>(premaster), encrypted4096);

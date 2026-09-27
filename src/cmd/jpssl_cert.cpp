@@ -651,8 +651,15 @@ static void cmd_tlsgen(int argc, char** argv) {
         // union 的 rsa4096 成员 + rsa4096 标记：后续签名/编码走 512 字节路径
         tls_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
         tls_cert->rsa4096 = true;
+        tls_cert->rsa_bits = 4096;   // rsa_bits 与 rsa4096 标记保持一致（档位分派以 rsa_bits 为准）
         if (!rsa4096_keygen_crt(tls_cert->pub.rsa4096, tls_cert->priv.rsa4096))
             die("RSA-4096 密钥生成失败");
+    } else if (key_type == "rsa3072") {
+        // union 的 rsa3072 成员 + rsa_bits 标记：签名/SPKI 走 384 字节模长路径
+        tls_cert->sig_alg = SignatureAlgorithm::RSA_PKCS1_SHA256;
+        tls_cert->rsa_bits = 3072;
+        if (!rsa3072_keygen_crt(tls_cert->pub.rsa3072, tls_cert->priv.rsa3072))
+            die("RSA-3072 密钥生成失败");
     } else if (key_type == "ed448") {
         tls_cert->sig_alg = SignatureAlgorithm::ED448;
         ed448_keygen(tls_cert->pub.ed448, tls_cert->priv.ed448);
