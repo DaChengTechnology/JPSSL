@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.1.14] - 2026-09-27
+
+### Fixed
+- **`jpssl-cert tlsgen --key-type rsa3072` 不可用**（usage 第 12/51 行宣称支持，但 tlsgen 的
+  keygen 分支只列到 rsa4096，rsa3072 直接报「未知密钥类型」）：补齐 3072 密钥生成分支
+  （`pub.rsa3072` / `priv.rsa3072` + `rsa_bits = 3072`），并同步修好 `tls_certificate`
+  的 3072 签名/验签分派与自签名编码，否则证书会错用 2048 位成员：
+  - `tls_router.cpp`：新增 `rsa_tier_of()`（以 `rsa_bits` 为权威档位，`rsa4096` 标记保留作
+    回退），`sign_scheme` / `verify_scheme` 的 PKCS#1 与 PSS 分支按档位选 union 成员
+    （2048 → `rsa`(256B) / 3072 → `rsa3072`(384B) / 4096 → `rsa4096`(512B)）；
+  - `tls_make_x509_self_signed()`：按 `rsa_bits` 选 3072/4096 档位编码 SPKI 与签名
+    （原先只认 `rsa4096` 标记，3072 会被按 2048 位模数编码）；
+  - `tls12_client.cpp`：TLS 1.2 静态 RSA 的 EncryptedPreMasterSecret 支持 384 字节（3072）；
+  - `tls12_server.cpp`：3072 证书按 `rsa3072_crt_key` 缓存并解密 384 字节密文
+    （`tls12_make_server_hello_flight` / `tls12_process_client_key_exchange`）；
+  - `jpssl-cert`：`gen` 与 `tlsgen` 的 rsa4096 分支补 `rsa_bits = 4096`，与 `rsa4096`
+    标记保持一致（档位分派以 `rsa_bits` 为准）。
+
+### Added
+- `tests/test_tls_rsa3072.cpp`：RSA-3072 全链路回归（现场 keygen → sign/verify 384 字节签名 →
+  自签名 SPKI/验签 → TLS 1.3 握手 → TLS 1.2 ECDHE-RSA → TLS 1.2 静态 RSA 384 字节
+  EncryptedPreMasterSecret），已接入 ctest（`test_tls_rsa3072`）；证书全部现场生成，
+  不依赖 `tests/certs` 固定 pem。
+
+### Changed
+- `tests/test_rsa3072.cpp` 在 MSVC 下可编译/可跑（原第 80 行用 `unsigned __int128` 触发
+  `error C4235`）：参考实现改为 `#if defined(_MSC_VER)` 走 `_umul128` / `__umulh` 的
+  64×64 取模乘（非 x64 走加倍-相加），其它编译器保留 `__int128`；断言强度不变。
+
 ## [1.1.11] - 2026-09-24
 
 ### Added
